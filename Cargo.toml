@@ -2,7 +2,11 @@
 name = "rogctl"
 version = "0.1.0"
 edition = "2024"
+description = "rogctl - Battery status for ASUS mice on Linux"
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/Humblemonk/rogctl"
+keywords = ["asus", "rog", "mouse", "battery", "hidraw"]
+categories = ["command-line-utilities", "hardware-support", "os::linux-apis"]
 
 [dependencies]
 libc = "0.2.189"
