@@ -44,6 +44,7 @@ Try the CLI without installing: `cargo run -- --json`, `cargo run -- list`,
   keep them stable.
 - Luau files start with `--!nonstrict`. All user-visible strings go through `noctalia.tr()`
   with keys in `translations/en.json`; settings need `label_key` entries there too.
+- `version` in `plugin.toml` must equal `Cargo.toml`'s; `cargo test` checks it, so bump both.
 - The plugin declares `plugin_api = 24` (needed for `runAsync` with an argv array). Don't raise
   it without checking the user's installed Noctalia supports the new level.
 
