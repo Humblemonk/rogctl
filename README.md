@@ -6,9 +6,9 @@ rogctl supports 27 battery-powered ROG, TUF and ASUS mice, connected through the
 receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. See
 [Supported mice](#supported-mice) for the list.
 
-<div align="center">
-![Project Example Screenshot](images/rogctl.png)
-</div>
+<p align="center">
+  <img src="images/rogctl.png" alt="Project Example Screenshot">
+</p>
 
 ## Getting started
 
