@@ -17,8 +17,11 @@ local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
+-- Always a whole number in the manifest's range: it goes into a shell command,
+-- since runStream takes no argv array.
 local function interval()
-  return noctalia.getConfig("interval") or 60
+  local secs = math.floor(tonumber(noctalia.getConfig("interval")) or 60)
+  return math.clamp(secs, 5, 600)
 end
 
 local function publish(status)
