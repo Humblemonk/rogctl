@@ -84,8 +84,8 @@ Derived from G-Helper's `app/Peripherals/Mouse/AsusMouse.cs`
 - **Don't change the user's system without asking first.** This includes `cargo install`,
   creating the plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
   `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, and anything
-  needing `sudo`. Building and running from `target/` inside the repo is fine.
-- Don't commit or push unless asked. Public repo: <https://github.com/humblemonk/rogctl>, branch `main`.
+  needing `sudo`. Building and running from `target/` inside the repository is fine.
+- Don't commit or push unless asked. Public repository: <https://github.com/humblemonk/rogctl>, branch `main`.
 
 ## Testing the Noctalia plugin
 
