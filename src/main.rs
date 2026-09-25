@@ -307,6 +307,19 @@ mod tests {
         assert_eq!(json.as_object().unwrap().len(), 2, "{json}");
     }
 
+    /// The plugin ships with this binary, so their versions move together.
+    #[test]
+    fn plugin_version_matches_crate() {
+        let manifest = include_str!("../noctalia/rog-mouse-battery/plugin.toml");
+        let version = manifest
+            .lines()
+            .find_map(|l| l.strip_prefix("version"))
+            .and_then(|l| l.trim_start().strip_prefix('='))
+            .map(|v| v.trim().trim_matches('"'))
+            .expect("plugin.toml has no version");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"), "update plugin.toml");
+    }
+
     #[test]
     fn keeps_last_level_while_asleep() {
         let mut last = None;

@@ -18,6 +18,8 @@ use crate::models::{MODELS, OMNI_PID};
 const ASUS_VID: u16 = 0x0b05;
 const MAX_PACKET: usize = 65;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
+/// Reports the kernel buffers per open hidraw file (`HIDRAW_BUFFER_SIZE`).
+const HIDRAW_QUEUE: usize = 64;
 
 /// One way a supported mouse shows up on USB: a product ID and the HID
 /// interface that answers vendor commands on it.
@@ -271,9 +273,15 @@ fn open(hidraw: &Path) -> io::Result<File> {
 }
 
 /// Discards input queued before our request so we don't match a stale reply.
+/// Stops after one kernel queue's worth, so a device that never stops sending
+/// can't stall us; anything later is filtered out by `read_packet`.
 fn drain(file: &mut File) {
     let mut buf = [0u8; MAX_PACKET];
-    while matches!(file.read(&mut buf), Ok(n) if n > 0) {}
+    for _ in 0..HIDRAW_QUEUE {
+        if !matches!(file.read(&mut buf), Ok(n) if n > 0) {
+            break;
+        }
+    }
 }
 
 /// Reads input reports until `accept` matches one, normalized so byte 0 is

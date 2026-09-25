@@ -44,6 +44,7 @@ Try the CLI without installing: `cargo run -- --json`, `cargo run -- list`,
   keep them stable.
 - Luau files start with `--!nonstrict`. All user-visible strings go through `noctalia.tr()`
   with keys in `translations/en.json`; settings need `label_key` entries there too.
+- `version` in `plugin.toml` must equal `Cargo.toml`'s; `cargo test` checks it, so bump both.
 - The plugin declares `plugin_api = 24` (needed for `runAsync` with an argv array). Don't raise
   it without checking the user's installed Noctalia supports the new level.
 
@@ -83,8 +84,8 @@ Derived from G-Helper's `app/Peripherals/Mouse/AsusMouse.cs`
 - **Don't change the user's system without asking first.** This includes `cargo install`,
   creating the plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
   `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, and anything
-  needing `sudo`. Building and running from `target/` inside the repo is fine.
-- Don't commit or push unless asked. Public repo: <https://github.com/humblemonk/rogctl>, branch `main`.
+  needing `sudo`. Building and running from `target/` inside the repository is fine.
+- Don't commit or push unless asked. Public repository: <https://github.com/humblemonk/rogctl>, branch `main`.
 
 ## Testing the Noctalia plugin
 
