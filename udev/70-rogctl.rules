@@ -1,0 +1,84 @@
+# Let the logged-in user talk to supported ASUS mice over hidraw (for rogctl).
+# One line per USB product ID in src/models.rs; `cargo test` checks they match.
+# ASUS Mouse MD200: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a24", TAG+="uaccess"
+# Gladius II Wireless: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18a0", TAG+="uaccess"
+# Harpe Ace Mini: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b63", TAG+="uaccess"
+# Omni receiver (paired mice listed in src/models.rs)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1ace", TAG+="uaccess"
+# ROG Chakram: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18e3", TAG+="uaccess"
+# ROG Chakram: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18e5", TAG+="uaccess"
+# ROG Chakram X: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a18", TAG+="uaccess"
+# ROG Chakram X: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a1a", TAG+="uaccess"
+# ROG Gladius III Aimpoint: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a70", TAG+="uaccess"
+# ROG Gladius III Aimpoint: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a72", TAG+="uaccess"
+# ROG Gladius III Eva 2: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b0a", TAG+="uaccess"
+# ROG Gladius III Eva 2: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b0c", TAG+="uaccess"
+# ROG Gladius III Wireless: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="197d", TAG+="uaccess"
+# ROG Gladius III Wireless: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="197f", TAG+="uaccess"
+# ROG Harpe Ace Aim Lab Edition: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a92", TAG+="uaccess"
+# ROG Harpe Ace Aim Lab Edition: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a94", TAG+="uaccess"
+# ROG Harpe Ace Extreme: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b67", TAG+="uaccess"
+# ROG Harpe II Ace: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c69", TAG+="uaccess"
+# ROG Keris EVA Edition: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a57", TAG+="uaccess"
+# ROG Keris EVA Edition: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a59", TAG+="uaccess"
+# ROG Keris II Ace: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b16", TAG+="uaccess"
+# ROG Keris II Origin: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c0c", TAG+="uaccess"
+# ROG Keris II Origin KJP: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1d4c", TAG+="uaccess"
+# ROG Keris Wireless: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="195e", TAG+="uaccess"
+# ROG Keris Wireless: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1960", TAG+="uaccess"
+# ROG Keris Wireless Aimpoint: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a66", TAG+="uaccess"
+# ROG Keris Wireless Aimpoint: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a68", TAG+="uaccess"
+# ROG Pugio II: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1906", TAG+="uaccess"
+# ROG Pugio II: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1908", TAG+="uaccess"
+# ROG Spatha X: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1977", TAG+="uaccess"
+# ROG Spatha X: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1979", TAG+="uaccess"
+# ROG SpeedNova 8K receiver (Harpe II Ace, Harpe II Extreme Edition 20)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1ad0", TAG+="uaccess"
+# ROG Strix Carry: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18b4", TAG+="uaccess"
+# ROG Strix Impact II Wireless: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1947", TAG+="uaccess"
+# ROG Strix Impact II Wireless: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1949", TAG+="uaccess"
+# TUF GAMING M4 Wireless: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="19f4", TAG+="uaccess"
+# TUF GAMING Mini Miku Edition: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c56", TAG+="uaccess"
+# TUF GAMING Mini Miku Edition: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c57", TAG+="uaccess"
+# TX GAMING MOUSE: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a8d", TAG+="uaccess"
+# TX GAMING MOUSE Mini: cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1af3", TAG+="uaccess"
+# TX GAMING MOUSE Mini: receiver
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1af5", TAG+="uaccess"

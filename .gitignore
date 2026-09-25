@@ -1,0 +1,8 @@
+# Rust build output. Cargo.lock stays committed because rogctl is a binary.
+/target
+# rustfmt backups
+**/*.rs.bk
+
+# Claude Code personal settings and notes (CLAUDE.md is shared)
+.claude/settings.local.json
+CLAUDE.local.md

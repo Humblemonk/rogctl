@@ -1,0 +1,32 @@
+{
+  "settings.binary.label": "rogctl command",
+  "settings.binary.description": "Name or full path of the rogctl binary.",
+  "settings.interval.label": "Refresh seconds",
+  "settings.interval.description": "How often to read the mouse battery.",
+  "settings.low_threshold.label": "Low battery warning (%)",
+  "settings.low_threshold.description": "Notify and turn the widget red at or below this level. 0 disables it.",
+  "settings.icon.label": "Icon",
+  "settings.icon.mouse": "Mouse",
+  "settings.icon.battery": "Battery level",
+  "settings.show_percent.label": "Show percentage",
+  "settings.hide_when_disconnected.label": "Hide when no mouse is connected",
+  "settings.hide_when_disconnected.description": "Hide the widget while the receiver or cable is unplugged.",
+
+  "battery.line": "Battery: {percent}% ({status})",
+  "battery.discharging": "discharging",
+  "battery.recharging": "recharging",
+  "battery.full": "full",
+  "battery.value": "{percent}% ({status})",
+  "battery.offline": "offline",
+  "battery.unknown": "unknown",
+
+  "tooltip.waiting": "Waiting for rogctl…",
+  "tooltip.mouse": "Mouse",
+  "tooltip.error": "Error",
+  "tooltip.battery": "Battery",
+  "tooltip.device": "Device",
+  "tooltip.not_connected": "Not connected",
+
+  "error.missing_binary": "{binary} not found on PATH",
+  "error.launch_failed": "Could not start {binary}"
+}

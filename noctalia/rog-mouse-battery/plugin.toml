@@ -1,0 +1,66 @@
+id           = "humblemonk/rog-mouse-battery"
+name         = "ASUS Mouse Battery"
+version      = "0.1.0"
+plugin_api   = 24
+author       = "humblemonk"
+license      = "AGPL-3.0-or-later"
+icon         = "mouse"
+description  = "Battery level for ASUS mice, read through rogctl."
+tags         = ["bar", "battery", "hardware", "mouse"]
+dependencies = ["rogctl"]
+
+[[setting]]
+key             = "binary"
+type            = "string"
+label_key       = "settings.binary.label"
+description_key = "settings.binary.description"
+default         = "rogctl"
+
+[[setting]]
+key             = "interval"
+type            = "int"
+label_key       = "settings.interval.label"
+description_key = "settings.interval.description"
+default         = 60
+min             = 5
+max             = 600
+
+[[setting]]
+key             = "low_threshold"
+type            = "int"
+label_key       = "settings.low_threshold.label"
+description_key = "settings.low_threshold.description"
+default         = 20
+min             = 0
+max             = 100
+
+[[service]]
+id    = "monitor"
+entry = "service.luau"
+
+[[widget]]
+id    = "battery"
+entry = "widget.luau"
+
+  [[widget.setting]]
+  key       = "icon"
+  type      = "select"
+  label_key = "settings.icon.label"
+  default   = "mouse"
+  options   = [
+    { value = "mouse", label_key = "settings.icon.mouse" },
+    { value = "battery", label_key = "settings.icon.battery" },
+  ]
+
+  [[widget.setting]]
+  key       = "show_percent"
+  type      = "bool"
+  label_key = "settings.show_percent.label"
+  default   = true
+
+  [[widget.setting]]
+  key             = "hide_when_disconnected"
+  type            = "bool"
+  label_key       = "settings.hide_when_disconnected.label"
+  description_key = "settings.hide_when_disconnected.description"
+  default         = true
