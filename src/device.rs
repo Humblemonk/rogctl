@@ -153,9 +153,10 @@ fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
 }
 
 fn parse_omni_paired(reply: &[u8]) -> Vec<u16> {
-    reply[5..]
-        .chunks_exact(4)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+    let (entries, _) = reply[5..].as_chunks::<4>();
+    entries
+        .iter()
+        .map(|&[lo, hi, _, _]| u16::from_le_bytes([lo, hi]))
         .take_while(|&pid| pid != 0)
         .collect()
 }
