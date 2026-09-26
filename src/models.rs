@@ -151,18 +151,18 @@ mod tests {
         }
     }
 
-    /// The README's Supported mice table lists every mouse and USB ID.
+    /// The README's Supported mice list names every mouse.
     #[test]
     fn readme_lists_every_model() {
         let readme = include_str!("../README.md");
         let section = &readme[readme.find("## Supported mice").expect("section missing")..];
         for m in MODELS {
-            let row = section
-                .lines()
-                .find(|l| l.starts_with(&format!("| {} |", m.name)))
-                .unwrap_or_else(|| panic!("README has no row for {}", m.name));
-            let id = format!("0b05:{:04x}", m.pid);
-            assert!(row.contains(&id), "README row for {} lacks {id}", m.name);
+            let item = format!("- {}", m.name);
+            assert!(
+                section.lines().any(|l| l == item),
+                "README doesn't list {}",
+                m.name
+            );
         }
     }
 

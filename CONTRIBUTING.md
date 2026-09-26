@@ -50,8 +50,8 @@ maps to `usb("Name", 0x1a1a, 0, true)`: product ID, interface (from `mi_00`) and
 that product ID is a receiver. Use `usb64` if the class overrides `USBPacketSize()` to 64,
 and `usb_quarters` if `ParseBattery` multiplies by 25. A mouse on the Omni receiver
 (`0x1ACE`) goes in with `omni()` and the product IDs from `MouseFromOmniPid` in
-`PeripheralsProvider.cs`. Add the product ID to `udev/70-rogctl.rules` and a row to the
-Supported mice table in README.md too; `cargo test` fails until you do.
+`PeripheralsProvider.cs`. Add the product ID to `udev/70-rogctl.rules` and the mouse to the
+Supported mice list in README.md too; `cargo test` fails until you do.
 
 Then check it: `cargo run -- list` should show the mouse, and `cargo run -- --json` should
 report `"state":"connected"` with the right percentage. If the mouse overrides

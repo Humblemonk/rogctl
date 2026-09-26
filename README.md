@@ -14,8 +14,7 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
 
 You need a Rust toolchain (`cargo`); most distributions package it as `rust` or `rustup`.
 
-1. **Check your mouse is supported.** Plug in its receiver or cable, run `lsusb | grep -i asus`,
-   and find the USB ID in [Supported mice](#supported-mice).
+1. **Check your mouse is supported.** Find it in [Supported mice](#supported-mice).
 
 2. **Install rogctl.** This puts `rogctl` in `~/.cargo/bin`, which needs to be on your `PATH`.
 
@@ -57,7 +56,7 @@ answering when it sleeps; `watch` keeps reporting the last level with `"state":"
 
 ## Troubleshooting
 
-- **`No supported mouse found`**: the receiver or cable isn't plugged in, or its USB ID isn't
+- **`No supported mouse found`**: the receiver or cable isn't plugged in, or the mouse isn't
   in [Supported mice](#supported-mice). `rogctl list` shows what was detected.
 - **`Permission denied`**: the udev rule from step 3 isn't active yet. Unplug and replug the
   receiver or cable, or log out and back in.
@@ -85,38 +84,35 @@ icon and binary path are in the plugin and widget settings.
 
 ## Supported mice
 
-Mice not listed here aren't detected. The USB ID is what `lsusb` shows for the receiver or
-cable; for the Omni receiver, rogctl asks the receiver which mouse is paired.
+Mice not listed here aren't detected.
 
-| Mouse | Connections (USB ID) |
-|-------|----------------------|
-| ROG Chakram | own receiver (`0b05:18e5`), USB cable (`0b05:18e3`) |
-| ROG Chakram X | own receiver (`0b05:1a1a`), USB cable (`0b05:1a18`) |
-| Gladius II Wireless | own receiver (`0b05:18a0`) |
-| ROG Gladius III Aimpoint | own receiver (`0b05:1a72`), Omni receiver (`0b05:1ace`), USB cable (`0b05:1a70`) |
-| ROG Gladius III Eva 2 | own receiver (`0b05:1b0c`), USB cable (`0b05:1b0a`) |
-| ROG Gladius III Wireless | own receiver (`0b05:197f`), USB cable (`0b05:197d`) |
-| ROG Harpe Ace Aim Lab Edition | own receiver (`0b05:1a94`), Omni receiver (`0b05:1ace`), USB cable (`0b05:1a92`) |
-| ROG Harpe Ace Extreme | Omni receiver (`0b05:1ace`), USB cable (`0b05:1b67`) |
-| Harpe Ace Mini | Omni receiver (`0b05:1ace`), USB cable (`0b05:1b63`) |
-| ROG Harpe II Ace | SpeedNova 8K receiver (`0b05:1ad0`), USB cable (`0b05:1c69`) |
-| Harpe II Extreme Edition 20 | SpeedNova 8K receiver (`0b05:1ad0`) |
-| ROG Keris EVA Edition | own receiver (`0b05:1a59`), USB cable (`0b05:1a57`) |
-| ROG Keris II Ace | Omni receiver (`0b05:1ace`), USB cable (`0b05:1b16`) |
-| ROG Keris II Origin | Omni receiver (`0b05:1ace`), USB cable (`0b05:1c0c`) |
-| ROG Keris II Origin KJP | Omni receiver (`0b05:1ace`), USB cable (`0b05:1d4c`) |
-| ROG Keris Wireless | own receiver (`0b05:1960`), USB cable (`0b05:195e`) |
-| ROG Keris Wireless Aimpoint | own receiver (`0b05:1a68`), Omni receiver (`0b05:1ace`), USB cable (`0b05:1a66`) |
-| ASUS Mouse MD200 | own receiver (`0b05:1a24`) |
-| ROG Pugio II | own receiver (`0b05:1908`), USB cable (`0b05:1906`) |
-| ROG Spatha X | own receiver (`0b05:1979`), USB cable (`0b05:1977`) |
-| ROG Strix Carry | own receiver (`0b05:18b4`) |
-| ROG Strix Impact II Wireless | own receiver (`0b05:1949`), USB cable (`0b05:1947`) |
-| Strix Impact III Wireless | Omni receiver (`0b05:1ace`) |
-| TUF GAMING M4 Wireless | own receiver (`0b05:19f4`) |
-| TUF GAMING Mini Miku Edition | own receiver (`0b05:1c57`), USB cable (`0b05:1c56`) |
-| TX GAMING MOUSE | own receiver (`0b05:1a8d`) |
-| TX GAMING MOUSE Mini | own receiver (`0b05:1af5`), USB cable (`0b05:1af3`) |
+- ROG Chakram
+- ROG Chakram X
+- Gladius II Wireless
+- ROG Gladius III Aimpoint
+- ROG Gladius III Eva 2
+- ROG Gladius III Wireless
+- ROG Harpe Ace Aim Lab Edition
+- ROG Harpe Ace Extreme
+- Harpe Ace Mini
+- ROG Harpe II Ace
+- Harpe II Extreme Edition 20
+- ROG Keris EVA Edition
+- ROG Keris II Ace
+- ROG Keris II Origin
+- ROG Keris II Origin KJP
+- ROG Keris Wireless
+- ROG Keris Wireless Aimpoint
+- ASUS Mouse MD200
+- ROG Pugio II
+- ROG Spatha X
+- ROG Strix Carry
+- ROG Strix Impact II Wireless
+- Strix Impact III Wireless
+- TUF GAMING M4 Wireless
+- TUF GAMING Mini Miku Edition
+- TX GAMING MOUSE
+- TX GAMING MOUSE Mini
 
 Tested on hardware so far: ROG Harpe II Ace on the SpeedNova 8K receiver. The rest are
 untested, so please [report](CONTRIBUTING.md#reporting-a-problem) whether yours works.
