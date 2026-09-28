@@ -124,16 +124,19 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-fn print_human(s: &Status) {
+/// Returns the error `println!` would panic on when stdout is closed, as in
+/// `rogctl watch | head -1`.
+fn print_human(s: &Status) -> io::Result<()> {
     let name = s.device.unwrap_or("mouse");
+    let mut out = io::stdout().lock();
     match s.state {
-        State::Disconnected => println!("No supported mouse found"),
-        State::Error => println!("{name}: {}", s.error.as_deref().unwrap_or("error")),
-        State::Asleep => println!("{name}: asleep or out of range"),
+        State::Disconnected => writeln!(out, "No supported mouse found"),
+        State::Error => writeln!(out, "{name}: {}", s.error.as_deref().unwrap_or("error")),
+        State::Asleep => writeln!(out, "{name}: asleep or out of range"),
         State::Connected => {
             let pct = s.battery.unwrap_or(0);
             let charging = if s.charging { " (charging)" } else { "" };
-            println!("{name}: {pct}%{charging}");
+            writeln!(out, "{name}: {pct}%{charging}")
         }
     }
 }
@@ -147,12 +150,13 @@ fn print_json(s: &Status) -> io::Result<()> {
 
 fn cmd_battery(json: bool) -> ExitCode {
     let status = poll();
-    if json {
-        if print_json(&status).is_err() {
-            return ExitCode::FAILURE;
-        }
+    let printed = if json {
+        print_json(&status)
     } else {
-        print_human(&status);
+        print_human(&status)
+    };
+    if printed.is_err() {
+        return ExitCode::FAILURE;
     }
     ExitCode::from(match status.state {
         State::Connected => 0,
@@ -184,14 +188,13 @@ fn cmd_watch(interval: Duration, json: bool) -> ExitCode {
     loop {
         let mut status = poll();
         carry_over(&mut status, &mut last_known);
-        let ok = if json {
-            print_json(&status).is_ok()
+        let printed = if json {
+            print_json(&status)
         } else {
-            print_human(&status);
-            true
+            print_human(&status)
         };
-        // stdout closed: the bar went away, so stop.
-        if !ok {
+        // stdout closed: the bar (or pipe reader) went away, so stop.
+        if printed.is_err() {
             return ExitCode::SUCCESS;
         }
         thread::sleep(interval);
@@ -200,8 +203,9 @@ fn cmd_watch(interval: Duration, json: bool) -> ExitCode {
 
 fn cmd_list() -> ExitCode {
     let devices = device::discover();
+    let mut out = io::stdout().lock();
     if devices.is_empty() {
-        println!("No supported mouse found");
+        let _ = writeln!(out, "No supported mouse found");
         return ExitCode::from(2);
     }
     for dev in devices {
@@ -210,7 +214,8 @@ fn cmd_list() -> ExitCode {
         } else {
             "wired"
         };
-        println!(
+        let printed = writeln!(
+            out,
             "{}  {} ({link}, {:04x}:{:04x} interface {})",
             dev.hidraw.display(),
             dev.model.name,
@@ -218,6 +223,9 @@ fn cmd_list() -> ExitCode {
             dev.model.pid,
             dev.model.interface
         );
+        if printed.is_err() {
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }

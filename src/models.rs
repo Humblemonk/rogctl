@@ -11,6 +11,11 @@ use crate::device::{Battery, Match, Model};
 /// ROG Omni receiver; the paired mouse is found by asking the receiver.
 pub const OMNI_PID: u16 = 0x1ace;
 
+/// An Omni receiver whose paired mouse couldn't be asked for, usually for
+/// lack of permission. Every Omni entry shares these query parameters, so the
+/// battery read still works, or fails with the real reason. Not in `MODELS`.
+pub static OMNI_RECEIVER: Model = omni("ROG Omni receiver", &[]);
+
 /// Mice on their own receiver or cable. G-Helper's defaults: report ID 0,
 /// 65-byte packets, battery percentage in byte 5.
 const fn usb(name: &'static str, pid: u16, interface: u8, wireless: bool) -> Model {
@@ -61,11 +66,10 @@ const fn omni(name: &'static str, paired: &'static [u16]) -> Model {
 
 pub const MODELS: &[Model] = &[
     // SpeedNova 8K receiver, shared by the Harpe II models; G-Helper tells
-    // them apart by the receiver's USB product name.
+    // them apart by the receiver's USB product name. The Extreme inherits the
+    // Ace's battery format there.
     Model {
         report_id: 0x03,
-        battery: Battery::Quarters { byte: 7 },
-        settings: false,
         matches: Match::Product("EXTREME"),
         ..usb64("Harpe II Extreme Edition 20", 0x1ad0, 2, true)
     },
