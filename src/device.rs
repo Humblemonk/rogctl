@@ -13,7 +13,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::models::{MODELS, OMNI_PID};
+use crate::models::{MODELS, OMNI_PID, OMNI_RECEIVER};
 
 const ASUS_VID: u16 = 0x0b05;
 const MAX_PACKET: usize = 65;
@@ -87,18 +87,34 @@ pub fn discover() -> Vec<Device> {
             continue;
         }
         let hidraw = Path::new("/dev").join(entry.file_name());
-        let product = usb_product(&sys).unwrap_or_default();
-        let paired = if pid == OMNI_PID {
-            omni_paired(&hidraw).unwrap_or_default()
+        let model = if pid == OMNI_PID {
+            omni_model(omni_paired(&hidraw))
         } else {
-            Vec::new()
+            select_model(pid, interface, &usb_product(&sys).unwrap_or_default(), &[])
         };
-        if let Some(model) = select_model(pid, interface, &product, &paired) {
+        if let Some(model) = model {
             found.push(Device { model, hidraw });
         }
     }
-    found.sort_by_key(|d| MODELS.iter().position(|m| std::ptr::eq(m, d.model)));
+    // OMNI_RECEIVER isn't in MODELS; it goes last.
+    found.sort_by_key(|d| {
+        MODELS
+            .iter()
+            .position(|m| std::ptr::eq(m, d.model))
+            .unwrap_or(usize::MAX)
+    });
     found
+}
+
+/// Picks the model for an Omni receiver from its pairing reply. If the
+/// receiver couldn't be opened or written to, keep it so the battery read
+/// reports why (e.g. no udev rule) instead of it looking unplugged.
+fn omni_model(paired: Result<Vec<u16>, QueryError>) -> Option<&'static Model> {
+    match paired {
+        Ok(paired) => select_model(OMNI_PID, OMNI_RECEIVER.interface, "", &paired),
+        Err(QueryError::Io(_)) => Some(&OMNI_RECEIVER),
+        Err(_) => None,
+    }
 }
 
 /// Picks the model for a USB interface. `product` is the device's USB product
@@ -364,6 +380,18 @@ mod tests {
         assert_eq!(settings.low_battery_warning, 20);
     }
 
+    /// G-Helper's Extreme subclasses the Ace without changing the battery
+    /// format, so byte 7 is the warning level here, not the battery.
+    #[test]
+    fn parses_extreme_like_ace() {
+        let r = reply(&[
+            0x03, 0x12, 0x07, 0, 0, 0x50, 0x02, 0x14, 0xd8, 0x0f, 0, 0, 0x01,
+        ]);
+        let ace = parse_reply(model("ROG Harpe II Ace"), &r).unwrap();
+        let extreme = parse_reply(model("Harpe II Extreme Edition 20"), &r).unwrap();
+        assert_eq!(extreme, ace);
+    }
+
     #[test]
     fn parses_quarters_reply() {
         let r = reply(&[0x00, 0x12, 0x07, 0, 0, 0x03, 0, 0, 0, 0, 0x01]);
@@ -409,6 +437,17 @@ mod tests {
         let m = select_model(OMNI_PID, 2, "", &[0x1234, 0x1b65]).unwrap();
         assert_eq!(m.name, "Harpe Ace Mini");
         assert!(select_model(OMNI_PID, 2, "", &[]).is_none());
+    }
+
+    #[test]
+    fn keeps_omni_receiver_it_cannot_query() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        let m = omni_model(Err(QueryError::Io(denied))).unwrap();
+        assert!(std::ptr::eq(m, &OMNI_RECEIVER));
+        // No answer or no supported mouse paired: nothing to report.
+        assert!(omni_model(Err(QueryError::Timeout)).is_none());
+        assert!(omni_model(Ok(vec![0x1234])).is_none());
+        assert_eq!(omni_model(Ok(vec![0x1b65])).unwrap().name, "Harpe Ace Mini");
     }
 
     #[test]
