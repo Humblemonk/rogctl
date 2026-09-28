@@ -183,8 +183,25 @@ fn carry_over(status: &mut Status, last_known: &mut Option<Status>) {
     }
 }
 
+/// First retry after an error. The receiver can reject a query for a moment,
+/// e.g. right after login, and the bar shouldn't show that for a whole interval.
+const ERROR_RETRY: Duration = Duration::from_secs(5);
+
+/// How long to wait before the next poll: the interval, or after errors a
+/// retry that doubles each time up to the interval.
+fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration {
+    if state != State::Error {
+        *retry = ERROR_RETRY;
+        return interval;
+    }
+    let wait = (*retry).min(interval);
+    *retry = retry.saturating_mul(2);
+    wait
+}
+
 fn cmd_watch(interval: Duration, json: bool) -> ExitCode {
     let mut last_known: Option<Status> = None;
+    let mut retry = ERROR_RETRY;
     loop {
         let mut status = poll();
         carry_over(&mut status, &mut last_known);
@@ -197,7 +214,7 @@ fn cmd_watch(interval: Duration, json: bool) -> ExitCode {
         if printed.is_err() {
             return ExitCode::SUCCESS;
         }
-        thread::sleep(interval);
+        thread::sleep(next_wait(status.state, interval, &mut retry));
     }
 }
 
@@ -338,6 +355,23 @@ mod tests {
         assert_eq!(status.state, State::Asleep);
         assert_eq!(status.battery, Some(80));
         assert_eq!(status.battery_updated, Some(1000));
+    }
+
+    #[test]
+    fn retries_errors_sooner_with_backoff() {
+        let interval = Duration::from_secs(60);
+        let mut retry = ERROR_RETRY;
+        let waits: Vec<u64> = (0..6)
+            .map(|_| next_wait(State::Error, interval, &mut retry).as_secs())
+            .collect();
+        assert_eq!(waits, [5, 10, 20, 40, 60, 60]);
+
+        assert_eq!(next_wait(State::Connected, interval, &mut retry), interval);
+        assert_eq!(next_wait(State::Error, interval, &mut retry), ERROR_RETRY);
+
+        // Never waits longer than a short interval.
+        let short = Duration::from_secs(2);
+        assert_eq!(next_wait(State::Error, short, &mut retry), short);
     }
 
     #[test]
