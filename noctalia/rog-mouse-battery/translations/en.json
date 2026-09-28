@@ -28,5 +28,6 @@
   "tooltip.not_connected": "Not connected",
 
   "error.missing_binary": "{binary} not found on PATH",
-  "error.launch_failed": "Could not start {binary}"
+  "error.launch_failed": "Could not start {binary}",
+  "error.exited": "{binary} exited with status {code}"
 }

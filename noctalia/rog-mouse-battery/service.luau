@@ -8,8 +8,10 @@ local battery = require("./battery.luau")
 
 local STATUS_KEY = "status"
 local REFRESH_KEY = "refresh"
+-- The stream's shell prints this, then rogctl's exit status, when rogctl exits.
+local EXIT_MARKER = "rog-mouse-battery:exited "
 
-local lastLineAt = 0
+local streaming = false
 local lastStatus = nil
 local lowNotified = false
 
@@ -62,7 +64,12 @@ local function mergeAsleep(status)
 end
 
 local function handleLine(line)
-  lastLineAt = os.time()
+  if line:sub(1, #EXIT_MARKER) == EXIT_MARKER then
+    streaming = false
+    local binary = noctalia.getConfig("binary") or "rogctl"
+    publishError(noctalia.tr("error.exited", { binary = binary, code = line:sub(#EXIT_MARKER + 1) }))
+    return
+  end
   local status, err = noctalia.json.decode(line)
   if type(status) ~= "table" then
     noctalia.log("rog-mouse-battery: bad line from rogctl: " .. tostring(err))
@@ -78,9 +85,16 @@ local function startStream()
     publishError(noctalia.tr("error.missing_binary", { binary = binary }))
     return
   end
-  lastLineAt = os.time()
-  local cmd = shellQuote(binary) .. " watch --json --interval " .. tostring(interval())
-  if not noctalia.runStream(cmd, handleLine) then
+  local script = shellQuote(binary)
+    .. " watch --json --interval "
+    .. tostring(interval())
+    .. "; echo "
+    .. shellQuote(EXIT_MARKER)
+    .. '"$?"'
+  -- Noctalia runs streams as `sh -c "exec <cmd>"`, which would replace the
+  -- shell with rogctl and skip the echo, so the script gets its own shell.
+  streaming = noctalia.runStream("sh -c " .. shellQuote(script), handleLine)
+  if not streaming then
     publishError(noctalia.tr("error.launch_failed", { binary = binary }))
   end
 end
@@ -102,11 +116,12 @@ noctalia.state.watch(REFRESH_KEY, function()
   refreshNow()
 end)
 
--- rogctl prints a line every interval, so a long silence means it exited
--- (e.g. the binary was missing or crashed). Start it again.
+-- Restart rogctl once the exit marker says it has stopped. Silence alone isn't
+-- enough: there's no way to stop a running stream, and rogctl's sleep pauses
+-- across suspend, so restarting a quiet one would leave two running.
 function update()
   noctalia.setUpdateInterval(10000)
-  if os.time() - lastLineAt > interval() * 3 + 10 then
+  if not streaming then
     startStream()
   end
 end
