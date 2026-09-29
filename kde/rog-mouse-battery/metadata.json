@@ -1,0 +1,19 @@
+{
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "humblemonk"
+      }
+    ],
+    "Category": "System Information",
+    "Description": "Battery level for ASUS mice, read through rogctl.",
+    "Icon": "input-mouse",
+    "Id": "com.github.humblemonk.rogmousebattery",
+    "License": "AGPL-3.0-or-later",
+    "Name": "ASUS Mouse Battery",
+    "Version": "1.3.0",
+    "Website": "https://github.com/humblemonk/rogctl"
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

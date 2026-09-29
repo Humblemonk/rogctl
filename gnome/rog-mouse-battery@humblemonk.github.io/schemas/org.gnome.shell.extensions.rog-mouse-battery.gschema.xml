@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.rog-mouse-battery"
+          path="/org/gnome/shell/extensions/rog-mouse-battery/">
+    <key name="binary" type="s">
+      <default>'rogctl'</default>
+      <summary>rogctl command</summary>
+      <description>Name or full path of the rogctl binary.</description>
+    </key>
+    <key name="interval" type="i">
+      <range min="5" max="600"/>
+      <default>60</default>
+      <summary>Refresh seconds</summary>
+      <description>How often to read the mouse battery.</description>
+    </key>
+    <key name="low-threshold" type="i">
+      <range min="0" max="100"/>
+      <default>20</default>
+      <summary>Low battery warning (%)</summary>
+      <description>Notify and turn the indicator red at or below this level. 0 disables it.</description>
+    </key>
+    <key name="show-percent" type="b">
+      <default>true</default>
+      <summary>Show percentage</summary>
+    </key>
+    <key name="hide-when-disconnected" type="b">
+      <default>true</default>
+      <summary>Hide when no mouse is connected</summary>
+      <description>Hide the indicator while the receiver or cable is unplugged.</description>
+    </key>
+  </schema>
+</schemalist>

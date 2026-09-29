@@ -1,5 +1,6 @@
 mod device;
 mod models;
+mod waybar;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -14,10 +15,16 @@ const USAGE: &str = "\
 rogctl - battery status for ASUS mice
 
 Usage:
-  rogctl [battery] [--json]              Print the battery status once
-  rogctl watch [--interval SECS] [--json]
+  rogctl [battery] [OPTIONS]             Print the battery status once
+  rogctl watch [--interval SECS] [OPTIONS]
                                          Print the status every SECS seconds (default 60)
   rogctl list                            List detected devices and their hidraw nodes
+
+Options:
+  --json                 Same as --format json
+  --format FORMAT        text (default), json, or waybar (a Waybar custom module)
+  --low-threshold PCT    Level at or below which --format waybar adds the low
+                         CSS class (default 20, 0 turns it off)
 
 Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 mouse asleep.
 ";
@@ -141,21 +148,50 @@ fn print_human(s: &Status) -> io::Result<()> {
     }
 }
 
-fn print_json(s: &Status) -> io::Result<()> {
+fn print_json<T: Serialize>(value: &T) -> io::Result<()> {
     let mut out = io::stdout().lock();
-    serde_json::to_writer(&mut out, s)?;
+    serde_json::to_writer(&mut out, value)?;
     writeln!(out)?;
     out.flush()
 }
 
-fn cmd_battery(json: bool) -> ExitCode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Text,
+    Json,
+    Waybar,
+}
+
+impl Format {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "text" => Some(Self::Text),
+            "json" => Some(Self::Json),
+            "waybar" => Some(Self::Waybar),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Output {
+    format: Format,
+    low_threshold: u8,
+}
+
+impl Output {
+    fn print(self, s: &Status) -> io::Result<()> {
+        match self.format {
+            Format::Text => print_human(s),
+            Format::Json => print_json(s),
+            Format::Waybar => print_json(&waybar::line(s, self.low_threshold)),
+        }
+    }
+}
+
+fn cmd_battery(output: Output) -> ExitCode {
     let status = poll();
-    let printed = if json {
-        print_json(&status)
-    } else {
-        print_human(&status)
-    };
-    if printed.is_err() {
+    if output.print(&status).is_err() {
         return ExitCode::FAILURE;
     }
     ExitCode::from(match status.state {
@@ -199,19 +235,14 @@ fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration
     wait
 }
 
-fn cmd_watch(interval: Duration, json: bool) -> ExitCode {
+fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
     let mut last_known: Option<Status> = None;
     let mut retry = ERROR_RETRY;
     loop {
         let mut status = poll();
         carry_over(&mut status, &mut last_known);
-        let printed = if json {
-            print_json(&status)
-        } else {
-            print_human(&status)
-        };
         // stdout closed: the bar (or pipe reader) went away, so stop.
-        if printed.is_err() {
+        if output.print(&status).is_err() {
             return ExitCode::SUCCESS;
         }
         thread::sleep(next_wait(status.state, interval, &mut retry));
@@ -254,11 +285,28 @@ fn main() -> ExitCode {
         _ => "battery".to_owned(),
     };
 
-    let mut json = false;
+    let mut output = Output {
+        format: Format::Text,
+        low_threshold: 20,
+    };
     let mut interval = Duration::from_secs(60);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--json" => json = true,
+            "--json" => output.format = Format::Json,
+            "--format" => match args.next().as_deref().and_then(Format::parse) {
+                Some(format) => output.format = format,
+                None => {
+                    eprintln!("--format needs one of: text, json, waybar");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--low-threshold" => match args.next().and_then(|v| v.parse::<u8>().ok()) {
+                Some(pct) if pct <= 100 => output.low_threshold = pct,
+                _ => {
+                    eprintln!("--low-threshold needs a percentage from 0 to 100");
+                    return ExitCode::FAILURE;
+                }
+            },
             "--interval" => match args.next().and_then(|v| v.parse::<u64>().ok()) {
                 Some(secs) if secs > 0 => interval = Duration::from_secs(secs),
                 _ => {
@@ -282,8 +330,8 @@ fn main() -> ExitCode {
     }
 
     match command.as_str() {
-        "battery" => cmd_battery(json),
-        "watch" => cmd_watch(interval, json),
+        "battery" => cmd_battery(output),
+        "watch" => cmd_watch(interval, output),
         "list" => cmd_list(),
         "help" => {
             print!("{USAGE}");
@@ -316,8 +364,9 @@ mod tests {
         }
     }
 
-    /// The Noctalia plugin reads these field names, expects snake_case states,
-    /// and treats missing fields as nil, so `None` must be omitted, not null.
+    /// The desktop widgets read these field names, expect snake_case states,
+    /// and treat missing fields as nil/undefined, so `None` must be omitted,
+    /// not null.
     #[test]
     fn json_matches_the_plugin_contract() {
         let json = serde_json::to_value(connected("Mouse", 80)).unwrap();
@@ -332,7 +381,7 @@ mod tests {
         assert_eq!(json.as_object().unwrap().len(), 2, "{json}");
     }
 
-    /// The plugin ships with this binary, so their versions move together.
+    /// The widgets ship with this binary, so their versions move together.
     #[test]
     fn plugin_version_matches_crate() {
         let manifest = include_str!("../noctalia/rog-mouse-battery/plugin.toml");
@@ -343,6 +392,29 @@ mod tests {
             .map(|v| v.trim().trim_matches('"'))
             .expect("plugin.toml has no version");
         assert_eq!(version, env!("CARGO_PKG_VERSION"), "update plugin.toml");
+
+        let json_manifests: [(&str, &str, &[&str]); 3] = [
+            (
+                "dms/RogMouseBattery/plugin.json",
+                include_str!("../dms/RogMouseBattery/plugin.json"),
+                &["version"],
+            ),
+            (
+                "kde/rog-mouse-battery/metadata.json",
+                include_str!("../kde/rog-mouse-battery/metadata.json"),
+                &["KPlugin", "Version"],
+            ),
+            (
+                "gnome/rog-mouse-battery@humblemonk.github.io/metadata.json",
+                include_str!("../gnome/rog-mouse-battery@humblemonk.github.io/metadata.json"),
+                &["version-name"],
+            ),
+        ];
+        for (path, text, keys) in json_manifests {
+            let json: serde_json::Value = serde_json::from_str(text).expect(path);
+            let version = keys.iter().fold(&json, |v, k| &v[k]);
+            assert_eq!(version, env!("CARGO_PKG_VERSION"), "update {path}");
+        }
     }
 
     #[test]

@@ -1,0 +1,12 @@
+/* Add to your Waybar style.css. The module gets one class for its state
+   (connected, asleep, error, disconnected), plus charging and low. */
+
+/* Asleep: the level shown is the last one read. */
+#custom-rog-mouse.asleep {
+  opacity: 0.5;
+}
+
+#custom-rog-mouse.low,
+#custom-rog-mouse.error {
+  color: #f38ba8;
+}

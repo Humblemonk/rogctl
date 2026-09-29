@@ -1,0 +1,10 @@
+{
+  "uuid": "rog-mouse-battery@humblemonk.github.io",
+  "name": "ASUS Mouse Battery",
+  "description": "Battery level for ASUS mice in the top bar. Needs rogctl installed: https://github.com/humblemonk/rogctl",
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
+  "url": "https://github.com/humblemonk/rogctl",
+  "settings-schema": "org.gnome.shell.extensions.rog-mouse-battery",
+  "gettext-domain": "rog-mouse-battery",
+  "version-name": "1.3.0"
+}
