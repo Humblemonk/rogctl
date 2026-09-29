@@ -1,6 +1,7 @@
 # rogctl
 
-Battery status for ASUS mice on Linux, plus a Noctalia bar widget.
+Battery status for ASUS mice on Linux, plus panel widgets for Noctalia, Waybar, Quickshell,
+DankMaterialShell, KDE Plasma and GNOME.
 
 rogctl supports 27 battery-powered ROG, TUF and ASUS mice, connected through their own
 receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. See
@@ -40,7 +41,7 @@ You need a Rust toolchain (`cargo`); most distributions package it as `rust` or 
 
    You should see the mouse's name and level, such as `ROG Chakram X: 80%`.
 
-5. **Optional: add the bar widget** if you use Noctalia. See [Noctalia widget](#noctalia-widget).
+5. **Optional: add a panel widget.** See [Desktop widgets](#desktop-widgets).
 
 ## Usage
 
@@ -48,8 +49,12 @@ You need a Rust toolchain (`cargo`); most distributions package it as `rust` or 
 rogctl                      # "<mouse name>: 80%", plus "(charging)" when charging
 rogctl --json               # one JSON status line
 rogctl watch --json         # a status line every 60 s (--interval SECS)
+rogctl watch --format waybar  # the same, as Waybar custom-module JSON
 rogctl list                 # detected devices and their /dev/hidraw nodes
 ```
+
+`--format` takes `text` (the default), `json` or `waybar`. With `waybar`, `--low-threshold PCT`
+(default 20, 0 to turn off) sets the level at which the module gets the `low` CSS class.
 
 `rogctl` exits 0 connected, 1 error, 2 no device, 3 mouse asleep. The mouse stops
 answering when it sleeps; `watch` keeps reporting the last level with `"state":"asleep"`.
@@ -63,7 +68,18 @@ answering when it sleeps; `watch` keeps reporting the last level with `"state":"
 - **`asleep or out of range`**: the mouse is off, asleep or too far from the receiver. Move it
   to wake it and run `rogctl` again.
 
-## Noctalia widget
+## Desktop widgets
+
+Each widget runs `rogctl` and shows the mouse's battery level in your panel or bar. It turns
+red at the low threshold (default 20%), is dimmed while the mouse sleeps (showing the last
+level read), and hides while no mouse is plugged in. All but Waybar also send a notification
+when the battery drops to the threshold. Run the commands below from your rogctl checkout.
+
+Widgets find `rogctl` on your desktop session's `PATH`, which may not include `~/.cargo/bin`.
+If a widget says rogctl wasn't found, set its **rogctl command** setting to the full path, such
+as `/home/you/.cargo/bin/rogctl`. For Waybar and Quickshell, edit the command in the config.
+
+### Noctalia
 
 ```sh
 ln -s "$PWD/noctalia/rog-mouse-battery" ~/.local/share/noctalia/plugins/rog-mouse-battery
@@ -77,10 +93,63 @@ Then add **ASUS Mouse Battery** from the bar's Add-widget picker, or in config:
 type = "humblemonk/rog-mouse-battery:battery"
 ```
 
-A background service runs `rogctl watch --json` and sends a notification when the battery
-drops to the low threshold (default 20%). The widget turns red at that level, is dimmed
-while the mouse sleeps, and re-reads the mouse when clicked. The refresh interval, threshold,
-icon and binary path are in the plugin and widget settings.
+Click the widget to read the mouse right away. The refresh interval, threshold, icon and
+binary path are in the plugin and widget settings.
+
+### Waybar
+
+Copy the `custom/rog-mouse` module from [`waybar/config.jsonc`](waybar/config.jsonc) into your
+Waybar config, add `"custom/rog-mouse"` to one of your `modules-*` lists, and append
+[`waybar/style.css`](waybar/style.css) to your `style.css`. The icons need a Nerd Font.
+
+The module gets a CSS class for the state (`connected`, `asleep`, `error`, `disconnected`),
+plus `charging` and `low`; `format-icons` is keyed by the same names. Waybar can't send
+notifications, so it only turns red.
+
+### Quickshell
+
+For a Quickshell config of your own. Copy both files next to your `shell.qml`:
+
+```sh
+cp quickshell/RogMouse.qml quickshell/RogMouseWidget.qml ~/.config/quickshell/
+```
+
+Then put `RogMouseWidget {}` in your bar. `RogMouse` is a singleton that runs one `rogctl` for
+every bar; its settings are at the top of `RogMouse.qml`. `RogMouseWidget.qml` is a minimal
+example (it needs a Nerd Font) to restyle, or build your own from `RogMouse.battery`,
+`RogMouse.charging`, `RogMouse.low` and `RogMouse.status`. Notifications use `notify-send`.
+
+### DankMaterialShell
+
+```sh
+ln -s "$PWD/dms/RogMouseBattery" ~/.config/DankMaterialShell/plugins/RogMouseBattery
+dms ipc plugin-scan scan
+```
+
+Enable **ASUS Mouse Battery** in Settings → Plugins, then add it to the bar. Click it for
+details, right-click to read the mouse right away. Notifications use `notify-send`.
+
+### KDE Plasma 6
+
+```sh
+kpackagetool6 --type Plasma/Applet --install kde/rog-mouse-battery
+```
+
+Use `--upgrade` instead of `--install` to update it. Then add **ASUS Mouse Battery** to a panel
+from Add Widgets. Click it for details, middle-click to read the mouse right away. Plasma
+widgets can't stream a command's output, so this one runs `rogctl battery` every refresh
+interval instead of `rogctl watch`.
+
+### GNOME
+
+```sh
+gnome-extensions pack --force gnome/rog-mouse-battery@humblemonk.github.io
+gnome-extensions install --force rog-mouse-battery@humblemonk.github.io.shell-extension.zip
+```
+
+Log out and back in, then turn on **ASUS Mouse Battery** in the Extensions app (or run
+`gnome-extensions enable rog-mouse-battery@humblemonk.github.io`). Its menu shows the details
+and has a Refresh item.
 
 ## Supported mice
 

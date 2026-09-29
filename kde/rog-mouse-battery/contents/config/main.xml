@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="binary" type="String">
+      <default>rogctl</default>
+    </entry>
+    <entry name="interval" type="Int">
+      <default>60</default>
+      <min>5</min>
+      <max>600</max>
+    </entry>
+    <entry name="lowThreshold" type="Int">
+      <default>20</default>
+      <min>0</min>
+      <max>100</max>
+    </entry>
+    <entry name="showPercent" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="hideWhenDisconnected" type="Bool">
+      <default>true</default>
+    </entry>
+  </group>
+</kcfg>

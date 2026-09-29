@@ -3,6 +3,10 @@
 # rustfmt backups
 **/*.rs.bk
 
+# GNOME extension build output (gnome-extensions pack, glib-compile-schemas)
+*.shell-extension.zip
+gnome/*/schemas/gschemas.compiled
+
 # Claude Code personal settings and notes (CLAUDE.md is shared)
 .claude/settings.local.json
 CLAUDE.local.md
