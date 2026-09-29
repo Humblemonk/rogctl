@@ -88,7 +88,8 @@ Derived from G-Helper's `app/Peripherals/Mouse/AsusMouse.cs`
   percentage, or a 0-4 level ×25 in byte 5 or 7 on older mice (`Battery::Quarters`). When
   `settings` is true, byte 6 = auto power-off code and 7 = low-battery warning %.
   `FF AA` at bytes 1-2 = rejected.
-- Battery `0` or an all-zero reply means the mouse is asleep or out of range, not empty.
+- Battery `0`, an all-zero reply, or `FF AA` from a receiver means the mouse is asleep or out
+  of range, not empty or broken.
 - `MODELS` in `src/models.rs` lists each way a mouse appears on USB (product ID, interface,
   report ID, packet size, battery format). Entries sharing a product ID are told apart by
   `Match`: the SpeedNova receiver (`1ad0`) by its USB product name, the Omni receiver
