@@ -1,6 +1,8 @@
 // Panel widget: reads `rogctl battery --json` every refresh interval. The
 // executable data engine only returns output once a command exits, so this
-// polls instead of streaming `rogctl watch`.
+// polls instead of streaming `rogctl watch`. That's also why it keeps the two
+// bits of state `rogctl watch` keeps for the other widgets: the last level
+// while the mouse sleeps, and whether the low-battery notification was sent.
 
 import QtQuick
 import QtQuick.Layouts
@@ -26,7 +28,8 @@ PlasmoidItem {
     // Not `state`: Item already has one, for QML states.
     readonly property string mouseState: status?.state ?? ""
     readonly property bool hasLevel: status?.battery !== undefined
-    readonly property bool low: hasLevel && !status.charging && lowThreshold > 0 && status.battery <= lowThreshold
+    // At or below the threshold and not charging; rogctl decides.
+    readonly property bool low: status?.low ?? false
     readonly property bool hidden: Plasmoid.configuration.hideWhenDisconnected && mouseState === "disconnected"
 
     // Solaar's wording, as in the other rogctl widgets.
@@ -75,7 +78,7 @@ PlasmoidItem {
     }
 
     function refresh() {
-        executable.connectSource(shellQuote(binary) + " battery --json");
+        executable.connectSource(shellQuote(binary) + " battery --json --low-threshold " + lowThreshold);
     }
 
     function handleOutput(exitCode, stdout) {
@@ -95,6 +98,7 @@ PlasmoidItem {
         if (s.state === "asleep" && s.battery === undefined && status?.device === s.device) {
             s.battery = status.battery;
             s.battery_updated = status.battery_updated;
+            s.low = status.low;
         }
         status = s;
         checkLowBattery(s);
@@ -104,12 +108,14 @@ PlasmoidItem {
         pollTimer.restart();
     }
 
+    // Once per drop to the threshold, re-armed by charging or climbing 5%
+    // above it, as `rogctl watch` decides for the other widgets.
     function checkLowBattery(s) {
         if (lowThreshold <= 0 || s.battery === undefined || s.state !== "connected")
             return;
         if (s.charging || s.battery > lowThreshold + 5) {
             lowNotified = false;
-        } else if (s.battery <= lowThreshold && !lowNotified) {
+        } else if (s.low && !lowNotified) {
             lowNotified = true;
             lowNotification.title = s.device || i18n("Mouse");
             lowNotification.text = i18n("Battery: %1% (%2)", s.battery, statusWord(s));
@@ -122,6 +128,7 @@ PlasmoidItem {
         pollTimer.restart();
     }
     onBinaryChanged: refresh()
+    onLowThresholdChanged: refresh()
     Component.onCompleted: refresh()
 
     // Set in handleOutput and onIntervalChanged, not bound: errors shorten it.

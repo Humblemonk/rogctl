@@ -1,8 +1,8 @@
 --!nonstrict
 -- Runs `rogctl watch --json` and publishes each status line to shared state
--- under "status" for the bar widget. Also sends the low-battery notification,
--- here rather than in the widget so it fires once no matter how many bars
--- show the widget.
+-- under "status" for the bar widget. Also sends the low-battery notification
+-- when rogctl flags one (`notify_low`), here rather than in the widget so it
+-- fires once no matter how many bars show the widget.
 
 local battery = require("./battery.luau")
 
@@ -10,20 +10,39 @@ local STATUS_KEY = "status"
 local REFRESH_KEY = "refresh"
 -- The stream's shell prints this, then rogctl's exit status, when rogctl exits.
 local EXIT_MARKER = "rog-mouse-battery:exited "
+-- How long to wait before starting rogctl again after it exits on its own.
+local RESTART_SECONDS = 10
 
 local streaming = false
 local lastStatus = nil
-local lowNotified = false
+-- The settings the running rogctl was started with.
+local streamSettings = nil
+-- Set while rogctl is being stopped to apply new settings.
+local restarting = false
+local exitedAt = 0
 
 local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
--- Always a whole number in the manifest's range: it goes into a shell command,
+-- Always whole numbers in the manifest's ranges: they go into a shell command,
 -- since runStream takes no argv array.
 local function interval()
   local secs = math.floor(tonumber(noctalia.getConfig("interval")) or 60)
   return math.clamp(secs, 5, 600)
+end
+
+local function lowThreshold()
+  local pct = math.floor(tonumber(noctalia.getConfig("low_threshold")) or 20)
+  return math.clamp(pct, 0, 100)
+end
+
+local function binaryName()
+  return noctalia.getConfig("binary") or "rogctl"
+end
+
+local function currentSettings()
+  return binaryName() .. "\n" .. tostring(interval()) .. "\n" .. tostring(lowThreshold())
 end
 
 local function publish(status)
@@ -36,38 +55,19 @@ local function publishError(message)
   publish({ state = "error", charging = false, error = message })
 end
 
-local function checkLowBattery(status)
-  local threshold = noctalia.getConfig("low_threshold") or 0
-  local level = status.battery
-  if threshold <= 0 or level == nil or status.state ~= "connected" then
-    return
-  end
-  if status.charging or level > threshold + 5 then
-    lowNotified = false
-  elseif level <= threshold and not lowNotified then
-    lowNotified = true
-    -- Solaar's format: the device name as the title, its battery line as the body.
-    noctalia.notify(status.device or noctalia.tr("tooltip.mouse"), battery.line(status))
-  end
-end
-
--- rogctl keeps the last level while the mouse sleeps, but a one-shot read
--- (click to refresh) starts fresh, so carry the level over here too.
-local function mergeAsleep(status)
-  if status.state == "asleep" and status.battery == nil and lastStatus ~= nil and lastStatus.device == status.device then
-    status.battery = lastStatus.battery
-    status.low_battery_warning = lastStatus.low_battery_warning
-    status.power_off_minutes = lastStatus.power_off_minutes
-    status.battery_updated = lastStatus.battery_updated
-  end
-  return status
-end
+-- Forward declaration: handleLine restarts the stream, startStream reads lines.
+local startStream
 
 local function handleLine(line)
   if line:sub(1, #EXIT_MARKER) == EXIT_MARKER then
     streaming = false
-    local binary = noctalia.getConfig("binary") or "rogctl"
-    publishError(noctalia.tr("error.exited", { binary = binary, code = line:sub(#EXIT_MARKER + 1) }))
+    if restarting then
+      restarting = false
+      startStream()
+      return
+    end
+    exitedAt = os.time()
+    publishError(noctalia.tr("error.exited", { binary = binaryName(), code = line:sub(#EXIT_MARKER + 1) }))
     return
   end
   local status, err = noctalia.json.decode(line)
@@ -75,12 +75,17 @@ local function handleLine(line)
     noctalia.log("rog-mouse-battery: bad line from rogctl: " .. tostring(err))
     return
   end
-  publish(mergeAsleep(status))
-  checkLowBattery(status)
+  publish(status)
+  if status.notify_low then
+    -- Solaar's format: the device name as the title, its battery line as the body.
+    noctalia.notify(status.device or noctalia.tr("tooltip.mouse"), battery.line(status))
+  end
 end
 
-local function startStream()
-  local binary = noctalia.getConfig("binary") or "rogctl"
+function startStream()
+  local binary = binaryName()
+  exitedAt = os.time()
+  streamSettings = currentSettings()
   if not noctalia.commandExists(binary) and not binary:find("/") then
     publishError(noctalia.tr("error.missing_binary", { binary = binary }))
     return
@@ -88,6 +93,8 @@ local function startStream()
   local script = shellQuote(binary)
     .. " watch --json --interval "
     .. tostring(interval())
+    .. " --low-threshold "
+    .. tostring(lowThreshold())
     .. "; echo "
     .. shellQuote(EXIT_MARKER)
     .. '"$?"'
@@ -99,30 +106,38 @@ local function startStream()
   end
 end
 
+-- SIGUSR1 makes the running rogctl read the mouse now; it reports its pid in
+-- each line since runStream doesn't.
 local function refreshNow()
-  local binary = noctalia.getConfig("binary") or "rogctl"
-  noctalia.runAsync({ binary, "battery", "--json" }, function(result)
-    local line = noctalia.string.trim(result.stdout or "")
-    if line ~= "" then
-      local status = noctalia.json.decode(line)
-      if type(status) == "table" then
-        publish(mergeAsleep(status))
-      end
-    end
-  end)
+  local pid = lastStatus and lastStatus.pid
+  if streaming and pid ~= nil then
+    noctalia.runAsync({ "kill", "-USR1", tostring(pid) })
+  end
 end
 
 noctalia.state.watch(REFRESH_KEY, function()
   refreshNow()
 end)
 
--- Restart rogctl once the exit marker says it has stopped. Silence alone isn't
--- enough: there's no way to stop a running stream, and rogctl's sleep pauses
--- across suspend, so restarting a quiet one would leave two running.
+-- Start rogctl again once the exit marker says it has stopped. Silence alone
+-- isn't enough: rogctl's sleep pauses across suspend, so restarting a quiet one
+-- would leave two running.
+--
+-- Noctalia has no settings-changed event and can't stop a stream, so this also
+-- polls the settings, and when they change stops rogctl itself (it reports its
+-- pid); the exit marker then starts it again with the new ones.
 function update()
-  noctalia.setUpdateInterval(10000)
+  noctalia.setUpdateInterval(2000)
   if not streaming then
-    startStream()
+    if os.time() - exitedAt >= RESTART_SECONDS then
+      startStream()
+    end
+  elseif not restarting and currentSettings() ~= streamSettings then
+    local pid = lastStatus and lastStatus.pid
+    if pid ~= nil then
+      restarting = true
+      noctalia.runAsync({ "kill", tostring(pid) })
+    end
   end
 end
 

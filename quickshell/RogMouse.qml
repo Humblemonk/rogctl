@@ -28,7 +28,8 @@ Singleton {
     readonly property int battery: status?.battery ?? -1
     readonly property bool charging: status?.charging ?? false
     readonly property bool connected: mouseState === "connected"
-    readonly property bool low: lowThreshold > 0 && battery >= 0 && !charging && battery <= lowThreshold
+    // At or below lowThreshold and not charging; rogctl decides.
+    readonly property bool low: status?.low ?? false
 
     // Solaar's wording, as in the other rogctl widgets.
     readonly property string batteryText: {
@@ -42,13 +43,14 @@ Singleton {
         return `${battery}% (${word})`;
     }
 
+    // Emitted once per drop to the threshold, when rogctl flags it.
     signal lowBattery
 
-    property bool _lowNotified: false
-
-    // Read the mouse now instead of waiting for the next interval.
+    // Read the mouse now instead of waiting for the next interval: SIGUSR1
+    // makes the running rogctl read it right away.
     function refresh() {
-        oneShot.running = true;
+        if (watcher.running && status?.pid)
+            Quickshell.execDetached(["kill", "-USR1", String(status.pid)]);
     }
 
     function _publish(line) {
@@ -59,23 +61,8 @@ Singleton {
             console.warn("RogMouse: bad line from rogctl:", line);
             return;
         }
-        // rogctl keeps the level while the mouse sleeps, but a one-shot read
-        // starts fresh, so carry it over here too.
-        if (s.state === "asleep" && s.battery === undefined && status?.device === s.device) {
-            s.battery = status.battery;
-            s.battery_updated = status.battery_updated;
-        }
         status = s;
-        _checkLow();
-    }
-
-    function _checkLow() {
-        if (lowThreshold <= 0 || !connected || battery < 0)
-            return;
-        if (charging || battery > lowThreshold + 5) {
-            _lowNotified = false;
-        } else if (battery <= lowThreshold && !_lowNotified) {
-            _lowNotified = true;
+        if (s.notify_low) {
             lowBattery();
             Quickshell.execDetached(["notify-send", "--icon=input-mouse", device || "Mouse", `Battery: ${batteryText}`]);
         }
@@ -83,7 +70,7 @@ Singleton {
 
     Process {
         id: watcher
-        command: [root.binary, "watch", "--json", "--interval", String(root.interval)]
+        command: [root.binary, "watch", "--json", "--interval", String(root.interval), "--low-threshold", String(root.lowThreshold)]
         running: true
         stdout: SplitParser {
             onRead: line => root._publish(line)
@@ -107,13 +94,5 @@ Singleton {
         id: restartTimer
         interval: 10000
         onTriggered: watcher.running = true
-    }
-
-    Process {
-        id: oneShot
-        command: [root.binary, "battery", "--json"]
-        stdout: SplitParser {
-            onRead: line => root._publish(line)
-        }
     }
 }

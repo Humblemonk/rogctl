@@ -4,8 +4,7 @@ mod waybar;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -23,10 +22,11 @@ Usage:
 Options:
   --json                 Same as --format json
   --format FORMAT        text (default), json, or waybar (a Waybar custom module)
-  --low-threshold PCT    Level at or below which --format waybar adds the low
-                         CSS class (default 20, 0 turns it off)
+  --low-threshold PCT    Level at or below which the battery counts as low
+                         (default 20, 0 turns it off)
 
 Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 mouse asleep.
+`watch` reads the mouse right away when sent SIGUSR1 (`kill -USR1 PID`).
 ";
 
 /// What the bar sees. `battery` stays at the last known level while the mouse
@@ -52,6 +52,20 @@ struct Status {
     /// Unix seconds when `battery` was last read from the mouse.
     #[serde(skip_serializing_if = "Option::is_none")]
     battery_updated: Option<u64>,
+    /// At or below `--low-threshold` and not charging.
+    #[serde(skip_serializing_if = "is_false")]
+    low: bool,
+    /// Set by `watch` on the one line where a low-battery notification is due.
+    #[serde(skip_serializing_if = "is_false")]
+    notify_low: bool,
+    /// The `watch` process, for sending it SIGUSR1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+}
+
+// serde's skip_serializing_if passes a reference.
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -76,6 +90,9 @@ impl Status {
             hidraw: None,
             error: None,
             battery_updated: None,
+            low: false,
+            notify_low: false,
+            pid: None,
         }
     }
 
@@ -184,13 +201,14 @@ impl Output {
         match self.format {
             Format::Text => print_human(s),
             Format::Json => print_json(s),
-            Format::Waybar => print_json(&waybar::line(s, self.low_threshold)),
+            Format::Waybar => print_json(&waybar::line(s)),
         }
     }
 }
 
 fn cmd_battery(output: Output) -> ExitCode {
-    let status = poll();
+    let mut status = poll();
+    status.low = is_low(&status, output.low_threshold);
     if output.print(&status).is_err() {
         return ExitCode::FAILURE;
     }
@@ -219,6 +237,75 @@ fn carry_over(status: &mut Status, last_known: &mut Option<Status>) {
     }
 }
 
+fn is_low(s: &Status, threshold: u8) -> bool {
+    threshold > 0 && !s.charging && s.battery.is_some_and(|b| b <= threshold)
+}
+
+/// Decides when the low-battery notification is due: once per drop to the
+/// threshold, and again only after charging or climbing 5% above it.
+#[derive(Debug, Default)]
+struct LowWarning {
+    notified: bool,
+}
+
+impl LowWarning {
+    fn update(&mut self, s: &mut Status, threshold: u8) {
+        s.low = is_low(s, threshold);
+        let Some(level) = s
+            .battery
+            .filter(|_| threshold > 0 && s.state == State::Connected)
+        else {
+            return;
+        };
+        if s.charging || level > threshold.saturating_add(5) {
+            self.notified = false;
+        } else if s.low && !self.notified {
+            self.notified = true;
+            s.notify_low = true;
+        }
+    }
+}
+
+/// Blocks SIGUSR1 so it can be waited for in `wait_or_refresh` rather than
+/// killing the process. Nothing else in rogctl uses signals, so blocking it for
+/// the whole (single-threaded) process is safe.
+fn block_refresh_signal() -> libc::sigset_t {
+    // SAFETY: plain libc calls on a local, zero-initialized sigset_t.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGUSR1);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        set
+    }
+}
+
+/// Sleeps for `wait`, returning early if SIGUSR1 arrives: a widget asking to
+/// read the mouse now. Several signals during one wait count as one.
+fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
+    let deadline = Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        let timeout = libc::timespec {
+            tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
+            tv_nsec: libc::c_long::from(left.subsec_nanos()),
+        };
+        // SAFETY: `set` is a valid sigset_t and `timeout` outlives the call.
+        let got = unsafe { libc::sigtimedwait(set, std::ptr::null_mut(), &timeout) };
+        if got == libc::SIGUSR1 {
+            return;
+        }
+        // EAGAIN means the time ran out; EINTR (another signal, e.g. SIGCONT)
+        // means keep waiting.
+        if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return;
+        }
+    }
+}
+
 /// First retry after an error. The receiver can reject a query for a moment,
 /// e.g. right after login, and the bar shouldn't show that for a whole interval.
 const ERROR_RETRY: Duration = Duration::from_secs(5);
@@ -236,16 +323,22 @@ fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration
 }
 
 fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
+    // Before the first line: a widget only learns the pid from that, and
+    // SIGUSR1 would kill the process until it's blocked.
+    let refresh = block_refresh_signal();
     let mut last_known: Option<Status> = None;
+    let mut low_warning = LowWarning::default();
     let mut retry = ERROR_RETRY;
     loop {
         let mut status = poll();
         carry_over(&mut status, &mut last_known);
+        low_warning.update(&mut status, output.low_threshold);
+        status.pid = Some(std::process::id());
         // stdout closed: the bar (or pipe reader) went away, so stop.
         if output.print(&status).is_err() {
             return ExitCode::SUCCESS;
         }
-        thread::sleep(next_wait(status.state, interval, &mut retry));
+        wait_or_refresh(&refresh, next_wait(status.state, interval, &mut retry));
     }
 }
 
@@ -377,8 +470,101 @@ mod tests {
         assert_eq!(json["battery_updated"], 1000);
         assert!(json.get("error").is_none());
 
+        assert!(json.get("low").is_none(), "false flags are left out");
+        assert!(json.get("notify_low").is_none());
+
+        let json = serde_json::to_value(Status {
+            low: true,
+            notify_low: true,
+            pid: Some(42),
+            ..connected("Mouse", 15)
+        })
+        .unwrap();
+        assert_eq!(json["low"], true);
+        assert_eq!(json["notify_low"], true);
+        assert_eq!(json["pid"], 42);
+
         let json = serde_json::to_value(Status::empty(State::Disconnected)).unwrap();
         assert_eq!(json.as_object().unwrap().len(), 2, "{json}");
+    }
+
+    fn with_charging(mut s: Status, charging: bool) -> Status {
+        s.charging = charging;
+        s
+    }
+
+    /// The (low, notify_low) pair `LowWarning` sets for each reading in turn.
+    fn low_warnings(
+        readings: impl IntoIterator<Item = Status>,
+        threshold: u8,
+    ) -> Vec<(bool, bool)> {
+        let mut warning = LowWarning::default();
+        readings
+            .into_iter()
+            .map(|mut s| {
+                warning.update(&mut s, threshold);
+                (s.low, s.notify_low)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn notifies_once_per_drop() {
+        let levels = [30, 20, 19, 22, 18, 26, 20];
+        let got = low_warnings(levels.map(|b| connected("Mouse", b)), 20);
+        assert_eq!(
+            got,
+            [
+                (false, false),
+                (true, true),   // reached the threshold
+                (true, false),  // still low: no repeat
+                (false, false), // 22 is within 5% of 20, still armed off
+                (true, false),
+                (false, false), // 26 re-arms
+                (true, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn charging_rearms_and_is_never_low() {
+        let readings = [
+            connected("Mouse", 15),
+            with_charging(connected("Mouse", 16), true),
+            connected("Mouse", 16),
+        ];
+        assert_eq!(
+            low_warnings(readings, 20),
+            [(true, true), (false, false), (true, true)]
+        );
+    }
+
+    #[test]
+    fn asleep_is_low_but_never_notifies() {
+        let mut sleeping = asleep("Mouse");
+        sleeping.battery = Some(10);
+        assert_eq!(low_warnings([sleeping.clone()], 20), [(true, false)]);
+        assert_eq!(
+            low_warnings([sleeping], 0),
+            [(false, false)],
+            "0 turns it off"
+        );
+    }
+
+    /// SIGUSR1 cuts the wait short. The signal goes to this thread only, so the
+    /// other test threads (which don't block it) can't be killed by it.
+    #[test]
+    fn sigusr1_ends_the_wait() {
+        let set = block_refresh_signal();
+        let start = Instant::now();
+        wait_or_refresh(&set, Duration::from_millis(50));
+        assert!(start.elapsed() >= Duration::from_millis(50));
+
+        // SAFETY: signals this thread, which has SIGUSR1 blocked.
+        unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGUSR1) };
+        let start = Instant::now();
+        wait_or_refresh(&set, Duration::from_secs(10));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     /// The widgets ship with this binary, so their versions move together.

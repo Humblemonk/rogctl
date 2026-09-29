@@ -1,6 +1,7 @@
 // Runs `rogctl watch --json` and publishes each status line as the "status"
-// global var for the bar widgets. Also sends the low-battery notification,
-// here rather than in the widget so it fires once however many bars show it.
+// global var for the bar widgets. Also sends the low-battery notification
+// when rogctl flags one (`notify_low`), here rather than in the widget so it
+// fires once however many bars show it.
 
 import QtQuick
 import Quickshell
@@ -19,11 +20,11 @@ PluginComponent {
     readonly property int lowThreshold: pluginData.lowThreshold ?? 20
 
     property var lastStatus: null
-    property bool lowNotified: false
     property bool restarting: false
 
     onBinaryChanged: restart()
     onIntervalChanged: restart()
+    onLowThresholdChanged: restart()
 
     function tr(text) {
         return I18n.trFor("rogMouseBattery", text);
@@ -57,32 +58,14 @@ PluginComponent {
             console.warn("rogMouseBattery: bad line from rogctl:", line);
             return;
         }
-        // rogctl keeps the level while the mouse sleeps, but a one-shot read
-        // (the widget's refresh) starts fresh, so carry it over here too.
-        if (status.state === "asleep" && status.battery === undefined && lastStatus?.device === status.device) {
-            status.battery = lastStatus.battery;
-            status.low_battery_warning = lastStatus.low_battery_warning;
-            status.power_off_minutes = lastStatus.power_off_minutes;
-            status.battery_updated = lastStatus.battery_updated;
-        }
         publish(status);
-        checkLowBattery(status);
-    }
-
-    function checkLowBattery(s) {
-        if (lowThreshold <= 0 || s.battery === undefined || s.state !== "connected")
-            return;
-        if (s.charging || s.battery > lowThreshold + 5) {
-            lowNotified = false;
-        } else if (s.battery <= lowThreshold && !lowNotified) {
-            lowNotified = true;
-            Quickshell.execDetached(["notify-send", "-a", "rogctl", "-i", "input-mouse", s.device || tr("Mouse"), tr("Battery: %1% (%2)").arg(s.battery).arg(statusWord(s))]);
-        }
+        if (status.notify_low)
+            Quickshell.execDetached(["notify-send", "-a", "rogctl", "-i", "input-mouse", status.device || tr("Mouse"), tr("Battery: %1% (%2)").arg(status.battery).arg(statusWord(status))]);
     }
 
     Process {
         id: watcher
-        command: [root.binary, "watch", "--json", "--interval", String(root.interval)]
+        command: [root.binary, "watch", "--json", "--interval", String(root.interval), "--low-threshold", String(root.lowThreshold)]
         running: true
         stdout: SplitParser {
             onRead: line => root.handleLine(line)
@@ -114,20 +97,13 @@ PluginComponent {
         }
     }
 
-    Process {
-        id: oneShot
-        command: [root.binary, "battery", "--json"]
-        stdout: SplitParser {
-            onRead: line => root.handleLine(line)
-        }
-    }
-
-    // The widget asks for a fresh reading by setting "refresh".
+    // The widget asks for a fresh reading by setting "refresh". SIGUSR1 makes
+    // the running rogctl read the mouse right away.
     Connections {
         target: PluginService
         function onGlobalVarChanged(changedId, varName) {
-            if (changedId === root.pluginId && varName === "refresh" && !oneShot.running)
-                oneShot.running = true;
+            if (changedId === root.pluginId && varName === "refresh" && watcher.running && root.lastStatus?.pid)
+                Quickshell.execDetached(["kill", "-USR1", String(root.lastStatus.pid)]);
         }
     }
 }

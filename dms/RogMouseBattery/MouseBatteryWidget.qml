@@ -26,10 +26,8 @@ PluginComponent {
     readonly property var status: statusVar.value
     readonly property bool showPercent: pluginData.showPercent ?? true
     readonly property bool hideWhenDisconnected: pluginData.hideWhenDisconnected ?? true
-    readonly property int lowThreshold: pluginData.lowThreshold ?? 20
-
-    readonly property bool low: status !== null && status.battery !== undefined && !status.charging
-        && lowThreshold > 0 && status.battery <= lowThreshold
+    // At or below the threshold and not charging; rogctl decides.
+    readonly property bool low: status?.low ?? false
     // Material Symbols names.
     readonly property string iconName: {
         if (status?.state === "error" || status?.state === "disconnected")
