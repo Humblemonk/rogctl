@@ -1,10 +1,7 @@
-// Add "custom/rog-mouse" to modules-left, modules-center or modules-right,
-// and this module to your Waybar config. The icons need a Nerd Font.
 {
   "custom/rog-mouse": {
     "exec": "rogctl watch --format waybar --interval 60 --low-threshold 20",
     "return-type": "json",
-    // Start rogctl again 10 s after it exits, e.g. if it wasn't on PATH yet.
     "restart-interval": 10,
     "format": "{icon} {text}",
     "format-icons": {

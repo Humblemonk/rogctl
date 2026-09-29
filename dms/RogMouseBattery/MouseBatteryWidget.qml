@@ -5,7 +5,6 @@ import QtQuick
 import qs.Common
 import qs.Widgets
 import qs.Modules.Plugins
-import "battery.js" as Battery
 
 PluginComponent {
     id: root
@@ -31,7 +30,12 @@ PluginComponent {
 
     readonly property bool low: status !== null && status.battery !== undefined && !status.charging
         && lowThreshold > 0 && status.battery <= lowThreshold
-    readonly property string iconName: status ? Battery.icon(status) : "mouse"
+    // Material Symbols names.
+    readonly property string iconName: {
+        if (status?.state === "error" || status?.state === "disconnected")
+            return "error";
+        return status?.charging ? "battery_charging_full" : "mouse";
+    }
     readonly property string percentText: status?.battery !== undefined && showPercent ? `${status.battery}%` : ""
     readonly property color contentColor: {
         if (status?.state === "error" || low)
@@ -47,6 +51,21 @@ PluginComponent {
 
     function tr(text) {
         return I18n.trFor("rogMouseBattery", text);
+    }
+
+    // Solaar's status words: discharging, recharging, full.
+    function statusWord(s) {
+        if (s.charging && s.battery === 100)
+            return tr("full");
+        return s.charging ? tr("recharging") : tr("discharging");
+    }
+
+    // "79% (discharging)"; "(offline)" replaces the status while the mouse sleeps.
+    function batteryValue(s) {
+        if (s.battery === undefined)
+            return s.state === "disconnected" ? tr("unknown") : tr("offline");
+        const word = s.state === "connected" ? statusWord(s) : tr("offline");
+        return tr("%1% (%2)").arg(s.battery).arg(word);
     }
 
     function refresh() {
@@ -109,7 +128,7 @@ PluginComponent {
                     return root.tr("Waiting for rogctl…");
                 if (s.state === "error")
                     return `${root.tr("Error")}: ${s.error || ""}`;
-                return `${root.tr("Battery")}: ${Battery.value(s, root.tr)}`;
+                return `${root.tr("Battery")}: ${root.batteryValue(s)}`;
             }
 
             DankButton {

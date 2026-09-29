@@ -98,9 +98,11 @@ binary path are in the plugin and widget settings.
 
 ### Waybar
 
-Copy the `custom/rog-mouse` module from [`waybar/config.jsonc`](waybar/config.jsonc) into your
+Copy the `custom/rog-mouse` module from [`waybar/config.json`](waybar/config.json) into your
 Waybar config, add `"custom/rog-mouse"` to one of your `modules-*` lists, and append
 [`waybar/style.css`](waybar/style.css) to your `style.css`. The icons need a Nerd Font.
+`restart-interval` starts `rogctl` again 10 seconds after it exits, such as when it wasn't on
+`PATH` yet.
 
 The module gets a CSS class for the state (`connected`, `asleep`, `error`, `disconnected`),
 plus `charging` and `low`; `format-icons` is keyed by the same names. Waybar can't send

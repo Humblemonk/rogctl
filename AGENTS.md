@@ -120,15 +120,15 @@ Noctalia plugin docs: <https://docs.noctalia.dev/noctalia/plugins/development/>.
 
 ## The other widgets
 
-Hardware-verified end to end so far: Noctalia only. The Waybar output is unit-tested and was
+Hardware-verified end-to-end so far: Noctalia only. The Waybar output is unit-tested and was
 run against a real mouse; the Quickshell, DMS, Plasma and GNOME frontends have been checked for
 syntax only. Say so when a change depends on their runtime behavior.
 
-- **Waybar**: `waybar/config.jsonc` runs `rogctl watch --format waybar`. Waybar hides a custom
+- **Waybar**: `waybar/config.json` runs `rogctl watch --format waybar`. Waybar hides a custom
   module whose `text` is empty, which is how "disconnected" hides it.
 - **Quickshell**: no plugin system; users copy the two `.qml` files into their config.
   Reference: <https://quickshell.org/docs/>.
-- **DankMaterialShell**: plugin docs are in the DMS repo under
+- **DankMaterialShell**: plugin docs are in the DMS repository under
   `.agents/skills/dms-plugin-dev/` and `quickshell/PLUGINS/`
   (<https://github.com/AvengeMedia/DankMaterialShell>). The daemon is the only surface that runs
   `rogctl`; widgets on every bar read the `status` global var and ask for a re-read by setting

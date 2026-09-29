@@ -8,7 +8,6 @@ import Quickshell.Io
 import qs.Common
 import qs.Services
 import qs.Modules.Plugins
-import "battery.js" as Battery
 
 PluginComponent {
     id: root
@@ -28,6 +27,13 @@ PluginComponent {
 
     function tr(text) {
         return I18n.trFor("rogMouseBattery", text);
+    }
+
+    // Solaar's status words: discharging, recharging, full.
+    function statusWord(s) {
+        if (s.charging && s.battery === 100)
+            return tr("full");
+        return s.charging ? tr("recharging") : tr("discharging");
     }
 
     function restart() {
@@ -70,7 +76,7 @@ PluginComponent {
             lowNotified = false;
         } else if (s.battery <= lowThreshold && !lowNotified) {
             lowNotified = true;
-            Quickshell.execDetached(["notify-send", "-a", "rogctl", "-i", "input-mouse", s.device || tr("Mouse"), Battery.line(s, tr)]);
+            Quickshell.execDetached(["notify-send", "-a", "rogctl", "-i", "input-mouse", s.device || tr("Mouse"), tr("Battery: %1% (%2)").arg(s.battery).arg(statusWord(s))]);
         }
     }
 

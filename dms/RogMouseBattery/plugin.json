@@ -1,18 +1,18 @@
 {
-    "id": "rogMouseBattery",
-    "name": "ASUS Mouse Battery",
-    "description": "Battery level for ASUS mice, read through rogctl.",
-    "version": "1.2.0",
-    "author": "humblemonk",
-    "type": "composite",
-    "capabilities": ["daemon", "dankbar-widget"],
-    "icon": "mouse",
-    "components": {
-        "daemon": "./MouseBatteryDaemon.qml",
-        "widget": "./MouseBatteryWidget.qml"
-    },
-    "settings": "./Settings.qml",
-    "requires_dms": ">=1.5.0",
-    "dependencies": ["rogctl"],
-    "permissions": ["settings_read", "settings_write", "process"]
+  "id": "rogMouseBattery",
+  "name": "ASUS Mouse Battery",
+  "description": "Battery level for ASUS mice, read through rogctl.",
+  "version": "1.3.0",
+  "author": "humblemonk",
+  "type": "composite",
+  "capabilities": ["daemon", "dankbar-widget"],
+  "icon": "mouse",
+  "components": {
+    "daemon": "./MouseBatteryDaemon.qml",
+    "widget": "./MouseBatteryWidget.qml"
+  },
+  "settings": "./Settings.qml",
+  "requires_dms": ">=1.5.0",
+  "dependencies": ["rogctl"],
+  "permissions": ["settings_read", "settings_write", "process"]
 }
