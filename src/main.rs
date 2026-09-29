@@ -126,9 +126,8 @@ fn poll() -> Status {
                     ..Status::for_device(State::Connected, dev)
                 };
             }
-            Ok(_) | Err(QueryError::Empty | QueryError::Timeout) => {
-                Status::for_device(State::Asleep, dev)
-            }
+            Ok(_) => Status::for_device(State::Asleep, dev),
+            Err(e) if is_asleep(&e, dev.model.wireless) => Status::for_device(State::Asleep, dev),
             Err(e) => Status {
                 error: Some(format!("{}: {e}", dev.hidraw.display())),
                 ..Status::for_device(State::Error, dev)
@@ -140,6 +139,17 @@ fn poll() -> Status {
         }
     }
     fallback.unwrap_or_else(|| Status::empty(State::Disconnected))
+}
+
+/// Whether a failed read means the mouse is asleep or out of range rather than
+/// broken. A receiver answers for a sleeping mouse with an empty reply, no
+/// reply, or a rejection (`FF AA`); over a cable a rejection is a real error.
+fn is_asleep(e: &QueryError, wireless: bool) -> bool {
+    match e {
+        QueryError::Empty | QueryError::Timeout => true,
+        QueryError::Rejected => wireless,
+        QueryError::Io(_) => false,
+    }
 }
 
 fn now() -> u64 {
@@ -306,14 +316,15 @@ fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
     }
 }
 
-/// First retry after an error. The receiver can reject a query for a moment,
-/// e.g. right after login, and the bar shouldn't show that for a whole interval.
+/// First retry after an error or while asleep. The receiver can reject a query
+/// for a moment, e.g. right after login, and a mouse that just woke shouldn't
+/// wait a whole interval to show its level.
 const ERROR_RETRY: Duration = Duration::from_secs(5);
 
-/// How long to wait before the next poll: the interval, or after errors a
-/// retry that doubles each time up to the interval.
+/// How long to wait before the next poll: the interval, or after errors and
+/// while asleep a retry that doubles each time up to the interval.
 fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration {
-    if state != State::Error {
+    if !matches!(state, State::Error | State::Asleep) {
         *retry = ERROR_RETRY;
         return interval;
     }
@@ -625,11 +636,29 @@ mod tests {
         assert_eq!(waits, [5, 10, 20, 40, 60, 60]);
 
         assert_eq!(next_wait(State::Connected, interval, &mut retry), interval);
-        assert_eq!(next_wait(State::Error, interval, &mut retry), ERROR_RETRY);
+        assert_eq!(next_wait(State::Asleep, interval, &mut retry), ERROR_RETRY);
+        assert_eq!(
+            next_wait(State::Error, interval, &mut retry),
+            2 * ERROR_RETRY
+        );
+        assert_eq!(
+            next_wait(State::Disconnected, interval, &mut retry),
+            interval
+        );
 
         // Never waits longer than a short interval.
         let short = Duration::from_secs(2);
         assert_eq!(next_wait(State::Error, short, &mut retry), short);
+    }
+
+    #[test]
+    fn receiver_rejection_means_asleep() {
+        assert!(is_asleep(&QueryError::Rejected, true));
+        assert!(!is_asleep(&QueryError::Rejected, false));
+        assert!(is_asleep(&QueryError::Empty, false));
+        assert!(is_asleep(&QueryError::Timeout, true));
+        let io = io::Error::from(io::ErrorKind::BrokenPipe);
+        assert!(!is_asleep(&QueryError::Io(io), true));
     }
 
     #[test]
