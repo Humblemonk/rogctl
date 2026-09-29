@@ -1,5 +1,5 @@
 // Top-bar indicator: runs `rogctl watch --json` and shows each status line.
-// Also sends the low-battery notification.
+// Also sends the low-battery notification when rogctl flags one.
 
 import Clutter from "gi://Clutter";
 import GLib from "gi://GLib";
@@ -17,6 +17,7 @@ import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 
 // Start rogctl again this long after it exits, e.g. if it wasn't on PATH yet.
 const RESTART_SECONDS = 10;
+const SIGUSR1 = 10;
 const SIGTERM = 15;
 
 // Solaar's status words: discharging, recharging, full.
@@ -50,7 +51,6 @@ const Indicator = GObject.registerClass(
       this._extension = extension;
       this._settings = extension.getSettings();
       this._status = null;
-      this._lowNotified = false;
       this._proc = null;
       this._restartId = 0;
       this._cancellable = new Gio.Cancellable();
@@ -79,7 +79,7 @@ const Indicator = GObject.registerClass(
         this._settings.connect("changed::binary", () => this._restart()),
         this._settings.connect("changed::interval", () => this._restart()),
         this._settings.connect("changed::show-percent", () => this._render()),
-        this._settings.connect("changed::low-threshold", () => this._render()),
+        this._settings.connect("changed::low-threshold", () => this._restart()),
         this._settings.connect("changed::hide-when-disconnected", () =>
           this._render(),
         ),
@@ -100,6 +100,8 @@ const Indicator = GObject.registerClass(
         "--json",
         "--interval",
         String(this._settings.get_int("interval")),
+        "--low-threshold",
+        String(this._settings.get_int("low-threshold")),
       ];
       let proc;
       try {
@@ -191,29 +193,10 @@ const Indicator = GObject.registerClass(
       this._startWatch();
     }
 
-    // Read the mouse now instead of waiting for the next interval.
+    // Read the mouse now instead of waiting for the next interval: SIGUSR1
+    // makes the running rogctl read it right away.
     _refresh() {
-      let proc;
-      try {
-        proc = Gio.Subprocess.new(
-          [this._binary, "battery", "--json"],
-          Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE,
-        );
-      } catch (e) {
-        this._publishError(
-          _("Could not start %s: %s").format(this._binary, e.message),
-        );
-        return;
-      }
-      proc.communicate_utf8_async(null, this._cancellable, (p, res) => {
-        let stdout;
-        try {
-          [, stdout] = p.communicate_utf8_finish(res);
-        } catch {
-          return;
-        }
-        if (stdout?.trim()) this._handleLine(stdout.trim());
-      });
+      this._proc?.send_signal(SIGUSR1);
     }
 
     _handleLine(line) {
@@ -224,40 +207,20 @@ const Indicator = GObject.registerClass(
         console.warn(`rog-mouse-battery: bad line from rogctl: ${line}`);
         return;
       }
-      // rogctl keeps the level while the mouse sleeps, but a one-shot read
-      // (Refresh) starts fresh, so carry it over here too.
-      if (
-        s.state === "asleep" &&
-        s.battery === undefined &&
-        this._status?.device === s.device
-      ) {
-        s.battery = this._status.battery;
-        s.battery_updated = this._status.battery_updated;
-      }
       this._status = s;
-      this._checkLowBattery(s);
-      this._render();
-    }
-
-    _publishError(message) {
-      this._status = { state: "error", charging: false, error: message };
-      this._render();
-    }
-
-    _checkLowBattery(s) {
-      const threshold = this._settings.get_int("low-threshold");
-      if (threshold <= 0 || s.battery === undefined || s.state !== "connected")
-        return;
-      if (s.charging || s.battery > threshold + 5) {
-        this._lowNotified = false;
-      } else if (s.battery <= threshold && !this._lowNotified) {
-        this._lowNotified = true;
+      if (s.notify_low) {
         // Solaar's format: the device name as the title, its battery line as the body.
         Main.notify(
           s.device || _("Mouse"),
           _("Battery: %d%% (%s)").format(s.battery, statusWord(s)),
         );
       }
+      this._render();
+    }
+
+    _publishError(message) {
+      this._status = { state: "error", charging: false, error: message };
+      this._render();
     }
 
     _render() {
@@ -280,14 +243,8 @@ const Indicator = GObject.registerClass(
           ? `${s.battery}%`
           : "";
 
-      const threshold = this._settings.get_int("low-threshold");
-      const low =
-        s.battery !== undefined &&
-        !s.charging &&
-        threshold > 0 &&
-        s.battery <= threshold;
       for (const [name, on] of [
-        ["low", low],
+        ["low", s.low],
         ["error", s.state === "error"],
       ]) {
         const cls = `rog-mouse-battery-${name}`;

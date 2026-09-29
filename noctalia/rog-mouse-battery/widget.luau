@@ -50,10 +50,8 @@ local function render()
   end
   barWidget.setText(text)
 
-  local threshold = noctalia.getConfig("low_threshold") or 0
-  local low = s.battery ~= nil and not s.charging and threshold > 0 and s.battery <= threshold
   local color
-  if s.state == "error" or low then
+  if s.state == "error" or s.low then
     color = "error"
   elseif s.state ~= "connected" then
     -- Asleep or gone: the level shown is the last one read.

@@ -54,10 +54,18 @@ Try the CLI without installing: `cargo run -- --json`, `cargo run -- list`,
   are omitted (not `null`); the widgets treat a missing field as `nil`/`undefined`. If you
   add, rename or remove a field, update all the widgets in the same change (grep for the
   field name under `noctalia/ quickshell/ dms/ kde/ gnome/`), and `src/waybar.rs`.
+- Put shared widget logic in `rogctl`, not in each frontend. `watch` already keeps the last
+  level while the mouse sleeps, sets `low` (and `notify_low` on the one line a notification
+  is due: once per drop, re-armed by charging or rising 5% above the threshold), reports its
+  `pid`, and re-reads the mouse on SIGUSR1. Widgets pass `--low-threshold`, restart `rogctl`
+  when the binary, interval or threshold setting changes, and send SIGUSR1 to refresh.
+  Noctalia has no settings-changed event and can't stop a stream, so its service polls the
+  settings in `update()` and stops `rogctl` by its `pid`; the exit marker restarts it. The
+  exception is the Plasma widget: it polls one-shot `rogctl battery`, so it keeps its own
+  sleeping-level and notified-once state.
 - Keep the widgets alike: the same settings (binary, interval, low threshold, show percent,
   hide when disconnected) with the same defaults, Solaar's battery wording
-  ("Battery: 79% (discharging)"), red at the threshold, dimmed while asleep, a notification
-  once per drop below the threshold (re-armed when charging or 5% above it), and restarting
+  ("Battery: 79% (discharging)"), red when `low`, dimmed while asleep, and restarting
   `rogctl` 10 s after it exits.
 - `rogctl battery` exit codes are documented (0 connected, 1 error, 2 no device, 3 asleep);
   keep them stable.

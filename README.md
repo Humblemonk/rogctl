@@ -53,11 +53,16 @@ rogctl watch --format waybar  # the same, as Waybar custom-module JSON
 rogctl list                 # detected devices and their /dev/hidraw nodes
 ```
 
-`--format` takes `text` (the default), `json` or `waybar`. With `waybar`, `--low-threshold PCT`
-(default 20, 0 to turn off) sets the level at which the module gets the `low` CSS class.
+`--format` takes `text` (the default), `json` or `waybar`. `--low-threshold PCT` (default 20,
+0 to turn off) sets the level at which the battery counts as low: JSON gets `"low":true` and
+Waybar the `low` CSS class.
 
 `rogctl` exits 0 connected, 1 error, 2 no device, 3 mouse asleep. The mouse stops
 answering when it sleeps; `watch` keeps reporting the last level with `"state":"asleep"`.
+
+`watch --json` also adds `"notify_low":true` to the one line where the battery first drops to
+the threshold (again only after charging or rising 5% above it), and its `"pid"`. Send that
+process `SIGUSR1` (`kill -USR1 PID`) to read the mouse right away.
 
 ## Troubleshooting
 
