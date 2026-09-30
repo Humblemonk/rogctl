@@ -45,7 +45,7 @@ CI also runs super-linter on changed files. jscpd allows 3% duplication, SonarQu
 quality gate (`.github/linters/.jscpd.json`): fix a clone with a shared helper rather than
 raising it.
 textlint checks Markdown wording: its terminology rule wants a lowercase "readme" outside
-file names.
+filenames.
 
 Try it without installing: `cargo run -- --json`, `cargo run -- list`,
 `cargo run -- watch --interval 2 --json`, and without a mouse `cargo run -- tui --demo` (or
