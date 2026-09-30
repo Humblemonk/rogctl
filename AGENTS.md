@@ -29,7 +29,7 @@ each widget is a thin frontend over its JSON output. Prefer the simple, obvious 
 | `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
 | `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json` (Plasma polls `rogctl battery --json`) |
 | `udev/70-rogctl.rules` | Grants the logged-in user hidraw access |
-| `README.md`, `docs/cli.md` | End-user docs; commands, exit codes and JSON fields for scripts |
+| `README.md`, `docs/cli.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
 
 ## Commands
 
