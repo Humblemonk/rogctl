@@ -12,23 +12,24 @@ per-model differences, capturing unknown commands), `tui.md` for `app.rs`/`ui.rs
 ## Project
 
 `rogctl` reads the battery level of ASUS mice (every battery-powered mouse G-Helper supports)
-on Linux over `/dev/hidraw`, and ships panel widgets that display it. `rogctl tui` reads and
-changes the mouse's settings. Treat all supported mice alike: don't special-case one model in
-docs, UI text or defaults. The CLI is the only thing that talks to the mouse; each widget is
-a thin frontend over its JSON output. Prefer the simple, obvious solution.
+on Linux over `/dev/hidraw`, and ships panel widgets that display it. `rogctl settings`
+reads and changes the mouse's settings. Treat all supported mice alike: don't special-case
+one model in docs, UI text or defaults. The CLI is the only thing that talks to the mouse;
+each widget is a thin frontend over its JSON output. Prefer the simple, obvious solution.
 
 | Path | What |
 |------|------|
 | `src/device.rs` | Discovery (sysfs, Omni pairing) and hidraw I/O: `Connection` sends a request, waits for its reply |
 | `src/protocol.rs` | Every byte sent or parsed: requests, reply parsers, `Features` (what a model has) |
 | `src/models.rs` | `MODELS`: supported mice and their `Features`, transcribed from G-Helper |
-| `src/main.rs` | CLI (`battery`, `watch`, `list`, `tui`), JSON status output |
+| `src/main.rs` | CLI (`battery`, `watch`, `list`, `settings`), JSON status output |
 | `src/waybar.rs` | `--format waybar`: the status as Waybar custom-module JSON |
 | `src/app.rs` | TUI state and key handling (`Control`, `Value`, `Action`); no I/O |
 | `src/ui.rs` | TUI rendering with ratatui |
 | `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
 | `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json` (Plasma polls `rogctl battery --json`) |
 | `udev/70-rogctl.rules` | Grants the logged-in user hidraw access |
+| `README.md`, `docs/cli.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
 
 ## Commands
 
@@ -48,8 +49,8 @@ textlint checks Markdown wording: its terminology rule wants a lowercase "readme
 filenames.
 
 Try it without installing: `cargo run -- --json`, `cargo run -- list`,
-`cargo run -- watch --interval 2 --json`, and without a mouse `cargo run -- tui --demo` (or
-`--demo "ROG Chakram"`, any name in `MODELS`).
+`cargo run -- watch --interval 2 --json`, and without a mouse
+`cargo run -- settings --demo` (or `--demo "ROG Chakram"`, any name in `MODELS`).
 
 ## Conventions
 
@@ -96,7 +97,7 @@ Control flow for a change: key → `App::handle_key()` → `Action` → `tui::ap
 | New model or `Features` change | `features_are_consistent()`; the demo tests cover every model |
 | Key handling, focus, edits | `app.rs` tests on a demo `App` |
 | Rendering | `ui.rs` tests with ratatui's `TestBackend` |
-| Terminal setup, `main()` argument parsing | No tests; try `cargo run -- tui --demo` |
+| Terminal setup, `main()` argument parsing | No tests; try `cargo run -- settings --demo` |
 
 Tests that need a mouse can't run in CI; keep protocol parsing in pure functions.
 
@@ -113,9 +114,9 @@ Tests that need a mouse can't run in CI; keep protocol parsing in pure functions
 
 - **Never change the user's mouse without being asked for that exact change.** Settings
   changes (`51 …` and `50 …` packets) persist on the device. Reads (`12 …`, `01 A0`) are
-  fine. `rogctl tui` against the real mouse only reads until Enter or Space is pressed or a
-  selected row is clicked, so an agent driving it may send navigation keys and `q` but never
-  Enter, Space or mouse clicks. Test changes with `--demo` and unit tests.
+  fine. `rogctl settings` against the real mouse only reads until Enter or Space is pressed
+  or a selected row is clicked, so an agent driving it may send navigation keys and `q` but
+  never Enter, Space or mouse clicks. Test changes with `--demo` and unit tests.
 - **Don't change the user's system without asking first.** This includes `cargo install`,
   creating the plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
   `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, installing or

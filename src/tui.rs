@@ -1,4 +1,4 @@
-//! `rogctl tui`: the terminal, the event loop, and [`apply_action`], the only
+//! `rogctl settings`: the terminal, the event loop, and [`apply_action`], the only
 //! place that changes a mouse's settings.
 
 use std::io::{self, IsTerminal};
@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{self, DisableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::{Command, ExecutableCommand};
 
 use crate::app::{self, Action, App, Link};
-use crate::device::{self, Device, QueryError};
+use crate::device::{self, ApplyError, Device, QueryError};
 use crate::models::MODELS;
 use crate::protocol::{MouseSettings, Reading};
 use crate::ui;
@@ -22,6 +22,9 @@ const TICK: Duration = Duration::from_millis(250);
 const PRESENCE_CHECK: Duration = Duration::from_secs(2);
 /// How often to try a sleeping mouse again, as `watch` does after an error.
 const ASLEEP_RETRY: Duration = Duration::from_secs(5);
+/// How often to read the battery for the header while the mouse is connected,
+/// so a cable being plugged in shows as charging.
+const BATTERY_POLL: Duration = Duration::from_secs(10);
 
 /// `demo`: `Some` runs without a mouse, as the named model or the default.
 pub fn run(demo: Option<Option<String>>) -> ExitCode {
@@ -46,7 +49,7 @@ pub fn run(demo: Option<Option<String>>) -> ExitCode {
         None => None,
     };
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        eprintln!("rogctl tui needs a terminal");
+        eprintln!("rogctl settings needs a terminal");
         return ExitCode::FAILURE;
     }
 
@@ -58,14 +61,14 @@ pub fn run(demo: Option<Option<String>>) -> ExitCode {
             app.show(Some(model), Link::Connected, Some(reading), settings);
             app.devices = 1;
         }
-        None => session.load(&mut app, None),
+        None => session.load(&mut app, &[]),
     }
 
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(e) => {
             ratatui::restore();
-            eprintln!("rogctl tui couldn't set up the terminal: {e}");
+            eprintln!("rogctl settings couldn't set up the terminal: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -83,7 +86,7 @@ pub fn run(demo: Option<Option<String>>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("rogctl tui: {e}");
+            eprintln!("rogctl settings: {e}");
             ExitCode::FAILURE
         }
     }
@@ -147,7 +150,7 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
         Action::Refresh if app.demo => app.ok("Demo: nothing to read"),
         Action::Refresh => {
             let current = session.current_path();
-            session.load(app, current);
+            session.load(app, current.as_slice());
             if app.link == Link::Connected {
                 app.ok("Read the settings again");
             }
@@ -181,10 +184,13 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
             session.show_outcome(app, outcome);
             match applied {
                 Ok(()) => app.ok(done),
-                Err(e) if e.means_asleep(dev.model.wireless) => {
+                Err(ApplyError::NotChanged(e)) if e.means_asleep(dev.model.wireless) => {
                     app.error(format!("No change made: the mouse didn't answer ({e})"));
                 }
-                Err(e) => app.error(format!("No change made: {e}")),
+                Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
+                Err(ApplyError::NotSaved(e)) => {
+                    app.error(format!("{done}, but not saved on the mouse: {e}"));
+                }
             }
         }
     }
@@ -197,8 +203,7 @@ enum Outcome {
 
 fn read(conn: &mut device::Connection) -> Result<Outcome, QueryError> {
     let reading = conn.read_battery()?;
-    // As G-Helper does: a receiver whose mouse sleeps reports 0%.
-    if reading.battery == 0 && !reading.charging {
+    if reading.is_asleep() {
         return Ok(Outcome::Asleep);
     }
     let settings = conn.read_settings(&reading)?;
@@ -208,8 +213,11 @@ fn read(conn: &mut device::Connection) -> Result<Outcome, QueryError> {
 #[derive(Default)]
 struct Session {
     devices: Vec<Device>,
+    /// `device::candidate_nodes()` as of the last load, to notice a change.
+    nodes: Vec<PathBuf>,
     current: usize,
     last_check: Option<Instant>,
+    last_battery: Option<Instant>,
 }
 
 impl Session {
@@ -220,23 +228,25 @@ impl Session {
     /// Finds the mice and shows the first one that answers, trying `prefer`
     /// first. With both the cable and the receiver plugged in, usually only
     /// one has live data.
-    fn load(&mut self, app: &mut App, prefer: Option<PathBuf>) {
+    fn load(&mut self, app: &mut App, prefer: &[PathBuf]) {
+        // Nodes first: one plugged in between the two is caught next tick.
+        self.nodes = device::candidate_nodes();
         self.devices = device::discover();
         self.last_check = Some(Instant::now());
+        self.last_battery = self.last_check;
         app.devices = self.devices.len();
         if self.devices.is_empty() {
             app.show(None, Link::Disconnected, None, MouseSettings::default());
             return;
         }
+        // `prefer` first, in its order; the rest keep theirs.
         let mut order: Vec<usize> = (0..self.devices.len()).collect();
-        if let Some(i) = self
-            .devices
-            .iter()
-            .position(|d| Some(&d.hidraw) == prefer.as_ref())
-        {
-            order.retain(|&j| j != i);
-            order.insert(0, i);
-        }
+        order.sort_by_key(|&i| {
+            prefer
+                .iter()
+                .position(|p| *p == self.devices[i].hidraw)
+                .unwrap_or(usize::MAX)
+        });
         let mut fallback: Option<(usize, Result<Outcome, QueryError>)> = None;
         for i in order {
             let outcome = self.devices[i]
@@ -292,9 +302,34 @@ impl Session {
         }
     }
 
-    /// Notices a mouse being unplugged, plugged in or waking up. Only looks at
-    /// sysfs, except to read a mouse that was missing or asleep.
+    /// Reads the battery again for the header, keeping the settings and any
+    /// pending edit.
+    fn read_battery(&mut self, app: &mut App) {
+        self.last_battery = Some(Instant::now());
+        let Some(dev) = self.devices.get(self.current) else {
+            return;
+        };
+        match dev.read_battery() {
+            Ok(reading) if !reading.is_asleep() => app.reading = Some(reading),
+            Ok(_) => self.show_outcome(app, Ok(Outcome::Asleep)),
+            Err(e) if e.means_asleep(dev.model.wireless) => self.show_outcome(app, Err(e)),
+            // A missed read isn't worth losing the screen over; the next retries.
+            Err(_) => {}
+        }
+    }
+
+    /// Keeps the battery current and notices a mouse being unplugged, plugged
+    /// in or waking up. Besides the battery, only looks at sysfs, except to
+    /// read the mice again when that changes, or when the mouse was missing or
+    /// asleep.
     fn tick(&mut self, app: &mut App) {
+        if app.link == Link::Connected
+            && self
+                .last_battery
+                .is_none_or(|t| t.elapsed() >= BATTERY_POLL)
+        {
+            self.read_battery(app);
+        }
         let wait = match app.link {
             Link::Asleep => ASLEEP_RETRY,
             Link::Connected | Link::Disconnected | Link::Error(_) => PRESENCE_CHECK,
@@ -303,12 +338,20 @@ impl Session {
             return;
         }
         self.last_check = Some(Instant::now());
-        let current = self.current_path();
+        let nodes = device::candidate_nodes();
+        let changed = nodes != self.nodes;
+        // Show what was just plugged in (the cable, say) if it answers, then
+        // the mouse already shown.
+        let mut prefer: Vec<PathBuf> = nodes
+            .into_iter()
+            .filter(|n| !self.nodes.contains(n))
+            .collect();
+        prefer.extend(self.current_path());
         match app.link {
-            Link::Disconnected | Link::Asleep => self.load(app, current),
+            Link::Disconnected | Link::Asleep => self.load(app, &prefer),
             Link::Connected | Link::Error(_) => {
-                if current.is_none_or(|p| !p.exists()) {
-                    self.load(app, None);
+                if changed {
+                    self.load(app, &prefer);
                 }
             }
         }

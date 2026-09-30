@@ -14,7 +14,7 @@
 
   "battery.line": "Battery: {percent}% ({status})",
   "battery.discharging": "discharging",
-  "battery.recharging": "recharging",
+  "battery.charging": "charging",
   "battery.full": "full",
   "battery.value": "{percent}% ({status})",
   "battery.offline": "offline",

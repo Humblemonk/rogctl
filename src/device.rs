@@ -56,47 +56,76 @@ pub struct Device {
     pub hidraw: PathBuf,
 }
 
+/// A hidraw node whose product ID and interface are in `MODELS`.
+struct Candidate {
+    sys: PathBuf,
+    hidraw: PathBuf,
+    pid: u16,
+    interface: u8,
+}
+
+/// Reads sysfs only; sends nothing.
+fn candidates() -> Vec<Candidate> {
+    let Ok(entries) = fs::read_dir("/sys/class/hidraw") else {
+        return Vec::new();
+    };
+    let mut found: Vec<Candidate> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let sys = entry.path();
+            let (_, pid) = hid_ids(&sys).filter(|&(vid, _)| vid == ASUS_VID)?;
+            let interface = interface_number(&sys)?;
+            let known = MODELS
+                .iter()
+                .any(|m| m.pid == pid && m.interface == interface);
+            known.then(|| Candidate {
+                sys,
+                hidraw: Path::new("/dev").join(entry.file_name()),
+                pid,
+                interface,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| a.hidraw.cmp(&b.hidraw));
+    found
+}
+
+/// The nodes `discover` looks at, found from sysfs alone: cheap enough to
+/// poll for mice being plugged in or out.
+pub fn candidate_nodes() -> Vec<PathBuf> {
+    candidates().into_iter().map(|c| c.hidraw).collect()
+}
+
 /// Finds connected supported mice, in `MODELS` order.
 pub fn discover() -> Vec<Device> {
     let mut found: Vec<Device> = Vec::new();
-    let Ok(entries) = fs::read_dir("/sys/class/hidraw") else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let sys = entry.path();
-        let Some((vid, pid)) = hid_ids(&sys) else {
-            continue;
-        };
-        if vid != ASUS_VID {
-            continue;
-        }
-        let Some(interface) = interface_number(&sys) else {
-            continue;
-        };
-        if !MODELS
-            .iter()
-            .any(|m| m.pid == pid && m.interface == interface)
-        {
-            continue;
-        }
-        let hidraw = Path::new("/dev").join(entry.file_name());
-        let model = if pid == OMNI_PID {
-            omni_model(omni_paired(&hidraw))
+    for c in candidates() {
+        let model = if c.pid == OMNI_PID {
+            omni_model(omni_paired(&c.hidraw))
         } else {
-            select_model(pid, interface, &usb_product(&sys).unwrap_or_default(), &[])
+            let product = usb_product(&c.sys).unwrap_or_default();
+            select_model(c.pid, c.interface, &product, &[])
         };
         if let Some(model) = model {
-            found.push(Device { model, hidraw });
+            found.push(Device {
+                model,
+                hidraw: c.hidraw,
+            });
         }
     }
-    // OMNI_RECEIVER isn't in MODELS; it goes last.
-    found.sort_by_key(|d| {
-        MODELS
-            .iter()
-            .position(|m| std::ptr::eq(m, d.model))
-            .unwrap_or(usize::MAX)
-    });
+    found.sort_by_key(|d| rank(d.model));
     found
+}
+
+/// Where `model` is in `MODELS`. OMNI_RECEIVER isn't there; it goes last.
+/// Found by value: a `const` has no one address to compare, and each entry's
+/// product ID, interface and name together are unique (`entries_are_unambiguous`).
+fn rank(model: &Model) -> usize {
+    let key = |m: &Model| (m.pid, m.interface, m.name);
+    MODELS
+        .iter()
+        .position(|m| key(m) == key(model))
+        .unwrap_or(usize::MAX)
 }
 
 /// Picks the model for an Omni receiver from its pairing reply. If the
@@ -270,14 +299,25 @@ impl Connection {
 
     /// Changes one setting and saves it on the mouse. The only code that
     /// writes settings; only `tui::apply_action` calls it.
-    pub fn apply(&mut self, change: &Change) -> Result<(), QueryError> {
+    pub fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
         let model = self.model;
         let request = protocol::change_request(model.report_id, &model.features, change)
-            .ok_or(QueryError::Unsupported)?;
-        self.exchange(&request)?;
-        self.exchange(&protocol::save_request(model.report_id))?;
+            .ok_or(ApplyError::NotChanged(QueryError::Unsupported))?;
+        self.exchange(&request).map_err(ApplyError::NotChanged)?;
+        self.exchange(&protocol::save_request(model.report_id))
+            .map_err(ApplyError::NotSaved)?;
         Ok(())
     }
+}
+
+/// Which step of [`Connection::apply`] failed.
+#[derive(Debug)]
+pub enum ApplyError {
+    /// The mouse didn't take the change.
+    NotChanged(QueryError),
+    /// The mouse took the change but didn't save it, so it's lost when the
+    /// mouse turns off.
+    NotSaved(QueryError),
 }
 
 fn open(hidraw: &Path) -> io::Result<File> {
@@ -377,6 +417,15 @@ mod tests {
         assert_eq!(parse(extreme), parse(ace));
     }
 
+    /// `discover` lists the receiver before the cable, as `MODELS` does.
+    #[test]
+    fn devices_sort_in_models_order() {
+        let receiver = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let cable = select_model(0x1c69, 0, "", &[]).unwrap();
+        assert!(rank(receiver) < rank(cable));
+        assert!(rank(cable) < rank(&OMNI_RECEIVER));
+    }
+
     #[test]
     fn identifies_omni_mouse_by_paired_id() {
         // A keyboard (unknown ID) paired first, then a Harpe Ace Mini.
@@ -430,6 +479,34 @@ mod tests {
         let start = Instant::now();
         assert!(matches!(read(&mut file), Err(QueryError::Timeout)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A mouse that echoes the change but never answers the save: the change
+    /// went through, so the TUI mustn't say none was made.
+    #[test]
+    fn apply_reports_a_change_that_was_not_saved() {
+        use std::os::unix::net::UnixDatagram;
+
+        let (mouse, ours) = UnixDatagram::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let model = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let mut conn = Connection {
+            model,
+            file: File::from(std::os::fd::OwnedFd::from(ours)),
+        };
+        let fake = std::thread::spawn(move || {
+            let mut packet = [0u8; MAX_PACKET];
+            let n = mouse.recv(&mut packet).unwrap();
+            mouse.send(&packet[..n]).unwrap();
+            mouse.recv(&mut packet).unwrap();
+            mouse // kept open so the save times out rather than failing
+        });
+        let result = conn.apply(&Change::MotionSync(true));
+        fake.join().unwrap();
+        assert!(
+            matches!(result, Err(ApplyError::NotSaved(QueryError::Timeout))),
+            "{result:?}"
+        );
     }
 
     #[test]

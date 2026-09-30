@@ -60,8 +60,8 @@ fn state_name(state: State) -> &'static str {
     }
 }
 
-/// Solaar's wording, as in the Noctalia widget: "Battery: 79% (discharging)",
-/// with "(offline)" while the mouse sleeps.
+/// The widgets' wording: "Battery: 79% (discharging)", with "(offline)"
+/// while the mouse sleeps.
 fn tooltip(s: &Status) -> String {
     let device = escape(s.device.unwrap_or("Mouse"));
     let detail = match s.state {
@@ -71,14 +71,11 @@ fn tooltip(s: &Status) -> String {
             Some(pct) => format!("Battery: {pct}% (offline)"),
             None => "Battery: offline".to_owned(),
         },
-        State::Connected => {
-            let word = match (s.charging, s.battery) {
-                (true, Some(100)) => "full",
-                (true, _) => "recharging",
-                (false, _) => "discharging",
-            };
-            format!("Battery: {}% ({word})", s.battery.unwrap_or(0))
-        }
+        State::Connected => format!(
+            "Battery: {}% ({})",
+            s.battery.unwrap_or(0),
+            super::charge_word(s.charging, s.battery)
+        ),
     };
     format!("{device}\n{detail}")
 }
@@ -123,7 +120,7 @@ mod tests {
         let l = line(&status(State::Connected, Some(20), true));
         assert_eq!(l.alt, "charging");
         assert_eq!(l.class, ["connected", "charging"]);
-        assert_eq!(l.tooltip, "ROG Harpe II Ace\nBattery: 20% (recharging)");
+        assert_eq!(l.tooltip, "ROG Harpe II Ace\nBattery: 20% (charging)");
     }
 
     #[test]

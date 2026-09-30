@@ -11,7 +11,7 @@
     "Id": "com.github.humblemonk.rogmousebattery",
     "License": "AGPL-3.0-or-later",
     "Name": "ASUS Mouse Battery",
-    "Version": "2.0.0",
+    "Version": "2.1.0",
     "Website": "https://github.com/humblemonk/rogctl"
   },
   "KPackageStructure": "Plasma/Applet",

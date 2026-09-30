@@ -345,13 +345,21 @@ impl std::fmt::Display for PowerOff {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
-    /// Percent. 0 means the mouse is asleep or out of range: the receiver
-    /// still answers, but with no data.
+    /// Percent. 0 can mean the mouse is asleep: see [`Reading::is_asleep`].
     pub battery: u8,
     pub charging: bool,
     pub power_off: Option<PowerOff>,
     /// Percent.
     pub low_battery_warning: Option<u8>,
+}
+
+impl Reading {
+    /// As G-Helper decides: a receiver whose mouse sleeps or is out of range
+    /// still answers, with 0% and not charging. An empty mouse on its cable
+    /// reports 0% while charging.
+    pub fn is_asleep(&self) -> bool {
+        self.battery == 0 && !self.charging
+    }
 }
 
 /// A mouse's settings as last read. `None` or empty: the mouse doesn't have it.
@@ -786,6 +794,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_and_charging_is_not_asleep() {
+        let f = features("ROG Harpe II Ace", true);
+        let read = |bytes: &[u8]| parse_battery(Battery::Percent, f, &reply(bytes)).unwrap();
+        assert!(read(&[0x03, 0x12, 0x07, 0, 0, 0]).is_asleep());
+        assert!(!read(&[0x03, 0x12, 0x07, 0, 0, 0, 0, 0, 0, 0, 0x01]).is_asleep());
+        assert!(!read(&[0x03, 0x12, 0x07, 0, 0, 0x01]).is_asleep());
+    }
+
+    #[test]
     fn clamps_out_of_range_quarters() {
         let r = reply(&[0x00, 0x12, 0x07, 0, 0, 0x09]);
         let f = features("ROG Chakram", true);
@@ -883,6 +900,76 @@ mod tests {
         assert_eq!(s.angle_tuning, Some(-5));
         assert_eq!(s.motion_sync, Some(true));
         assert_eq!(s.lift_off, Some(LiftOff::High));
+    }
+
+    /// Captured from a Harpe II Ace on its cable in wired mode (`0b05:1c69`),
+    /// read-only while `rogctl settings` read it. The node has report ID 0, which
+    /// hidraw leaves out, so each capture starts at byte 1 here, where
+    /// `read_packet` puts it. Every byte after these was 0.
+    #[test]
+    fn reads_harpe_ii_ace_over_its_cable() {
+        let captured = |hex: &str| {
+            let mut buf = [0u8; 66];
+            for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
+                let pair = std::str::from_utf8(pair).unwrap();
+                buf[i + 1] = u8::from_str_radix(pair, 16).unwrap();
+            }
+            buf
+        };
+        let f = features("ROG Harpe II Ace", false);
+
+        let battery = captured("120700002f0214eb0f010000000000000000000000");
+        let reading = parse_battery(Battery::Percent, f, &battery).unwrap();
+        assert_eq!(reading.battery, 47);
+        assert!(reading.charging);
+        assert_eq!(reading.power_off.and_then(PowerOff::minutes), Some(3));
+        assert_eq!(reading.low_battery_warning, Some(20));
+
+        let mut s = MouseSettings::default();
+        for (query, hex) in [
+            (Query::Profile, "120000001700080005070003ffff000000000400"),
+            (Query::XyDpi, "12040200070007000f000f00170017003f003f00"),
+            (Query::DpiColors, "12040300ff0000ff00ff0000ff00ff0000000000"),
+            (Query::Config, "12040000ffffffffffffffff6306020000000000"),
+            (
+                Query::MotionSync,
+                "1204040000000000000000000000000000000000",
+            ),
+            (Query::LiftOff, "1206000000ffff00000000000000000000000000"),
+            (
+                Query::PowerSaving,
+                "1215000000030000000000000000000000000000",
+            ),
+        ] {
+            let reply = captured(hex);
+            assert!(query.request(0).answered_by(&reply), "{query:?}");
+            parse_settings(query, f, &reply, &mut s);
+        }
+        let dpis: Vec<u32> = s.stages.iter().map(|st| st.dpi).collect();
+        assert_eq!(dpis, [400, 800, 1200, 3200]);
+        let colors: Vec<_> = s.stages.iter().map(|st| st.color).collect();
+        assert_eq!(
+            colors,
+            [
+                Some([0xff, 0, 0]),
+                Some([0xff, 0, 0xff]),
+                Some([0, 0, 0xff]),
+                Some([0, 0xff, 0])
+            ]
+        );
+        assert_eq!(s.active_stage, Some(2));
+        assert_eq!(s.polling_rate, Some(PollingRate::HZ_1000), "0x63");
+        assert_eq!(s.angle_snapping, Some(false));
+        assert_eq!(s.angle_tuning, Some(0));
+        assert_eq!(s.motion_sync, Some(false));
+        assert_eq!(s.lift_off, Some(LiftOff::Low));
+        assert_eq!(
+            s.power_saving,
+            Some(PowerSaving {
+                on: false,
+                rate: PollingRate::HZ_1000
+            })
+        );
     }
 
     /// Mice without X/Y DPI keep 2-byte stages in the main page, ahead of the
