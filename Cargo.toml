@@ -2,7 +2,7 @@
 name = "rogctl"
 version = "1.3.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "rogctl - Battery status for ASUS mice on Linux"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Humblemonk/rogctl"
