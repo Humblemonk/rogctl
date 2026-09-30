@@ -611,6 +611,9 @@ mod tests {
                 assert_eq!(t.max % t.step, 0, "{}", m.name);
             }
             if let Some(w) = f.low_battery_warning {
+                // Both go in one command: without a power-off byte to read
+                // back, changing the warning would send "never".
+                assert!(f.power_off.is_some(), "{}", m.name);
                 assert_eq!(w.max % w.step, 0, "{}", m.name);
                 assert!(!w.quarters || w.step % 25 == 0, "{}", m.name);
             }

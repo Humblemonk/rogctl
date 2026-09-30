@@ -853,10 +853,11 @@ mod tests {
         parse_settings(Query::XyDpi, f, &xy, &mut s);
         let colors = reply_with(Query::DpiColors, 3, &[(5, &[0xff, 0, 0, 0, 0xff, 0])]);
         parse_settings(Query::DpiColors, f, &colors, &mut s);
+        // This mouse sets the rate byte's high bits: 0x63 is 1000 Hz.
         let config = reply_with(
             Query::Config,
             3,
-            &[(13, &[0x03]), (17, &[0x01]), (19, &(-5i16).to_le_bytes())],
+            &[(13, &[0x63]), (17, &[0x01]), (19, &(-5i16).to_le_bytes())],
         );
         parse_settings(Query::Config, f, &config, &mut s);
         parse_settings(
@@ -1144,6 +1145,37 @@ mod tests {
             }),
             [0, 0x51, 0x37, 0, 0, 2, 0, 2]
         );
+
+        // No warning setting: its byte stays 0.
+        let f = features("ROG Strix Carry", true);
+        let r = change_request(
+            0,
+            f,
+            &Change::Energy {
+                power_off: PowerOff::from_code(1),
+                low_battery_warning: 20,
+            },
+        );
+        assert_eq!(r.unwrap().bytes(), [0, 0x51, 0x37, 0, 0, 1, 0, 0]);
+    }
+
+    /// Standard-layout debounce, and DPI on a mouse without stage colours.
+    #[test]
+    fn builds_chakram_changes() {
+        let f = features("ROG Chakram", true);
+        let bytes = |c: Change| change_request(0, f, &c).unwrap().bytes().to_vec();
+        assert_eq!(
+            bytes(Change::Debounce(Debounce::MAX)),
+            [0, 0x51, 0x31, 0x05, 0, 7]
+        );
+        // 800 DPI = (7 + 1) * 100; a colour, if any, isn't sent.
+        let dpi = |color| Change::StageDpi {
+            stage: 1,
+            dpi: 800,
+            color,
+        };
+        assert_eq!(bytes(dpi(None)), [0, 0x51, 0x31, 0x01, 0, 7, 0]);
+        assert_eq!(bytes(dpi(Some([1, 2, 3]))), [0, 0x51, 0x31, 0x01, 0, 7, 0]);
     }
 
     #[test]
@@ -1166,6 +1198,21 @@ mod tests {
         assert_eq!(raw(1_000_000), 839, "clamped to 42000");
         assert_eq!(raw(1624), 31, "rounded to 1600");
         assert_eq!(raw(1625), 32, "rounded to 1650");
+
+        let bytes = |c: Change| change_request(3, f, &c).unwrap().bytes().to_vec();
+        assert_eq!(
+            bytes(Change::AngleTuning(-90)),
+            [3, 0x51, 0x31, 0x0b, 0, 0xec, 0xff],
+            "clamped to -20"
+        );
+        assert_eq!(
+            bytes(Change::Energy {
+                power_off: PowerOff::NEVER,
+                low_battery_warning: 90
+            }),
+            [3, 0x51, 0x37, 0, 0, 0xff, 0, 50],
+            "clamped to 50%"
+        );
 
         let none = |c: Change| change_request(3, f, &c);
         assert_eq!(none(Change::Debounce(Debounce::MIN)), None, "no debounce");
