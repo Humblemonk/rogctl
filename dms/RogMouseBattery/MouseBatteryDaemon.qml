@@ -30,11 +30,12 @@ PluginComponent {
         return I18n.trFor("rogMouseBattery", text);
     }
 
-    // Solaar's status words: discharging, recharging, full.
+    // Status words as the kernel and desktops use them: discharging, charging,
+    // full. Solaar says "recharging"; rogctl doesn't.
     function statusWord(s) {
         if (s.charging && s.battery === 100)
             return tr("full");
-        return s.charging ? tr("recharging") : tr("discharging");
+        return s.charging ? tr("charging") : tr("discharging");
     }
 
     function restart() {

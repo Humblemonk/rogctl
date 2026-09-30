@@ -1,6 +1,6 @@
 id           = "humblemonk/rog-mouse-battery"
 name         = "ASUS Mouse Battery"
-version      = "2.0.0"
+version      = "2.1.0"
 plugin_api   = 24
 author       = "humblemonk"
 license      = "AGPL-3.0-or-later"

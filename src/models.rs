@@ -583,6 +583,8 @@ mod tests {
                         b.name,
                         a.pid
                     );
+                    // `device::rank` tells entries apart by these three.
+                    assert_ne!(a.name, b.name, "{:04x}", a.pid);
                 }
             }
         }

@@ -63,10 +63,16 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 
 ## Verification and captures
 
-- Hardware-verified: one mouse on the SpeedNova receiver (`0b05:1ad0`): battery and settings
-  reads, and the user's own tests of every change in `rogctl tui`. Everything else is
-  transcribed and untested; say so when a change depends on it. G-Helper was wrong about
-  the Harpe II lift-off, so its values for similar mice may be too.
+- Hardware-verified: one mouse, a Harpe II Ace. On the SpeedNova receiver (`0b05:1ad0`):
+  battery and settings reads, and the user's own tests of every change in
+  `rogctl settings`. On its cable in wired mode (`0b05:1c69` interface 0, report ID 0,
+  64-byte packets): found and read in `rogctl settings` (battery and settings); changes over
+  the cable are untested. With the receiver plugged in, the cable only charges until the
+  mouse's mode button is set to wired; then the receiver answers `FF AA` (so, asleep) and the
+  cable's replies match the receiver's byte for byte after the report ID
+  (`reads_harpe_ii_ace_over_its_cable`).
+- Everything else is transcribed and untested; say so when a change depends on it. G-Helper
+  was wrong about the Harpe II lift-off, so its values for similar mice may be too.
 - Put parsing in pure functions and test it with captured byte arrays. A real SpeedNova
   battery reply: `03 12 07 00 00 50 02 14 d8 0f 00 00 01 …` → 80%, not charging, 3 min,
   warn at 20%.

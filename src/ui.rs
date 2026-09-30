@@ -87,6 +87,11 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
         };
         frame.render_widget(Paragraph::new(line), message);
     }
+    // The keys can outgrow MAX_WIDTH (Tab, the version); they may use it all.
+    let footer = Rect {
+        width: frame.area().width,
+        ..footer
+    };
     frame.render_widget(Paragraph::new(footer_line(app)), footer);
     if app.help {
         draw_help(frame, area);
@@ -118,15 +123,20 @@ fn header_line(app: &App) -> Line<'static> {
         None => spans.push(Span::styled("rogctl", BOLD)),
     }
     if let (Link::Connected, Some(r)) = (&app.link, app.reading) {
-        let state = if r.charging {
-            "charging"
-        } else {
-            "discharging"
-        };
+        let word = crate::charge_word(r.charging, Some(r.battery));
+        // Red at or below the mouse's own warning level (0 is off), as the
+        // widgets are at theirs.
+        let low = !r.charging
+            && app
+                .settings
+                .low_battery_warning
+                .is_some_and(|warn| warn > 0 && r.battery <= warn);
         spans.push(Span::styled(
-            format!("  Battery: {}% ({state})", r.battery),
-            MUTED,
+            format!("  Battery: {}%", r.battery),
+            if low { ACCENT } else { Style::new().fg(TEXT) },
         ));
+        // Detail in parentheses is grey, like "(wireless)".
+        spans.push(Span::styled(format!(" ({word})"), MUTED));
     }
     if app.demo {
         spans.push(Span::styled("  [demo]", ACCENT));
@@ -151,6 +161,8 @@ fn footer_line(app: &App) -> Line<'static> {
         spans.push(Span::styled(key, BOLD));
         spans.push(Span::styled(format!(" {what}  "), MUTED));
     }
+    // Short enough that the footer still fits 80 columns with one mouse.
+    spans.push(Span::styled(concat!("v", env!("CARGO_PKG_VERSION")), MUTED));
     Line::from(spans)
 }
 
@@ -585,6 +597,77 @@ mod tests {
         app.settings.power_off = Some(crate::protocol::PowerOff::from_code(9));
         let screen = render(&app, 80, 24);
         assert!(screen.contains("Unknown (0x09)"), "{screen}");
+    }
+
+    /// The header's battery is white, in the widgets' words; the word in
+    /// parentheses is grey, like "(wireless)".
+    #[test]
+    fn header_battery_reads_like_the_widgets() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        let header = |app: &App| render(app, 80, 24).lines().next().unwrap().to_owned();
+        let buffer = draw_to_buffer(&app, 80, 24);
+        let x = (0..80).find(|&x| buffer[(x, 0)].symbol() == "B").unwrap();
+        assert_eq!(buffer[(x, 0)].fg, TEXT);
+        let parens: Vec<u16> = (0..80)
+            .filter(|&x| buffer[(x, 0)].symbol() == "(")
+            .collect();
+        assert_eq!(parens.len(), 2, "(wireless) and (discharging)");
+        for x in parens {
+            assert_eq!(buffer[(x, 0)].fg, GREY);
+        }
+
+        for (battery, word) in [(80, "charging"), (100, "full")] {
+            app.reading = app.reading.map(|r| crate::protocol::Reading {
+                battery,
+                charging: true,
+                ..r
+            });
+            let expected = format!("Battery: {battery}% ({word})");
+            assert!(header(&app).contains(&expected), "{}", header(&app));
+        }
+    }
+
+    /// The version ends the footer and fits 80 columns; with Tab too, the
+    /// footer uses a wider terminal rather than being cut at MAX_WIDTH.
+    #[test]
+    fn footer_ends_with_the_version() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        let footer = |app: &App, width| render(app, width, 24).lines().last().unwrap().to_owned();
+        assert!(footer(&app, 80).ends_with(version), "{}", footer(&app, 80));
+        app.devices = 2;
+        let wide = footer(&app, 120);
+        assert!(
+            wide.contains("Tab next mouse") && wide.ends_with(version),
+            "{wide}"
+        );
+    }
+
+    /// Red at or below the mouse's warning level, unless charging or the
+    /// warning is off. The demo warns at 20%.
+    #[test]
+    fn header_battery_is_red_when_low() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        let color = |app: &App, battery, charging| {
+            let mut app_at = App::new(true);
+            let reading = app.reading.map(|r| crate::protocol::Reading {
+                battery,
+                charging,
+                ..r
+            });
+            app_at.show(app.model, Link::Connected, reading, app.settings.clone());
+            let buffer = draw_to_buffer(&app_at, 80, 24);
+            let x = (0..80).find(|&x| buffer[(x, 0)].symbol() == "B").unwrap();
+            buffer[(x, 0)].fg
+        };
+        assert_eq!(color(&app, 21, false), TEXT);
+        assert_eq!(color(&app, 20, false), RED);
+        assert_eq!(color(&app, 20, true), TEXT, "charging");
+        app.settings.low_battery_warning = Some(0);
+        assert_eq!(color(&app, 5, false), TEXT, "warning off");
     }
 
     /// The focused row is a red band across the whole panel; others aren't.

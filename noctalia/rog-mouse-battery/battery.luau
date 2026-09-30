@@ -4,12 +4,13 @@
 
 local M = {}
 
--- Solaar's status words: discharging, recharging, full.
+-- Status words as the kernel and desktops use them: discharging, charging,
+-- full. Solaar says "recharging"; rogctl doesn't.
 function M.statusWord(s)
   if s.charging and s.battery == 100 then
     return noctalia.tr("battery.full")
   elseif s.charging then
-    return noctalia.tr("battery.recharging")
+    return noctalia.tr("battery.charging")
   end
   return noctalia.tr("battery.discharging")
 end

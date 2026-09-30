@@ -6,7 +6,7 @@ local battery = require("./battery.luau")
 local status = noctalia.state.get("status")
 
 -- Key/value rows like Noctalia's built-in widgets, primary value first,
--- with Solaar's battery wording.
+-- with the shared battery wording.
 local function tooltip(s)
   local device = s.device or noctalia.tr("tooltip.not_connected")
   if s.state == "error" then

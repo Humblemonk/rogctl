@@ -22,8 +22,13 @@ paths:
   mouse has, not what was asked for.
 - `--demo` runs with no device: `App::simulate()` stands in for the write and read-back.
   Demo mode must stay fully navigable for every model in `MODELS`.
-- `Session::tick()` notices unplugging by checking the hidraw node exists (no HID traffic),
-  looks for a mouse every 2 s while none is found, and retries a sleeping one every 5 s.
+- `Session::tick()` notices a mouse plugged in or out every 2 s by rescanning sysfs
+  (`device::candidate_nodes()`, no HID traffic) and reading the mice again only when that
+  changes. It then shows what was just plugged in (the cable, so the header says wired) if
+  it answers, else the mouse it was showing. It looks for a mouse every 2 s while none is
+  found, and retries a sleeping one every 5 s. While connected it reads the battery (`12 07`
+  only) every 10 s for the header, without dropping a pending edit; a mouse that went to
+  sleep shows as asleep.
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
   abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
   TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the
@@ -53,9 +58,10 @@ several models looks and behaves the same on all of them.
   tuning, locked rows and values outside the list stay text. No sidebar or pages while
   everything fits one screen.
 - **Colours** follow GearLink's ROG theme: near-black, white text, grey detail, one red
-  accent (focus band, active stage, pending edit, switches that are on, errors). They're
-  named once in the palette at the top of `ui.rs`; use its styles (`BASE`, `MUTED`, `BOLD`,
-  `ACCENT`, `FOCUSED`). The DPI swatches, read from the mouse, are the only other colours.
+  accent (focus band, active stage, pending edit, switches that are on, errors, the header's
+  battery at or below the mouse's low-battery warning). They're named once in the palette at
+  the top of `ui.rs`; use its styles (`BASE`, `MUTED`, `BOLD`, `ACCENT`, `FOCUSED`). The DPI
+  swatches, read from the mouse, are the only other colours. The footer ends with the version.
 
 ## Adding a setting
 
@@ -69,4 +75,5 @@ several models looks and behaves the same on all of them.
    `value()`, `rows()`, `step()`, `change_for()`, `choices()` if it's a short list, plus
    `simulate()` and `demo_state()`. The compiler lists the matches to update.
 5. `ui.rs`: usually nothing; rows draw through `row_line()`.
-6. README.md: the settings list, and keys if they change. Say which mice have it.
+6. README.md: the settings list, and the key table if a main key changes (the full list is
+   the `?` help). Say which mice have it.

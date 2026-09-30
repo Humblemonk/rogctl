@@ -19,7 +19,8 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
 - The status line is the contract between Rust and every widget. `None` fields are omitted
   (not `null`); widgets treat a missing field as `nil`/`undefined`. If you add, rename or
   remove a field, update every widget in the same change (grep for it under
-  `noctalia/ quickshell/ dms/ kde/ gnome/`) and `src/waybar.rs`.
+  `noctalia/ quickshell/ dms/ kde/ gnome/`), `src/waybar.rs` and the field table in
+  `docs/cli.md`.
 - Shared logic lives in `rogctl`, not the frontends. `watch` keeps the last level while the
   mouse sleeps, sets `low` (and `notify_low` on the one line a notification is due: once per
   drop, re-armed by charging or rising 5% above the threshold), reports its `pid`, and
@@ -32,9 +33,13 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
 
 ## Keep them alike
 
+- Each widget's setup, settings and removal are in the readme next to it (`waybar/README.md`
+  and so on, outside the package directory so it isn't packaged). The main README.md only
+  links to them.
 - The same settings (binary, interval, low threshold, show percent, hide when disconnected)
-  with the same defaults, Solaar's wording ("Battery: 79% (discharging)"), red when `low`,
-  dimmed while asleep, and restarting `rogctl` 10 s after it exits.
+  with the same defaults, the same wording ("Battery: 79% (discharging)", then "charging"
+  or "full"; Solaar's layout, but the kernel's "charging", not its "recharging"), red when
+  `low`, dimmed while asleep, and restarting `rogctl` 10 s after it exits.
 - Luau files start with `--!nonstrict`. User-visible strings go through `noctalia.tr()` with
   keys in `translations/en.json`; settings need `label_key` entries there too.
 - The plugin declares `plugin_api = 24` (for `runAsync` with an argv array). Don't raise it

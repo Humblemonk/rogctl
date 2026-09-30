@@ -18,7 +18,7 @@ Singleton {
     property int lowThreshold: 20
 
     // The last status line: state ("connected", "asleep", "disconnected" or
-    // "error"), device, battery, charging, error, ... See README.md.
+    // "error"), device, battery, charging, error, ... See docs/cli.md.
     property var status: null
 
     // Not `state`: that name is taken by QML's own states.
@@ -31,7 +31,7 @@ Singleton {
     // At or below lowThreshold and not charging; rogctl decides.
     readonly property bool low: status?.low ?? false
 
-    // Solaar's wording, as in the other rogctl widgets.
+    // The shared wording, as in the other rogctl widgets.
     readonly property string batteryText: {
         if (battery < 0)
             return mouseState === "disconnected" ? "unknown" : "offline";
@@ -39,7 +39,7 @@ Singleton {
         if (!connected)
             word = "offline";
         else if (charging)
-            word = battery === 100 ? "full" : "recharging";
+            word = battery === 100 ? "full" : "charging";
         return `${battery}% (${word})`;
     }
 

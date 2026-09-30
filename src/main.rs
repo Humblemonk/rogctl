@@ -18,12 +18,17 @@ use protocol::PowerOff;
 const USAGE: &str = "\
 rogctl - battery status and settings for ASUS mice
 
+Examples:
+  rogctl                                 Show the mouse's battery level
+  rogctl settings                        View and change DPI, polling rate and more
+  rogctl settings --demo                 Try the settings screen without a mouse
+
 Usage:
   rogctl [battery] [OPTIONS]             Print the battery status once
   rogctl watch [--interval SECS] [OPTIONS]
                                          Print the status every SECS seconds (default 60)
   rogctl list                            List detected devices and their hidraw nodes
-  rogctl tui [--demo [MODEL]]            View and change the mouse's settings (DPI,
+  rogctl settings [--demo [MODEL]]       View and change the mouse's settings (DPI,
                                          polling rate, ...). --demo runs without a
                                          mouse, as MODEL (default ROG Harpe II Ace)
 
@@ -121,7 +126,7 @@ fn poll() -> Status {
     let mut fallback: Option<Status> = None;
     for dev in &devices {
         let status = match dev.read_battery() {
-            Ok(r) if r.battery > 0 => {
+            Ok(r) if !r.is_asleep() => {
                 return Status {
                     battery: Some(r.battery),
                     charging: r.charging,
@@ -241,6 +246,17 @@ fn carry_over(status: &mut Status, last_known: &mut Option<Status>) {
     }
 }
 
+/// The word for a mouse that's awake, as every widget and the TUI show it:
+/// "Battery: 79% (discharging)". The kernel's and desktops' words, not
+/// Solaar's "recharging".
+fn charge_word(charging: bool, battery: Option<u8>) -> &'static str {
+    match (charging, battery) {
+        (true, Some(100)) => "full",
+        (true, _) => "charging",
+        (false, _) => "discharging",
+    }
+}
+
 fn is_low(s: &Status, threshold: u8) -> bool {
     threshold > 0 && !s.charging && s.battery.is_some_and(|b| b <= threshold)
 }
@@ -314,6 +330,9 @@ fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
 /// for a moment, e.g. right after login, and a mouse that just woke shouldn't
 /// wait a whole interval to show its level.
 const ERROR_RETRY: Duration = Duration::from_secs(5);
+
+/// A day. Far larger values would overflow the deadline in `wait_or_refresh`.
+const MAX_INTERVAL_SECS: u64 = 86_400;
 
 /// How long to wait before the next poll: the interval, or after errors and
 /// while asleep a retry that doubles each time up to the interval.
@@ -408,9 +427,11 @@ fn main() -> ExitCode {
                 }
             },
             "--interval" => match args.next().and_then(|v| v.parse::<u64>().ok()) {
-                Some(secs) if secs > 0 => interval = Duration::from_secs(secs),
+                Some(secs) if (1..=MAX_INTERVAL_SECS).contains(&secs) => {
+                    interval = Duration::from_secs(secs);
+                }
                 _ => {
-                    eprintln!("--interval needs a positive number of seconds");
+                    eprintln!("--interval needs a number of seconds from 1 to {MAX_INTERVAL_SECS}");
                     return ExitCode::FAILURE;
                 }
             },
@@ -429,13 +450,15 @@ fn main() -> ExitCode {
         }
     }
 
-    if demo.is_some() && command != "tui" {
-        eprintln!("--demo only works with `rogctl tui`");
+    // `tui` was the command's first name; it still works, undocumented.
+    let settings = matches!(command.as_str(), "settings" | "tui");
+    if demo.is_some() && !settings {
+        eprintln!("--demo only works with `rogctl settings`");
         return ExitCode::FAILURE;
     }
 
     match command.as_str() {
-        "tui" => tui::run(demo),
+        "settings" | "tui" => tui::run(demo),
         "battery" => cmd_battery(output),
         "watch" => cmd_watch(interval, output),
         "list" => cmd_list(),

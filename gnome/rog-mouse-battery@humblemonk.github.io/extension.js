@@ -20,10 +20,11 @@ const RESTART_SECONDS = 10;
 const SIGUSR1 = 10;
 const SIGTERM = 15;
 
-// Solaar's status words: discharging, recharging, full.
+// Status words as the kernel and desktops use them: discharging, charging,
+// full. Solaar says "recharging"; rogctl doesn't.
 function statusWord(s) {
   if (s.charging && s.battery === 100) return _("full");
-  return s.charging ? _("recharging") : _("discharging");
+  return s.charging ? _("charging") : _("discharging");
 }
 
 // "79% (discharging)"; "(offline)" replaces the status while the mouse sleeps.

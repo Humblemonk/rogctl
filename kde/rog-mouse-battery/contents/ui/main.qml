@@ -32,11 +32,11 @@ PlasmoidItem {
     readonly property bool low: status?.low ?? false
     readonly property bool hidden: Plasmoid.configuration.hideWhenDisconnected && mouseState === "disconnected"
 
-    // Solaar's wording, as in the other rogctl widgets.
+    // The shared wording, as in the other rogctl widgets.
     function statusWord(s) {
         if (s.charging && s.battery === 100)
             return i18n("full");
-        return s.charging ? i18n("recharging") : i18n("discharging");
+        return s.charging ? i18n("charging") : i18n("discharging");
     }
 
     function batteryValue(s) {

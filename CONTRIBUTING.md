@@ -21,8 +21,8 @@ To talk to a mouse without root, install the udev rule once (see
 ```sh
 cargo run -- list        # which devices were found, and on which /dev/hidraw node
 cargo run -- --json      # read the battery once
-cargo run -- tui         # read the settings (nothing is changed until you press Enter)
-cargo run -- tui --demo  # the settings screen without a mouse
+cargo run -- settings       # read the settings (nothing is changed until you press Enter)
+cargo run -- settings --demo  # the settings screen without a mouse
 ```
 
 ## Before you open a pull request
@@ -66,12 +66,13 @@ setting somewhere else; check it matches a `Layout`, `LiftOffFormat` or `Warning
 already exists, and open an issue if it doesn't.
 
 Then check it: `cargo run -- list` should show the mouse, `cargo run -- --json` should
-report `"state":"connected"` with the right percentage, and `cargo run -- tui` should show the
-settings the mouse's own software shows. If the mouse overrides `GetBatteryReportPacket`, or
-parses the battery some other way, it needs code changes; open an issue first.
+report `"state":"connected"` with the right percentage, and `cargo run -- settings` should
+show the settings the mouse's own software shows. If the mouse overrides
+`GetBatteryReportPacket`, or parses the battery some other way, it needs code changes; open
+an issue first.
 
-Changes you apply in `rogctl tui` are stored on the mouse. Test the screens with `--demo`, and
-only press Enter against a real mouse when you mean to change it.
+Changes you apply in `rogctl settings` are stored on the mouse. Test the screens with
+`--demo`, and only press Enter against a real mouse when you mean to change it.
 
 The protocol details are in [`.claude/rules/protocol.md`](.claude/rules/protocol.md).
 
@@ -97,8 +98,8 @@ Luau API.
 
 ## Working on the other widgets
 
-Install the widget from your checkout as described in
-[Desktop widgets](README.md#desktop-widgets), and point its **rogctl command** setting at
+Install the widget from your checkout as described in its readme (linked from
+[Panel widgets](README.md#panel-widgets)), and point its **rogctl command** setting at
 `target/debug/rogctl` to test a local build. Then:
 
 - **Waybar**: `pkill -SIGUSR2 waybar` reloads the config.
@@ -123,15 +124,17 @@ The widgets share `Cargo.toml`'s version; `cargo test` fails until every manifes
 - Branch from `main`, and keep each pull request to one change.
 - Write commit subjects in the imperative, under about 72 characters ("Fix Omni pairing
   lookup", not "Fixed Omni pairing"). Use the body to explain why.
-- Update README.md when behavior users can see changes, such as commands, flags, output fields
-  or supported mice.
+- Update the docs when behavior users can see changes: README.md for installing, settings and
+  supported mice, [docs/cli.md](docs/cli.md) for commands, flags, exit codes and JSON fields,
+  and the widget's own readme for widget setup.
 
 ## Reporting a problem
 
 Include:
 
 - the output of `rogctl list` and `rogctl --json`
-- for a settings problem, what `rogctl tui` shows next to what the mouse's own software shows
+- for a settings problem, what `rogctl settings` shows next to what the mouse's own
+  software shows
 - `lsusb | grep -i asus`
 - your mouse model and whether it's on the receiver or a cable
 - for widget problems, your Noctalia version (`noctalia --version`) and any lines mentioning
