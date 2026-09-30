@@ -1,15 +1,28 @@
 # rogctl
 
-Battery status for ASUS mice on Linux, plus panel widgets for Noctalia, Waybar, Quickshell,
-DankMaterialShell, KDE Plasma and GNOME.
+Battery status and settings for ASUS mice on Linux, plus panel widgets for Noctalia, Waybar,
+Quickshell, DankMaterialShell, KDE Plasma and GNOME.
 
 rogctl supports 27 battery-powered ROG, TUF and ASUS mice, connected through their own
 receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. See
 [Supported mice](#supported-mice) for the list.
 
-<p align="center">
-  <img src="images/rogctl.png" alt="Project Example Screenshot">
-</p>
+<table align="center">
+  <tr>
+    <td align="center" valign="middle">
+      <img src="images/rogctl.png" width="304"
+        alt="Panel widget showing the mouse at 79%, with a tooltip saying Battery 79% (discharging), Device ROG Harpe II Ace">
+    </td>
+    <td align="center" valign="middle">
+      <img src="images/rogctl_tui.png" width="500"
+        alt="rogctl tui showing a ROG Harpe II Ace's DPI stages, polling rate and battery settings">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">Panel widget</td>
+    <td align="center"><code>rogctl tui</code></td>
+  </tr>
+</table>
 
 ## Getting started
 
@@ -51,6 +64,7 @@ rogctl --json               # one JSON status line
 rogctl watch --json         # a status line every 60 s (--interval SECS)
 rogctl watch --format waybar  # the same, as Waybar custom-module JSON
 rogctl list                 # detected devices and their /dev/hidraw nodes
+rogctl tui                  # view and change the mouse's settings
 ```
 
 `--format` takes `text` (the default), `json` or `waybar`. `--low-threshold PCT` (default 20,
@@ -63,6 +77,52 @@ answering when it sleeps; `watch` keeps reporting the last level with `"state":"
 `watch --json` also adds `"notify_low":true` to the one line where the battery first drops to
 the threshold (again only after charging or rising 5% above it), and its `"pid"`. Send that
 process `SIGUSR1` (`kill -USR1 PID`) to read the mouse right away.
+
+## Settings
+
+`rogctl tui` shows the mouse's settings in the terminal and lets you change them:
+
+- **DPI stages**: the DPI of each stage, and which stage is active
+- **Polling rate**
+- **Button debounce**
+- **Angle snapping** and **angle tuning**
+- **Motion sync** (not available at 8000 Hz)
+- **Lift-off distance**
+- **Auto power-off** and **low-battery warning**
+- **Advanced power saving**, and the polling rate it uses (ROG Harpe II models)
+
+It only shows the settings your mouse has, with the values it supports. The mouse has to be
+awake: move it if rogctl says it's asleep.
+
+| Key | Does |
+| --- | --- |
+| ↑ ↓ (or k j) | Select a setting |
+| ← → (or h l) | Change the value; Shift, PgUp or PgDn for bigger steps |
+| 0-9 | Type a DPI value |
+| Enter, Space | Apply the change, switch a setting on or off, or make a DPI stage active |
+| Esc | Cancel the change |
+| r | Read the settings from the mouse again |
+| Tab | Next mouse, when several are plugged in |
+| ? | Help |
+| q | Quit |
+
+The mouse works too: click a setting to select it and click it again to apply, like Enter.
+Scrolling over a setting, or clicking a value on a scale, changes it without sending it yet.
+Most terminals let you hold Shift to select text while rogctl uses the mouse.
+
+Nothing is sent until you press Enter. Applied changes are stored on the mouse, so they stay
+after unplugging it and apply on other computers too. Changing the lift-off distance also
+resets the sensor calibration.
+
+Reading and changing settings has been tested on a ROG Harpe II Ace on the SpeedNova 8K
+receiver; other mice are untested. If something reads wrong or doesn't
+change, please [report it](CONTRIBUTING.md#reporting-a-problem).
+
+The screen uses ASUS's ROG colours and needs a terminal with 24-bit colour, which most
+current ones have.
+
+To look around without a mouse, run `rogctl tui --demo`, or `rogctl tui --demo "ROG Chakram"`
+for another model from [Supported mice](#supported-mice). Demo changes aren't sent anywhere.
 
 ## Troubleshooting
 

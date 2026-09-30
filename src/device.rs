@@ -1,10 +1,6 @@
-//! Discovery and battery queries for ASUS mice over Linux hidraw.
-//!
-//! The protocol mirrors G-Helper's `AsusMouse`: send `[report_id, 0x12, 0x07]`
-//! zero-padded to the model's packet size and read back a reply echoing that
-//! header. In the reply, byte 10 is the charging flag and the battery level's
-//! position depends on the model (see [`Battery`]). Most models also put the
-//! auto power-off setting in byte 6 and the low-battery warning in byte 7.
+//! Finding supported mice over Linux hidraw, and talking to them. Each
+//! exchange writes one request and waits, with a deadline, for the reply that
+//! echoes it. The bytes are in `protocol.rs`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -14,12 +10,18 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::models::{MODELS, OMNI_PID, OMNI_RECEIVER};
+use crate::protocol::{
+    self, Battery, Change, Features, MouseSettings, OMNI_PAIRED, Query, Reading, Request,
+};
 
-const ASUS_VID: u16 = 0x0b05;
+pub const ASUS_VID: u16 = 0x0b05;
 const MAX_PACKET: usize = 65;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 /// Reports the kernel buffers per open hidraw file (`HIDRAW_BUFFER_SIZE`).
 const HIDRAW_QUEUE: usize = 64;
+
+/// A reply, normalized so byte 0 is the report ID.
+type Reply = [u8; MAX_PACKET + 1];
 
 /// One way a supported mouse shows up on USB: a product ID and the HID
 /// interface that answers vendor commands on it.
@@ -34,17 +36,8 @@ pub struct Model {
     /// How the mouse is connected: receiver (true) or cable (false).
     pub wireless: bool,
     pub battery: Battery,
-    /// Reply bytes 6 and 7 hold the power-off and low-battery settings.
-    pub settings: bool,
+    pub features: Features,
     pub matches: Match,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Battery {
-    /// Byte 5 is the percentage.
-    Percent,
-    /// `byte` is a 0-4 level, reported as multiples of 25%.
-    Quarters { byte: usize },
 }
 
 /// How to tell apart models that share a product ID and interface.
@@ -57,7 +50,7 @@ pub enum Match {
     OmniPaired(&'static [u16]),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Device {
     pub model: &'static Model,
     pub hidraw: PathBuf,
@@ -113,7 +106,12 @@ fn omni_model(paired: Result<Vec<u16>, QueryError>) -> Option<&'static Model> {
     match paired {
         Ok(paired) => select_model(OMNI_PID, OMNI_RECEIVER.interface, "", &paired),
         Err(QueryError::Io(_)) => Some(&OMNI_RECEIVER),
-        Err(_) => None,
+        Err(
+            QueryError::Timeout
+            | QueryError::Rejected
+            | QueryError::Empty
+            | QueryError::Unsupported,
+        ) => None,
     }
 }
 
@@ -154,63 +152,18 @@ fn usb_product(sys: &Path) -> Option<String> {
 }
 
 /// Asks an Omni receiver which devices are paired with it, as G-Helper's
-/// `DedectOmniMouse` does: send `01 A0` and read product IDs, little-endian,
-/// every 4 bytes from byte 5 until a zero.
+/// `DedectOmniMouse` does.
 fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
     let mut file = open(hidraw)?;
     drain(&mut file);
     let mut packet = [0u8; 64];
-    packet[..2].copy_from_slice(&[0x01, 0xa0]);
+    packet[..OMNI_PAIRED.len()].copy_from_slice(&OMNI_PAIRED);
     file.write_all(&packet)?;
-    let reply = read_packet(&mut file, 0x01, Instant::now() + REPLY_TIMEOUT, |r| {
-        r[0] == 0x01
+    let report_id = OMNI_PAIRED[0];
+    let reply = read_packet(&mut file, report_id, Instant::now() + REPLY_TIMEOUT, |r| {
+        r[0] == report_id
     })?;
-    Ok(parse_omni_paired(&reply))
-}
-
-fn parse_omni_paired(reply: &[u8]) -> Vec<u16> {
-    let (entries, _) = reply[5..].as_chunks::<4>();
-    entries
-        .iter()
-        .map(|&[lo, hi, _, _]| u16::from_le_bytes([lo, hi]))
-        .take_while(|&pid| pid != 0)
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Reading {
-    /// Percent. 0 means the mouse is asleep or out of range: the receiver
-    /// still answers, but with no data.
-    pub battery: u8,
-    pub charging: bool,
-    pub settings: Option<Settings>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Settings {
-    pub power_off: PowerOff,
-    pub low_battery_warning: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerOff {
-    Minutes(u8),
-    Never,
-    Unknown(u8),
-}
-
-impl PowerOff {
-    fn from_byte(b: u8) -> Self {
-        match b {
-            0 => Self::Minutes(1),
-            1 => Self::Minutes(2),
-            2 => Self::Minutes(3),
-            3 => Self::Minutes(5),
-            4 => Self::Minutes(10),
-            0xff => Self::Never,
-            other => Self::Unknown(other),
-        }
-    }
+    Ok(protocol::parse_omni_paired(&reply))
 }
 
 #[derive(Debug)]
@@ -221,6 +174,21 @@ pub enum QueryError {
     Rejected,
     /// The receiver answered with an all-zero packet; the mouse is unreachable.
     Empty,
+    /// The model doesn't have the setting a change was for.
+    Unsupported,
+}
+
+impl QueryError {
+    /// Whether this means the mouse is asleep or out of range rather than
+    /// broken. A receiver answers for a sleeping mouse with an empty reply, no
+    /// reply, or a rejection (`FF AA`); over a cable a rejection is a real error.
+    pub fn means_asleep(&self, wireless: bool) -> bool {
+        match self {
+            Self::Empty | Self::Timeout => true,
+            Self::Rejected => wireless,
+            Self::Io(_) | Self::Unsupported => false,
+        }
+    }
 }
 
 impl std::fmt::Display for QueryError {
@@ -228,8 +196,9 @@ impl std::fmt::Display for QueryError {
         match self {
             Self::Io(e) => write!(f, "{e}"),
             Self::Timeout => write!(f, "no reply from device"),
-            Self::Rejected => write!(f, "device rejected the battery query"),
+            Self::Rejected => write!(f, "device rejected the request"),
             Self::Empty => write!(f, "device returned an empty reply"),
+            Self::Unsupported => write!(f, "this mouse doesn't have that setting"),
         }
     }
 }
@@ -241,44 +210,74 @@ impl From<io::Error> for QueryError {
 }
 
 impl Device {
+    pub fn connect(&self) -> io::Result<Connection> {
+        Ok(Connection {
+            model: self.model,
+            file: open(&self.hidraw)?,
+        })
+    }
+
     pub fn read_battery(&self) -> Result<Reading, QueryError> {
-        let model = self.model;
-        let mut file = open(&self.hidraw)?;
-        drain(&mut file);
-
-        let mut packet = [0u8; MAX_PACKET];
-        packet[..3].copy_from_slice(&[model.report_id, 0x12, 0x07]);
-        file.write_all(&packet[..model.packet_size])?;
-
-        let deadline = Instant::now() + REPLY_TIMEOUT;
-        // Other input reports can share the interface; skip until ours or an error.
-        let reply = read_packet(&mut file, model.report_id, deadline, |r| {
-            r[..3] == packet[..3] || (r[1] == 0xff && r[2] == 0xaa) || r[1..4] == [0, 0, 0]
-        })?;
-        parse_reply(model, &reply)
+        self.connect()?.read_battery()
     }
 }
 
-/// Decodes a battery reply whose byte 0 is the report ID.
-pub fn parse_reply(model: &Model, reply: &[u8]) -> Result<Reading, QueryError> {
-    if reply[1] == 0xff && reply[2] == 0xaa {
-        return Err(QueryError::Rejected);
+/// An open hidraw node, for several exchanges in a row.
+pub struct Connection {
+    model: &'static Model,
+    file: File,
+}
+
+impl Connection {
+    fn exchange(&mut self, request: &Request) -> Result<Reply, QueryError> {
+        let model = self.model;
+        drain(&mut self.file);
+
+        let mut packet = [0u8; MAX_PACKET];
+        let bytes = request.bytes();
+        packet[..bytes.len()].copy_from_slice(bytes);
+        self.file.write_all(&packet[..model.packet_size])?;
+
+        let deadline = Instant::now() + REPLY_TIMEOUT;
+        let reply = read_packet(&mut self.file, model.report_id, deadline, |r| {
+            request.answered_by(r)
+        })?;
+        protocol::check_reply(&reply)?;
+        Ok(reply)
     }
-    if reply[1..4].iter().all(|&b| b == 0) {
-        return Err(QueryError::Empty);
+
+    pub fn read_battery(&mut self) -> Result<Reading, QueryError> {
+        let model = self.model;
+        let reply = self.exchange(&Query::Battery.request(model.report_id))?;
+        protocol::parse_battery(model.battery, &model.features, &reply)
     }
-    let battery = match model.battery {
-        Battery::Percent => reply[5],
-        Battery::Quarters { byte } => reply[byte].saturating_mul(25),
-    };
-    Ok(Reading {
-        battery: battery.min(100),
-        charging: reply[10] > 0,
-        settings: model.settings.then(|| Settings {
-            power_off: PowerOff::from_byte(reply[6]),
-            low_battery_warning: reply[7],
-        }),
-    })
+
+    /// Reads every setting the model has. `reading` supplies the ones that
+    /// come with the battery level.
+    pub fn read_settings(&mut self, reading: &Reading) -> Result<MouseSettings, QueryError> {
+        let model = self.model;
+        let mut settings = MouseSettings {
+            power_off: reading.power_off,
+            low_battery_warning: reading.low_battery_warning,
+            ..MouseSettings::default()
+        };
+        for query in protocol::settings_queries(&model.features) {
+            let reply = self.exchange(&query.request(model.report_id))?;
+            protocol::parse_settings(query, &model.features, &reply, &mut settings);
+        }
+        Ok(settings)
+    }
+
+    /// Changes one setting and saves it on the mouse. The only code that
+    /// writes settings; only `tui::apply_action` calls it.
+    pub fn apply(&mut self, change: &Change) -> Result<(), QueryError> {
+        let model = self.model;
+        let request = protocol::change_request(model.report_id, &model.features, change)
+            .ok_or(QueryError::Unsupported)?;
+        self.exchange(&request)?;
+        self.exchange(&protocol::save_request(model.report_id))?;
+        Ok(())
+    }
 }
 
 fn open(hidraw: &Path) -> io::Result<File> {
@@ -308,7 +307,7 @@ fn read_packet(
     report_id: u8,
     deadline: Instant,
     accept: impl Fn(&[u8]) -> bool,
-) -> Result<[u8; MAX_PACKET + 1], QueryError> {
+) -> Result<Reply, QueryError> {
     let mut buf = [0u8; MAX_PACKET + 1];
     let offset = usize::from(report_id == 0);
     loop {
@@ -356,79 +355,26 @@ fn poll_readable(file: &File, timeout: Duration) -> io::Result<bool> {
 mod tests {
     use super::*;
 
-    fn model(name: &str) -> &'static Model {
-        MODELS.iter().find(|m| m.name == name).unwrap()
-    }
-
-    fn reply(bytes: &[u8]) -> [u8; MAX_PACKET + 1] {
-        let mut buf = [0u8; MAX_PACKET + 1];
-        buf[..bytes.len()].copy_from_slice(bytes);
-        buf
-    }
-
-    /// Captured from a Harpe II Ace on the SpeedNova receiver.
-    #[test]
-    fn parses_percent_reply() {
-        let r = reply(&[
-            0x03, 0x12, 0x07, 0, 0, 0x50, 0x02, 0x14, 0xd8, 0x0f, 0, 0, 0x01,
-        ]);
-        let reading = parse_reply(model("ROG Harpe II Ace"), &r).unwrap();
-        assert_eq!(reading.battery, 80);
-        assert!(!reading.charging);
-        let settings = reading.settings.unwrap();
-        assert_eq!(settings.power_off, PowerOff::Minutes(3));
-        assert_eq!(settings.low_battery_warning, 20);
-    }
-
-    /// G-Helper's Extreme subclasses the Ace without changing the battery
-    /// format, so byte 7 is the warning level here, not the battery.
-    #[test]
-    fn parses_extreme_like_ace() {
-        let r = reply(&[
-            0x03, 0x12, 0x07, 0, 0, 0x50, 0x02, 0x14, 0xd8, 0x0f, 0, 0, 0x01,
-        ]);
-        let ace = parse_reply(model("ROG Harpe II Ace"), &r).unwrap();
-        let extreme = parse_reply(model("Harpe II Extreme Edition 20"), &r).unwrap();
-        assert_eq!(extreme, ace);
-    }
-
-    #[test]
-    fn parses_quarters_reply() {
-        let r = reply(&[0x00, 0x12, 0x07, 0, 0, 0x03, 0, 0, 0, 0, 0x01]);
-        let reading = parse_reply(model("ROG Chakram"), &r).unwrap();
-        assert_eq!(reading.battery, 75);
-        assert!(reading.charging);
-        assert_eq!(reading.settings, None);
-    }
-
-    #[test]
-    fn parses_quarters_from_byte_7() {
-        let r = reply(&[0x00, 0x12, 0x07, 0, 0, 0x09, 0, 0x02]);
-        assert_eq!(
-            parse_reply(model("ROG Strix Carry"), &r).unwrap().battery,
-            50
-        );
-    }
-
-    #[test]
-    fn clamps_out_of_range_quarters() {
-        let r = reply(&[0x00, 0x12, 0x07, 0, 0, 0x09]);
-        assert_eq!(parse_reply(model("ROG Chakram"), &r).unwrap().battery, 100);
-    }
-
-    #[test]
-    fn decodes_power_off_never() {
-        let r = reply(&[0x03, 0x12, 0x07, 0, 0, 0x50, 0xff, 0x14]);
-        let settings = parse_reply(model("ROG Harpe II Ace"), &r).unwrap().settings;
-        assert_eq!(settings.unwrap().power_off, PowerOff::Never);
-    }
-
     #[test]
     fn tells_speednova_mice_apart_by_product_name() {
         let ace = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
         assert_eq!(ace.name, "ROG Harpe II Ace");
         let extreme = select_model(0x1ad0, 2, "ROG Harpe II Extreme Receiver", &[]).unwrap();
         assert_eq!(extreme.name, "Harpe II Extreme Edition 20");
+    }
+
+    /// G-Helper's Extreme subclasses the Ace without changing the battery
+    /// format, so byte 7 is the warning level here, not the battery.
+    #[test]
+    fn parses_extreme_like_ace() {
+        let mut r = [0u8; MAX_PACKET + 1];
+        r[..13].copy_from_slice(&[
+            0x03, 0x12, 0x07, 0, 0, 0x50, 0x02, 0x14, 0xd8, 0x0f, 0, 0, 0x01,
+        ]);
+        let parse = |m: &Model| protocol::parse_battery(m.battery, &m.features, &r).unwrap();
+        let ace = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let extreme = select_model(0x1ad0, 2, "EXTREME", &[]).unwrap();
+        assert_eq!(parse(extreme), parse(ace));
     }
 
     #[test]
@@ -457,24 +403,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_omni_pairing_reply() {
-        let mut r = [0u8; 64];
-        r[..2].copy_from_slice(&[0x01, 0xa0]);
-        r[5..7].copy_from_slice(&0x1b65u16.to_le_bytes());
-        r[9..11].copy_from_slice(&0x1b1au16.to_le_bytes());
-        assert_eq!(parse_omni_paired(&r), vec![0x1b65, 0x1b1a]);
-    }
-
-    #[test]
-    fn rejects_error_and_empty_replies() {
-        let m = model("ROG Harpe II Ace");
-        assert!(matches!(
-            parse_reply(m, &reply(&[0x03, 0xff, 0xaa])),
-            Err(QueryError::Rejected)
-        ));
-        assert!(matches!(
-            parse_reply(m, &reply(&[0x03])),
-            Err(QueryError::Empty)
-        ));
+    fn receiver_rejection_means_asleep() {
+        assert!(QueryError::Rejected.means_asleep(true));
+        assert!(!QueryError::Rejected.means_asleep(false));
+        assert!(QueryError::Empty.means_asleep(false));
+        assert!(QueryError::Timeout.means_asleep(true));
+        let io = io::Error::from(io::ErrorKind::BrokenPipe);
+        assert!(!QueryError::Io(io).means_asleep(true));
     }
 }

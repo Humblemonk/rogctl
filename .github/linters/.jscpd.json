@@ -1,0 +1,8 @@
+{
+  "threshold": 3,
+  "minTokens": 50,
+  "absolute": true,
+  "gitignore": true,
+  "reporters": ["consoleFull"],
+  "ignore": ["**/.git/**", "**/target/**", "**/node_modules/**"]
+}
