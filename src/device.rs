@@ -402,6 +402,36 @@ mod tests {
         assert!(select_model(0xffff, 0, "", &[]).is_none());
     }
 
+    /// A datagram socket keeps packet boundaries, like hidraw. Most mice use
+    /// report ID 0, which hidraw leaves out of the replies.
+    #[test]
+    fn read_packet_skips_other_reports_and_never_blocks() {
+        use std::os::unix::net::UnixDatagram;
+
+        let (mouse, ours) = UnixDatagram::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let mut file = File::from(std::os::fd::OwnedFd::from(ours));
+        let request = Query::Battery.request(0);
+        let read = |file: &mut File| {
+            let deadline = Instant::now() + Duration::from_millis(50);
+            read_packet(file, 0, deadline, |r| request.answered_by(r))
+        };
+
+        let mut stray = [0u8; 64];
+        stray[..3].copy_from_slice(&[0x12, 0x04, 0x01]);
+        let mut battery = [0u8; 64];
+        battery[..5].copy_from_slice(&[0x12, 0x07, 0, 0, 0x50]);
+        mouse.send(&stray).unwrap();
+        mouse.send(&[0x12, 0x07]).unwrap(); // too short to be a reply
+        mouse.send(&battery).unwrap();
+        let reply = read(&mut file).unwrap();
+        assert_eq!(reply[..6], [0, 0x12, 0x07, 0, 0, 0x50]);
+
+        let start = Instant::now();
+        assert!(matches!(read(&mut file), Err(QueryError::Timeout)));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn receiver_rejection_means_asleep() {
         assert!(QueryError::Rejected.means_asleep(true));
