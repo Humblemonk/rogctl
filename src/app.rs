@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 use crate::device::Model;
 use crate::models::MODELS;
@@ -131,6 +131,14 @@ pub enum Action {
     },
     Refresh,
     NextDevice,
+}
+
+/// What the mouse pointer is over, from the last frame `ui::draw` drew.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Row(Control),
+    /// One value on a row's scale.
+    Choice(Control, Value),
 }
 
 /// One row as drawn: `locked` explains why a supported setting can't be
@@ -373,6 +381,50 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Only Enter's path writes. A click selects a row, then applies like
+    /// Enter; a click on a scale's value or the wheel (up is higher) only
+    /// changes the pending edit. A click while help is open closes it.
+    pub fn handle_mouse(&mut self, kind: MouseEventKind, target: Option<Target>) -> Option<Action> {
+        let dir = match kind {
+            MouseEventKind::Down(MouseButton::Left) => 0,
+            MouseEventKind::ScrollUp => 1,
+            MouseEventKind::ScrollDown => -1,
+            // Other buttons, releases, drags and sideways scrolling do nothing.
+            _ => return None,
+        };
+        let click = dir == 0;
+        if self.help {
+            self.help = !click;
+            return None;
+        }
+        let (control, choice) = match target? {
+            Target::Row(control) => (control, None),
+            Target::Choice(control, value) => (control, Some(value)),
+        };
+        // Locked rows can't be focused, so they don't take clicks either.
+        if !self.controls().contains(&control) {
+            return None;
+        }
+        if self.focused() != Some(control) {
+            self.focus = Some(control);
+            self.edit = None;
+            if click && choice.is_none() {
+                return None;
+            }
+        }
+        if !click {
+            self.adjust(dir, false);
+            return None;
+        }
+        match choice {
+            Some(value) if self.shown(control) != Some(value) => {
+                self.set_edit(control, value, false);
+                None
+            }
+            Some(_) | None => self.confirm(),
+        }
     }
 
     fn move_focus(&mut self, by: isize) {
@@ -1041,6 +1093,99 @@ mod tests {
             applied(press(&mut app, KeyCode::Enter)),
             Change::LiftOff(LiftOff::High)
         );
+    }
+
+    const CLICK: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+
+    fn click(app: &mut App, target: Target) -> Option<Action> {
+        app.handle_mouse(CLICK, Some(target))
+    }
+
+    #[test]
+    fn first_click_selects_and_second_applies_like_enter() {
+        let mut app = demo("ROG Harpe II Ace");
+        let snapping = Target::Row(Control::AngleSnapping);
+        assert_eq!(click(&mut app, snapping), None);
+        assert_eq!(app.focused(), Some(Control::AngleSnapping));
+        assert_eq!(
+            applied(click(&mut app, snapping)),
+            Change::AngleSnapping(true)
+        );
+
+        // A pending edit is dropped by selecting another row, applied by a
+        // click on its own.
+        focus(&mut app, Control::Stage(0));
+        press(&mut app, KeyCode::Right);
+        assert_eq!(click(&mut app, Target::Row(Control::Stage(1))), None);
+        assert_eq!(app.edit, None);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            applied(click(&mut app, Target::Row(Control::Stage(1)))),
+            Change::StageDpi {
+                stage: 1,
+                dpi: 850,
+                color: Some([0, 0xff, 0])
+            }
+        );
+    }
+
+    #[test]
+    fn scale_clicks_and_the_wheel_only_edit() {
+        let mut app = demo("ROG Harpe II Ace");
+        let rate = |rate| Target::Choice(Control::PollingRate, Value::PollingRate(rate));
+        let pending = |app: &App| app.edit.map(|e| e.value);
+        assert_eq!(click(&mut app, rate(PollingRate::HZ_4000)), None);
+        assert_eq!(app.focused(), Some(Control::PollingRate), "selected");
+        assert_eq!(
+            pending(&app),
+            Some(Value::PollingRate(PollingRate::HZ_4000))
+        );
+        assert_eq!(click(&mut app, rate(PollingRate::HZ_1000)), None);
+        assert_eq!(app.edit, None, "back to the mouse's value");
+        assert_eq!(click(&mut app, rate(PollingRate::HZ_1000)), None);
+        assert_eq!(click(&mut app, rate(PollingRate::HZ_250)), None);
+        assert_eq!(
+            applied(click(&mut app, rate(PollingRate::HZ_250))),
+            Change::PollingRate(PollingRate::HZ_250),
+            "the pending value again applies it"
+        );
+
+        let warning = Some(Target::Row(Control::LowBatteryWarning));
+        for (kind, pct) in [
+            (MouseEventKind::ScrollUp, 30),
+            (MouseEventKind::ScrollUp, 40),
+            (MouseEventKind::ScrollDown, 30),
+        ] {
+            assert_eq!(app.handle_mouse(kind, warning), None);
+            assert_eq!(pending(&app), Some(Value::Percent(pct)));
+        }
+    }
+
+    #[test]
+    fn locked_rows_help_and_other_buttons_ignore_the_mouse() {
+        let mut app = demo("ROG Harpe II Ace");
+        let locked = Target::Row(Control::PowerSavingRate);
+        assert_eq!(click(&mut app, locked), None);
+        assert_eq!(app.focused(), Some(Control::Stage(0)));
+
+        let stage = Some(Target::Row(Control::Stage(0)));
+        for kind in [
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Moved,
+        ] {
+            assert_eq!(app.handle_mouse(kind, stage), None);
+        }
+        assert_eq!(app.handle_mouse(CLICK, None), None);
+        assert_eq!(app.edit, None);
+
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.handle_mouse(MouseEventKind::ScrollUp, stage), None);
+        assert!(app.help, "only a click closes help");
+        assert_eq!(app.handle_mouse(CLICK, stage), None);
+        assert!(!app.help);
+        assert_eq!(app.edit, None, "the click did nothing else");
     }
 
     #[test]

@@ -113,9 +113,9 @@ Tests that need a mouse can't run in CI; keep protocol parsing in pure functions
 
 - **Never change the user's mouse without being asked for that exact change.** Settings
   changes (`51 …` and `50 …` packets) persist on the device. Reads (`12 …`, `01 A0`) are
-  fine. `rogctl tui` against the real mouse only reads until Enter or Space is pressed, so an
-  agent driving it may send navigation keys and `q` but never Enter or Space. Test changes
-  with `--demo` and unit tests.
+  fine. `rogctl tui` against the real mouse only reads until Enter or Space is pressed or a
+  selected row is clicked, so an agent driving it may send navigation keys and `q` but never
+  Enter, Space or mouse clicks. Test changes with `--demo` and unit tests.
 - **Don't change the user's system without asking first.** This includes `cargo install`,
   creating the plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
   `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, installing or

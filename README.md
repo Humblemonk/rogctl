@@ -106,6 +106,10 @@ awake: move it if rogctl says it's asleep.
 | ? | Help |
 | q | Quit |
 
+The mouse works too: click a setting to select it and click it again to apply, like Enter.
+Scrolling over a setting, or clicking a value on a scale, changes it without sending it yet.
+Most terminals let you hold Shift to select text while rogctl uses the mouse.
+
 Nothing is sent until you press Enter. Applied changes are stored on the mouse, so they stay
 after unplugging it and apply on other computers too. Changing the lift-off distance also
 resets the sensor calibration.

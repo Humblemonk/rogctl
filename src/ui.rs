@@ -3,12 +3,14 @@
 //! GearLink's ROG theme: near-black, white text, grey detail, one red accent.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use std::ops::Range;
+
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
 
-use crate::app::{App, Control, Edit, Link, Row, Value};
+use crate::app::{App, Control, Edit, Link, Row, Target, Value};
 
 /// Settings stay readable on a wide terminal; a full polling-rate scale and
 /// its hint fit an 80-column one.
@@ -31,7 +33,30 @@ const ACCENT: Style = Style::new().fg(RED).add_modifier(Modifier::BOLD);
 /// The focused row: a dark red band, as GearLink marks the selected item.
 const FOCUSED: Style = Style::new().bg(RED_BAND);
 
-pub fn draw(frame: &mut Frame, app: &App) {
+/// Where each clickable thing was drawn, for the mouse.
+#[derive(Debug, Default)]
+pub struct Hits(Vec<(Rect, Target)>);
+
+impl Hits {
+    /// Later regions win: a scale's values over their row.
+    pub fn target_at(&self, column: u16, row: u16) -> Option<Target> {
+        self.0
+            .iter()
+            .rev()
+            .find(|(area, _)| area.contains(Position::new(column, row)))
+            .map(|&(_, target)| target)
+    }
+
+    fn add(&mut self, area: Rect, target: Target) {
+        if !area.is_empty() {
+            self.0.push((area, target));
+        }
+    }
+}
+
+/// Draws the screen and returns where its rows and scale values are.
+pub fn draw(frame: &mut Frame, app: &App) -> Hits {
+    let mut hits = Hits::default();
     frame.render_widget(Block::new().style(BASE), frame.area());
     let area = frame.area();
     let area = Rect {
@@ -48,7 +73,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Paragraph::new(header_line(app)), header);
     match app.link {
-        Link::Connected => draw_settings(frame, app, body),
+        Link::Connected => draw_settings(frame, app, body, &mut hits),
         Link::Asleep | Link::Disconnected | Link::Error(_) => draw_notice(frame, app, body),
     }
     if let Some(m) = &app.message {
@@ -66,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.help {
         draw_help(frame, area);
     }
+    hits
 }
 
 /// A bordered section with GearLink's thin grey lines and a white heading.
@@ -128,7 +154,7 @@ fn footer_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
     let (battery, performance): (Vec<Row>, Vec<Row>) =
         app.rows().into_iter().partition(|r| r.control.is_battery());
     let height = |rows: &[Row]| {
@@ -151,24 +177,42 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         if rows.is_empty() {
             continue;
         }
-        // The band goes under the text, across the panel's whole width.
-        let focused = rows.iter().position(|r| Some(r.control) == app.focused());
-        if let Some(i) = focused.and_then(|i| u16::try_from(i).ok()) {
-            let band = Rect {
-                x: area.x.saturating_add(1),
-                y: area.y.saturating_add(1).saturating_add(i),
-                width: area.width.saturating_sub(2),
+        let block = panel(title);
+        let inner = block.inner(area);
+        let mut lines = Vec::new();
+        for (y, row) in (inner.y..inner.bottom()).zip(rows) {
+            let line_area = Rect {
+                y,
                 height: 1,
+                ..inner
+            };
+            // The band goes under the text, across the panel's whole width.
+            if app.focused() == Some(row.control) {
+                frame.render_widget(Block::new().style(FOCUSED), line_area);
             }
-            .intersection(area);
-            frame.render_widget(Block::new().style(FOCUSED), band);
+            let (line, choices) = row_line(app, row);
+            if row.locked.is_none() {
+                hits.add(line_area, Target::Row(row.control));
+                for (columns, value) in choices {
+                    let choice = Rect {
+                        x: inner.x.saturating_add(columns.start),
+                        width: columns.end - columns.start,
+                        ..line_area
+                    };
+                    hits.add(
+                        choice.intersection(line_area),
+                        Target::Choice(row.control, value),
+                    );
+                }
+            }
+            lines.push(line);
         }
-        let lines: Vec<Line> = rows.iter().map(|&row| row_line(app, row)).collect();
-        frame.render_widget(Paragraph::new(lines).block(panel(title)), area);
+        frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 }
 
-fn row_line(app: &App, row: Row) -> Line<'static> {
+/// A row, and the columns each value on its scale covers, if it has one.
+fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
     let control = row.control;
     let focused = app.focused() == Some(control);
     let mut spans = if focused {
@@ -191,8 +235,18 @@ fn row_line(app: &App, row: Row) -> Line<'static> {
         .filter(|_| row.locked.is_none())
         .zip(shown)
         .filter(|(choices, value)| choices.contains(value));
+    let mut columns = Vec::new();
     if let Some((choices, value)) = on_scale {
-        spans.extend(scale(&choices, value, edit.is_some()));
+        let mut x = width(&spans);
+        for (choice, choice_spans) in scale(&choices, value, edit.is_some()) {
+            let end = x.saturating_add(width(&choice_spans));
+            columns.push((x..end, choice));
+            spans.extend(choice_spans);
+            x = end;
+        }
+        if let Some(unit) = unit(value) {
+            spans.push(Span::styled(format!(" {unit}"), MUTED));
+        }
     } else {
         spans.extend(value_spans(row, focused, edit, app.value(control)));
     }
@@ -211,7 +265,12 @@ fn row_line(app: &App, row: Row) -> Line<'static> {
     if edit.is_some() {
         spans.push(Span::styled("  Enter to apply", MUTED));
     }
-    Line::from(spans)
+    (Line::from(spans), columns)
+}
+
+fn width(spans: &[Span]) -> u16 {
+    let width: usize = spans.iter().map(Span::width).sum();
+    u16::try_from(width).unwrap_or(u16::MAX)
 }
 
 /// A value drawn as text: pending edits between red arrows (or with a cursor
@@ -250,10 +309,12 @@ fn value_spans(
 
 /// A row of choices drawn like GearLink's sliders: the track is red up to the
 /// knob (●) on `value`, grey after it. `pending`: the value isn't sent yet.
-fn scale(choices: &[Value], value: Value, pending: bool) -> Vec<Span<'static>> {
+/// Each choice comes with its spans, the track leading up to it included.
+fn scale(choices: &[Value], value: Value, pending: bool) -> Vec<(Value, Vec<Span<'static>>)> {
     let at = choices.iter().position(|&c| c == value).unwrap_or(0);
-    let mut spans = Vec::new();
+    let mut drawn = Vec::new();
     for (i, &choice) in choices.iter().enumerate() {
+        let mut spans = Vec::new();
         if i > 0 {
             let track = if i <= at {
                 Style::new().fg(RED)
@@ -273,11 +334,9 @@ fn scale(choices: &[Value], value: Value, pending: bool) -> Vec<Span<'static>> {
         } else {
             spans.push(Span::styled(tick(choice), MUTED));
         }
+        drawn.push((choice, spans));
     }
-    if let Some(unit) = unit(value) {
-        spans.push(Span::styled(format!(" {unit}"), MUTED));
-    }
-    spans
+    drawn
 }
 
 /// A choice's label on a scale: `Value`'s text without the unit, which the
@@ -358,6 +417,8 @@ const HELP: &[(&str, &str)] = &[
     ("Esc", "Cancel the change"),
     ("r", "Read the settings from the mouse again"),
     ("Tab", "Next mouse, when several are plugged in"),
+    ("Mouse", "Click a setting to select it, again to apply;"),
+    ("", "click a scale or scroll to change the value"),
     ("q", "Quit"),
 ];
 
@@ -403,7 +464,11 @@ mod tests {
     /// Draws `app` on a test terminal and returns its cells.
     fn draw_to_buffer(app: &App, width: u16, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, app);
+            })
+            .unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -538,6 +603,57 @@ mod tests {
             BACKGROUND,
             "the whole screen is themed"
         );
+    }
+
+    /// Every row that can be selected, and every value on its scale, can be
+    /// clicked where it's drawn; locked rows can't. Regions stay on screen.
+    #[test]
+    fn hits_match_what_is_drawn() {
+        let text = |buffer: &Buffer, area: Rect| {
+            area.positions()
+                .map(|p| buffer[p].symbol().to_owned())
+                .collect::<String>()
+        };
+        for model in MODELS {
+            let app = demo(model);
+            let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+            let mut hits = Hits::default();
+            terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            for row in app.rows() {
+                let control = row.control;
+                let area = hits.0.iter().find(|(_, t)| *t == Target::Row(control));
+                let Some(&(area, _)) = area else {
+                    assert!(row.locked.is_some(), "{} {control:?}", model.name);
+                    continue;
+                };
+                assert!(row.locked.is_none(), "{} {control:?}", model.name);
+                assert!(text(buffer, area).contains(&control.label()));
+                for value in app.choices(control).unwrap_or_default() {
+                    let target = Target::Choice(control, value);
+                    let Some(&(area, _)) = hits.0.iter().find(|(_, t)| *t == target) else {
+                        panic!("{} {target:?} not clickable", model.name);
+                    };
+                    assert!(
+                        text(buffer, area).ends_with(&tick(value)),
+                        "{} {target:?}: {:?}",
+                        model.name,
+                        text(buffer, area)
+                    );
+                    for p in area.positions() {
+                        assert_eq!(hits.target_at(p.x, p.y), Some(target));
+                    }
+                }
+            }
+            for (w, h) in [(1, 1), (20, 5), (80, 24)] {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                let mut hits = Hits::default();
+                terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+                for (area, target) in &hits.0 {
+                    assert!(area.right() <= w && area.bottom() <= h, "{target:?}");
+                }
+            }
+        }
     }
 
     #[test]

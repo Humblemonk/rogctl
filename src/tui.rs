@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableMouseCapture, Event, KeyEventKind};
+use ratatui::crossterm::{Command, ExecutableCommand};
 
 use crate::app::{self, Action, App, Link};
 use crate::device::{self, Device, QueryError};
@@ -68,7 +69,16 @@ pub fn run(demo: Option<Option<String>>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = event_loop(&mut terminal, &mut app, &mut session);
+    // try_init's panic hook restores the terminal; stop the mouse first.
+    let restore_terminal = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        release_mouse();
+        restore_terminal(info);
+    }));
+    let result = io::stdout()
+        .execute(EnableClickCapture)
+        .and_then(|_| event_loop(&mut terminal, &mut app, &mut session));
+    release_mouse();
     ratatui::restore();
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -79,19 +89,47 @@ pub fn run(demo: Option<Option<String>>) -> ExitCode {
     }
 }
 
+/// Mouse reporting for clicks and the wheel only. crossterm's
+/// `EnableMouseCapture` also reports every pointer move, each of which would
+/// wake the loop for a redraw. `DisableMouseCapture` turns either off.
+struct EnableClickCapture;
+
+impl Command for EnableClickCapture {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        // Presses, releases and the wheel, with SGR coordinates so columns
+        // past 223 report correctly.
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+}
+
+/// Best effort: it runs on the way out, when there's nothing left to report
+/// an error to.
+fn release_mouse() {
+    let _ = io::stdout().execute(DisableMouseCapture);
+}
+
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     session: &mut Session,
 ) -> io::Result<()> {
     loop {
-        terminal.draw(|frame| ui::draw(frame, app))?;
-        if event::poll(TICK)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && let Some(action) = app.handle_key(key.code, key.modifiers)
-        {
-            apply_action(app, session, action);
+        let mut hits = ui::Hits::default();
+        terminal.draw(|frame| hits = ui::draw(frame, app))?;
+        if event::poll(TICK)? {
+            let action = match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.handle_key(key.code, key.modifiers)
+                }
+                Event::Mouse(mouse) => {
+                    app.handle_mouse(mouse.kind, hits.target_at(mouse.column, mouse.row))
+                }
+                // Key releases, focus changes, pastes; a resize redraws anyway.
+                _ => None,
+            };
+            if let Some(action) = action {
+                apply_action(app, session, action);
+            }
         }
         if app.quit {
             return Ok(());

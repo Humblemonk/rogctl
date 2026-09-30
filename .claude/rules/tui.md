@@ -9,9 +9,15 @@ paths:
 
 ## Behaviour
 
-- Nothing is written until Enter (or Space). ←/→ and typed digits only change a pending
-  `Edit`; Esc, moving focus or `r` drop it. Every change is also saved to the mouse's flash,
-  so never write on each key press.
+- Nothing is written until Enter, Space or a click on the focused row. ←/→ and typed digits
+  only change a pending `Edit`; Esc, moving focus or `r` drop it. Every change is also saved
+  to the mouse's flash, so never write on each key press.
+- The mouse goes through the same paths: `ui::draw()` returns `Hits` (each selectable row,
+  and each value on its scale), `App::handle_mouse()` maps a click on the focused row to
+  `confirm()` (Enter) and everything else to focus or a pending `Edit`: a first click
+  selects, the wheel steps like ←/→, a scale value sets the edit. Locked rows get no hit.
+  Only clicks and the wheel are captured (`EnableClickCapture`), so pointer moves don't
+  redraw.
 - After every change `apply_action()` reads the settings back, so the screen shows what the
   mouse has, not what was asked for.
 - `--demo` runs with no device: `App::simulate()` stands in for the write and read-back.
@@ -19,8 +25,9 @@ paths:
 - `Session::tick()` notices unplugging by checking the hidraw node exists (no HID traffic),
   looks for a mouse every 2 s while none is found, and retries a sleeping one every 5 s.
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
-  abort on panic); always pair it with `ratatui::restore()`. Once the terminal is up,
-  nothing prints: messages go to the status line through `App::ok()` and `App::error()`.
+  abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
+  TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the
+  status line through `App::ok()` and `App::error()`.
 
 ## Same UI for every mouse
 
