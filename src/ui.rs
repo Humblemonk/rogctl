@@ -397,12 +397,19 @@ mod tests {
     use crate::models::MODELS;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-    fn render(app: &App, width: u16, height: u16) -> String {
+    /// Draws `app` on a test terminal and returns its cells.
+    fn draw_to_buffer(app: &App, width: u16, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The screen as text, one line per row, trailing spaces trimmed.
+    fn render(app: &App, width: u16, height: u16) -> String {
+        let buffer = draw_to_buffer(app, width, height);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -504,9 +511,7 @@ mod tests {
             "locked"
         );
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
+        let buffer = draw_to_buffer(&app, 80, 24);
         let y = 6;
         let x = (0..80).find(|&x| buffer[(x, y)].symbol() == "●").unwrap();
         assert_eq!(buffer[(x - 1, y)].fg, RED, "track before the knob");
@@ -522,9 +527,7 @@ mod tests {
     fn focused_row_is_a_red_band() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let app = demo(model);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
+        let buffer = draw_to_buffer(&app, 80, 24);
         // Row 2 is DPI stage 1 (focused), row 3 DPI stage 2; x = 60 is past the text.
         assert_eq!(buffer[(60, 2)].bg, RED_BAND);
         assert_eq!(buffer[(60, 3)].bg, BACKGROUND);

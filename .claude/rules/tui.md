@@ -24,7 +24,7 @@ paths:
 
 ## Same UI for every mouse
 
-A user owns one mouse but reads one README and one help screen, so a setting that exists on
+A user owns one mouse but reads one readme and one help screen, so a setting that exists on
 several models looks and behaves the same on all of them.
 
 - **One row order:** DPI stages → polling rate → button debounce → angle snapping → angle
