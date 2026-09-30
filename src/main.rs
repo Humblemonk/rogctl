@@ -1,5 +1,9 @@
+mod app;
 mod device;
 mod models;
+mod protocol;
+mod tui;
+mod ui;
 mod waybar;
 
 use std::io::{self, Write};
@@ -8,16 +12,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use device::{Device, PowerOff, QueryError};
+use device::Device;
+use protocol::PowerOff;
 
 const USAGE: &str = "\
-rogctl - battery status for ASUS mice
+rogctl - battery status and settings for ASUS mice
 
 Usage:
   rogctl [battery] [OPTIONS]             Print the battery status once
   rogctl watch [--interval SECS] [OPTIONS]
                                          Print the status every SECS seconds (default 60)
   rogctl list                            List detected devices and their hidraw nodes
+  rogctl tui [--demo [MODEL]]            View and change the mouse's settings (DPI,
+                                         polling rate, ...). --demo runs without a
+                                         mouse, as MODEL (default ROG Harpe II Ace)
 
 Options:
   --json                 Same as --format json
@@ -117,17 +125,14 @@ fn poll() -> Status {
                 return Status {
                     battery: Some(r.battery),
                     charging: r.charging,
-                    low_battery_warning: r.settings.map(|s| s.low_battery_warning),
-                    power_off_minutes: r.settings.and_then(|s| match s.power_off {
-                        PowerOff::Minutes(m) => Some(m),
-                        PowerOff::Never | PowerOff::Unknown(_) => None,
-                    }),
+                    low_battery_warning: r.low_battery_warning,
+                    power_off_minutes: r.power_off.and_then(PowerOff::minutes),
                     battery_updated: Some(now()),
                     ..Status::for_device(State::Connected, dev)
                 };
             }
             Ok(_) => Status::for_device(State::Asleep, dev),
-            Err(e) if is_asleep(&e, dev.model.wireless) => Status::for_device(State::Asleep, dev),
+            Err(e) if e.means_asleep(dev.model.wireless) => Status::for_device(State::Asleep, dev),
             Err(e) => Status {
                 error: Some(format!("{}: {e}", dev.hidraw.display())),
                 ..Status::for_device(State::Error, dev)
@@ -139,17 +144,6 @@ fn poll() -> Status {
         }
     }
     fallback.unwrap_or_else(|| Status::empty(State::Disconnected))
-}
-
-/// Whether a failed read means the mouse is asleep or out of range rather than
-/// broken. A receiver answers for a sleeping mouse with an empty reply, no
-/// reply, or a rejection (`FF AA`); over a cable a rejection is a real error.
-fn is_asleep(e: &QueryError, wireless: bool) -> bool {
-    match e {
-        QueryError::Empty | QueryError::Timeout => true,
-        QueryError::Rejected => wireless,
-        QueryError::Io(_) => false,
-    }
 }
 
 fn now() -> u64 {
@@ -371,7 +365,7 @@ fn cmd_list() -> ExitCode {
             "{}  {} ({link}, {:04x}:{:04x} interface {})",
             dev.hidraw.display(),
             dev.model.name,
-            0x0b05,
+            device::ASUS_VID,
             dev.model.pid,
             dev.model.interface
         );
@@ -384,18 +378,20 @@ fn cmd_list() -> ExitCode {
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
-    let command = match args.peek().map(String::as_str) {
-        Some(c) if !c.starts_with('-') => args.next().unwrap(),
-        _ => "battery".to_owned(),
-    };
+    let command = args
+        .next_if(|c| !c.starts_with('-'))
+        .unwrap_or_else(|| "battery".to_owned());
 
     let mut output = Output {
         format: Format::Text,
         low_threshold: 20,
     };
     let mut interval = Duration::from_secs(60);
+    // `Some(None)`: --demo without a model name.
+    let mut demo: Option<Option<String>> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--demo" => demo = Some(args.next_if(|v| !v.starts_with('-'))),
             "--json" => output.format = Format::Json,
             "--format" => match args.next().as_deref().and_then(Format::parse) {
                 Some(format) => output.format = format,
@@ -433,7 +429,13 @@ fn main() -> ExitCode {
         }
     }
 
+    if demo.is_some() && command != "tui" {
+        eprintln!("--demo only works with `rogctl tui`");
+        return ExitCode::FAILURE;
+    }
+
     match command.as_str() {
+        "tui" => tui::run(demo),
         "battery" => cmd_battery(output),
         "watch" => cmd_watch(interval, output),
         "list" => cmd_list(),
@@ -649,16 +651,6 @@ mod tests {
         // Never waits longer than a short interval.
         let short = Duration::from_secs(2);
         assert_eq!(next_wait(State::Error, short, &mut retry), short);
-    }
-
-    #[test]
-    fn receiver_rejection_means_asleep() {
-        assert!(is_asleep(&QueryError::Rejected, true));
-        assert!(!is_asleep(&QueryError::Rejected, false));
-        assert!(is_asleep(&QueryError::Empty, false));
-        assert!(is_asleep(&QueryError::Timeout, true));
-        let io = io::Error::from(io::ErrorKind::BrokenPipe);
-        assert!(!is_asleep(&QueryError::Io(io), true));
     }
 
     #[test]
