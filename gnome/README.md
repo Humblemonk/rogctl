@@ -5,12 +5,11 @@ Shows your mouse's battery level in the GNOME top bar. Needs GNOME 45 or newer a
 
 ## Install
 
-From your rogctl checkout:
-
 ```sh
-gnome-extensions pack --force gnome/rog-mouse-battery@humblemonk.github.io
-gnome-extensions install --force rog-mouse-battery@humblemonk.github.io.shell-extension.zip
+rogctl configure gnome
 ```
+
+This packs and installs it with `gnome-extensions`.
 
 Log out and back in, then turn on **ASUS Mouse Battery** in the Extensions app, or run:
 
@@ -25,8 +24,9 @@ low-battery threshold are in the extension's settings in the Extensions app.
 
 ## Update or remove
 
-After a `git pull`, run the two install commands again and log out and back in. To remove it:
+After updating rogctl, run `rogctl configure gnome` again, then log out and back in. To
+remove it:
 
 ```sh
-gnome-extensions uninstall rog-mouse-battery@humblemonk.github.io
+rogctl configure gnome --remove
 ```

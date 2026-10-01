@@ -5,6 +5,8 @@ and a Nerd Font for the icons.
 
 ## Install
 
+`rogctl configure waybar` prints the module, the CSS and these steps:
+
 1. Copy the `custom/rog-mouse` module from [`config.json`](config.json) into your Waybar
    config.
 2. Add `"custom/rog-mouse"` to one of your `modules-left`, `modules-center` or
@@ -23,3 +25,8 @@ plus `charging` and `low`. `format-icons` uses the same names. It hides itself w
 is plugged in.
 
 Waybar can't send notifications, so this module only turns red when the battery is low.
+
+## Remove
+
+Take `"custom/rog-mouse"` out of your modules list, delete the module and the
+`#custom-rog-mouse` rules from `style.css`, then reload Waybar.

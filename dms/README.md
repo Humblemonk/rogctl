@@ -5,14 +5,11 @@ newer and [rogctl installed](../README.md#getting-started).
 
 ## Install
 
-From your rogctl checkout:
-
 ```sh
-ln -s "$PWD/dms/RogMouseBattery" ~/.config/DankMaterialShell/plugins/RogMouseBattery
-dms ipc plugin-scan scan
+rogctl configure dms
 ```
 
-Enable **ASUS Mouse Battery** in Settings → Plugins, then add it to the bar.
+This copies the plugin to `~/.config/DankMaterialShell/plugins/RogMouseBattery`. Then enable **ASUS Mouse Battery** in Settings → Plugins, then add it to the bar.
 
 ## Use
 
@@ -20,12 +17,11 @@ Click the widget for details; right-click it to read the mouse right away. The r
 refresh interval and low-battery threshold are in the plugin's settings. Low-battery
 notifications use `notify-send`.
 
-Because the plugin is a link to your checkout, `git pull` updates it.
+## Update or remove
 
-## Remove
-
-Disable it in Settings → Plugins, then delete the link:
+After updating rogctl, run `rogctl configure dms` again. To remove it, disable it in
+Settings → Plugins, then:
 
 ```sh
-rm ~/.config/DankMaterialShell/plugins/RogMouseBattery
+rogctl configure dms --remove
 ```

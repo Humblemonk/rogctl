@@ -2,7 +2,7 @@
   "id": "rogMouseBattery",
   "name": "ASUS Mouse Battery",
   "description": "Battery level for ASUS mice, read through rogctl.",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "author": "humblemonk",
   "type": "composite",
   "capabilities": ["daemon", "dankbar-widget"],

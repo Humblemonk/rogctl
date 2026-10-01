@@ -5,11 +5,11 @@ Shows your mouse's battery level in a Plasma 6 panel. Needs
 
 ## Install
 
-From your rogctl checkout:
-
 ```sh
-kpackagetool6 --type Plasma/Applet --install kde/rog-mouse-battery
+rogctl configure kde
 ```
+
+This installs it with `kpackagetool6`.
 
 Then add **ASUS Mouse Battery** to a panel from Add Widgets.
 
@@ -20,8 +20,9 @@ command, refresh interval and low-battery threshold are in its settings.
 
 ## Update or remove
 
-After a `git pull`, update it with `--upgrade` in place of `--install`. To remove it:
+After updating rogctl, run `rogctl configure kde` again, then log out and back in. To remove
+it:
 
 ```sh
-kpackagetool6 --type Plasma/Applet --remove com.github.humblemonk.rogmousebattery
+rogctl configure kde --remove
 ```

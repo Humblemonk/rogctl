@@ -13,6 +13,7 @@ rogctl watch --format waybar  # the same, as Waybar custom-module JSON
 rogctl list                   # detected devices and their /dev/hidraw nodes
 rogctl settings               # view and change the mouse's settings
 rogctl settings --demo        # the settings screen without a mouse
+rogctl configure DESKTOP      # install a panel widget (--remove removes it)
 ```
 
 `rogctl` on its own is short for `rogctl battery`. `rogctl settings --demo "ROG Chakram"`
@@ -26,6 +27,27 @@ shows the demo as another model from the [Supported mice](../README.md#supported
 | `--json` | Same as `--format json` |
 | `--low-threshold PCT` | Level at or below which the battery counts as low (default 20, 0 turns it off) |
 | `--interval SECS` | `watch` only: seconds between reads (default 60) |
+
+## Installing widgets
+
+`rogctl configure DESKTOP` installs the panel widget for `noctalia`, `waybar`, `quickshell`,
+`dms`, `kde` or `gnome`; without `DESKTOP` it lists them. The widget files are built into
+rogctl, so this needs no checkout, and running it again after updating rogctl updates the
+widget. `--remove` removes the widget.
+
+| Desktop | Install | Remove |
+| --- | --- | --- |
+| `noctalia` | Copies the plugin to `$XDG_DATA_HOME/noctalia/plugins/rog-mouse-battery`, then enables it with `noctalia msg` | Disables it, then deletes the directory |
+| `waybar` | Prints the module, its CSS and the steps; doesn't edit the Waybar config | Prints the steps |
+| `quickshell` | Copies two files next to `$XDG_CONFIG_HOME/quickshell/shell.qml` | Deletes them |
+| `dms` | Copies the plugin to `$XDG_CONFIG_HOME/DankMaterialShell/plugins/RogMouseBattery`, then rescans with `dms ipc` | Deletes the directory, then rescans |
+| `kde` | `kpackagetool6 --install`, or `--upgrade` if installed | `kpackagetool6 --remove` |
+| `gnome` | `gnome-extensions pack` and `install` | `gnome-extensions uninstall` |
+
+`$XDG_DATA_HOME` defaults to `~/.local/share` and `$XDG_CONFIG_HOME` to `~/.config`. `--force`
+replaces a link where a plugin directory goes, and overwrites or removes Quickshell files
+that differ from rogctl's copies; without it, rogctl leaves them alone and exits with 1.
+`rogctl configure` exits with 0 on success and 1 on an error.
 
 ## Exit codes
 

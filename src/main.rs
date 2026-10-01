@@ -1,4 +1,5 @@
 mod app;
+mod configure;
 mod device;
 mod models;
 mod protocol;
@@ -22,6 +23,7 @@ Examples:
   rogctl                                 Show the mouse's battery level
   rogctl settings                        View and change DPI, polling rate and more
   rogctl settings --demo                 Try the settings screen without a mouse
+  rogctl configure kde                   Add the battery widget to KDE Plasma
 
 Usage:
   rogctl [battery] [OPTIONS]             Print the battery status once
@@ -31,6 +33,10 @@ Usage:
   rogctl settings [--demo [MODEL]]       View and change the mouse's settings (DPI,
                                          polling rate, ...). --demo runs without a
                                          mouse, as MODEL (default ROG Harpe II Ace)
+  rogctl configure [DESKTOP] [--remove] [--force]
+                                         Install the panel widget for DESKTOP (noctalia,
+                                         waybar, quickshell, dms, kde or gnome), or
+                                         remove it. Without DESKTOP, lists them
 
 Options:
   --json                 Same as --format json
@@ -408,10 +414,15 @@ fn main() -> ExitCode {
     let mut interval = Duration::from_secs(60);
     // `Some(None)`: --demo without a model name.
     let mut demo: Option<Option<String>> = None;
+    let mut desktop: Option<String> = None;
+    let mut remove = false;
+    let mut force = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--demo" => demo = Some(args.next_if(|v| !v.starts_with('-'))),
             "--json" => output.format = Format::Json,
+            "--remove" => remove = true,
+            "--force" => force = true,
             "--format" => match args.next().as_deref().and_then(Format::parse) {
                 Some(format) => output.format = format,
                 None => {
@@ -443,6 +454,9 @@ fn main() -> ExitCode {
                 println!("rogctl {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
             }
+            other if command == "configure" && desktop.is_none() && !other.starts_with('-') => {
+                desktop = Some(other.to_owned());
+            }
             other => {
                 eprintln!("unknown argument: {other}\n\n{USAGE}");
                 return ExitCode::FAILURE;
@@ -456,12 +470,17 @@ fn main() -> ExitCode {
         eprintln!("--demo only works with `rogctl settings`");
         return ExitCode::FAILURE;
     }
+    if (remove || force) && command != "configure" {
+        eprintln!("--remove and --force only work with `rogctl configure`");
+        return ExitCode::FAILURE;
+    }
 
     match command.as_str() {
         "settings" | "tui" => tui::run(demo),
         "battery" => cmd_battery(output),
         "watch" => cmd_watch(interval, output),
         "list" => cmd_list(),
+        "configure" => configure::run(desktop.as_deref(), remove, force),
         "help" => {
             print!("{USAGE}");
             ExitCode::SUCCESS
