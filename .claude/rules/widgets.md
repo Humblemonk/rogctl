@@ -8,6 +8,7 @@ paths:
   - "gnome/**"
   - "src/main.rs"
   - "src/waybar.rs"
+  - "src/configure.rs"
 ---
 
 # Panel widgets
@@ -44,6 +45,21 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
   keys in `translations/en.json`; settings need `label_key` entries there too.
 - The plugin declares `plugin_api = 24` (for `runAsync` with an argv array). Don't raise it
   without checking the user's installed Noctalia supports the new level.
+
+## Installing them
+
+`rogctl configure` installs each widget from copies built into the binary (`src/configure.rs`),
+doing what the widget's readme says to do by hand. A file added to or removed from a widget
+directory must change its bundle there too; `bundles_hold_every_widget_file()` checks. Keep
+that readme's Install and Remove sections in step with `configure.rs`.
+
+For the widgets it copies itself (Noctalia, DMS, Quickshell), rogctl deletes only files it
+recorded writing (`~/.local/state/rogctl/DESKTOP.files`) and still unchanged, and a directory
+only once empty. Never delete a whole directory or anything the user may have changed.
+
+To try it without changing the system, run it with `HOME` and `TMPDIR` pointing at a scratch
+directory, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` unset, and stub scripts named `noctalia`,
+`dms`, `kpackagetool6` and `gnome-extensions` that echo their arguments first on `PATH`.
 
 ## Checking without the desktops
 

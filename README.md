@@ -88,16 +88,24 @@ Each widget shows the mouse's battery level in your panel or bar. It turns red w
 battery is low (20% by default), dims while the mouse sleeps and hides while no mouse is
 plugged in. All but Waybar also send a notification when the battery gets low.
 
-Pick the one for your desktop:
+Install the one for your desktop with `rogctl configure`, such as:
 
-| Desktop | Setup |
-| --- | --- |
-| Noctalia | [noctalia/](noctalia/README.md) |
-| Waybar (Hyprland, Sway, niri, …) | [waybar/](waybar/README.md) |
-| Quickshell config of your own | [quickshell/](quickshell/README.md) |
-| DankMaterialShell | [dms/](dms/README.md) |
-| KDE Plasma 6 | [kde/](kde/README.md) |
-| GNOME 45 or newer | [gnome/](gnome/README.md) |
+```sh
+rogctl configure kde
+```
+
+| Desktop | Command | Details |
+| --- | --- | --- |
+| Noctalia | `rogctl configure noctalia` | [noctalia/](noctalia/README.md) |
+| Waybar (Hyprland, Sway, niri, …) | `rogctl configure waybar` | [waybar/](waybar/README.md) |
+| Quickshell config of your own | `rogctl configure quickshell` | [quickshell/](quickshell/README.md) |
+| DankMaterialShell | `rogctl configure dms` | [dms/](dms/README.md) |
+| KDE Plasma 6 | `rogctl configure kde` | [kde/](kde/README.md) |
+| GNOME 45 or newer | `rogctl configure gnome` | [gnome/](gnome/README.md) |
+
+It prints the step left to do by hand, such as adding the widget to your panel. Run it again
+after updating rogctl to update the widget, or add `--remove` to remove it. Waybar's config is
+yours, so for Waybar it prints the module to add rather than editing the config.
 
 If a widget says rogctl wasn't found, your desktop's `PATH` probably doesn't include
 `~/.cargo/bin`. Set the widget's **rogctl command** setting to the full path, such as

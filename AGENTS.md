@@ -7,7 +7,7 @@ Topic detail lives in `.claude/rules/`. Read the matching file before editing (C
 loads them automatically): `protocol.md` for `protocol.rs`/`device.rs`/`models.rs` (packets,
 per-model differences, capturing unknown commands), `tui.md` for `app.rs`/`ui.rs`/`tui.rs`
 (behaviour, same UI for every mouse, adding a setting), `widgets.md` for the panel widgets,
-`main.rs` and `waybar.rs` (the JSON contract, keeping widgets alike).
+`main.rs`, `waybar.rs` and `configure.rs` (the JSON contract, keeping widgets alike).
 
 ## Project
 
@@ -22,8 +22,9 @@ each widget is a thin frontend over its JSON output. Prefer the simple, obvious 
 | `src/device.rs` | Discovery (sysfs, Omni pairing) and hidraw I/O: `Connection` sends a request, waits for its reply |
 | `src/protocol.rs` | Every byte sent or parsed: requests, reply parsers, `Features` (what a model has) |
 | `src/models.rs` | `MODELS`: supported mice and their `Features`, transcribed from G-Helper |
-| `src/main.rs` | CLI (`battery`, `watch`, `list`, `settings`), JSON status output |
+| `src/main.rs` | CLI (`battery`, `watch`, `list`, `settings`, `configure`), JSON status output |
 | `src/waybar.rs` | `--format waybar`: the status as Waybar custom-module JSON |
+| `src/configure.rs` | `rogctl configure`: installs or removes a widget from copies built into the binary |
 | `src/app.rs` | TUI state and key handling (`Control`, `Value`, `Action`); no I/O |
 | `src/ui.rs` | TUI rendering with ratatui |
 | `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
@@ -118,7 +119,8 @@ Tests that need a mouse can't run in CI; keep protocol parsing in pure functions
   or a selected row is clicked, so an agent driving it may send navigation keys and `q` but
   never Enter, Space or mouse clicks. Test changes with `--demo` and unit tests.
 - **Don't change the user's system without asking first.** This includes `cargo install`,
-  creating the plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
+  `rogctl configure` (except against a scratch `HOME`, as `widgets.md` explains), creating the
+  plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
   `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, installing or
   enabling any of the other widgets (`kpackagetool6`, `gnome-extensions`, DMS plugin links,
   Waybar or Quickshell config edits), installing a desktop or shell to test with, and anything

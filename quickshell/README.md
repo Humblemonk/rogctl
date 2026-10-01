@@ -5,11 +5,14 @@ and a Nerd Font for the example widget's icons.
 
 ## Install
 
-From your rogctl checkout, copy both files next to your `shell.qml`:
-
 ```sh
-cp quickshell/RogMouse.qml quickshell/RogMouseWidget.qml ~/.config/quickshell/
+rogctl configure quickshell
 ```
+
+This copies `RogMouse.qml` and `RogMouseWidget.qml` next to `~/.config/quickshell/shell.qml`.
+It won't overwrite or remove copies you've changed unless you add `--force`; it can tell
+them from an older version's copies, which it updates. If your config is
+elsewhere, copy the two files next to its `shell.qml` yourself.
 
 Then put `RogMouseWidget {}` in your bar.
 
@@ -29,3 +32,11 @@ The settings (rogctl command, refresh interval, low-battery threshold) are at th
 | `connected` | Whether the mouse answered the last read |
 | `device` | The mouse's name |
 | `status` | The whole [status line](../docs/cli.md#json-status) |
+
+## Remove
+
+Take `RogMouseWidget {}` out of your bar, then:
+
+```sh
+rogctl configure quickshell --remove
+```
