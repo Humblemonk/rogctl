@@ -37,17 +37,25 @@ widget. `--remove` removes the widget.
 
 | Desktop | Install | Remove |
 | --- | --- | --- |
-| `noctalia` | Copies the plugin to `$XDG_DATA_HOME/noctalia/plugins/rog-mouse-battery`, then enables it with `noctalia msg` | Disables it, then deletes the directory |
+| `noctalia` | Copies the plugin to `$XDG_DATA_HOME/noctalia/plugins/rog-mouse-battery`, then enables it with `noctalia msg` | Disables it, then deletes its files |
 | `waybar` | Prints the module, its CSS and the steps; doesn't edit the Waybar config | Prints the steps |
 | `quickshell` | Copies two files next to `$XDG_CONFIG_HOME/quickshell/shell.qml` | Deletes them |
-| `dms` | Copies the plugin to `$XDG_CONFIG_HOME/DankMaterialShell/plugins/RogMouseBattery`, then rescans with `dms ipc` | Deletes the directory, then rescans |
+| `dms` | Copies the plugin to `$XDG_CONFIG_HOME/DankMaterialShell/plugins/RogMouseBattery`, then rescans with `dms ipc` | Deletes its files, then rescans |
 | `kde` | `kpackagetool6 --install`, or `--upgrade` if installed | `kpackagetool6 --remove` |
 | `gnome` | `gnome-extensions pack` and `install` | `gnome-extensions uninstall` |
 
-`$XDG_DATA_HOME` defaults to `~/.local/share` and `$XDG_CONFIG_HOME` to `~/.config`. `--force`
-replaces a link where a plugin directory goes, and overwrites or removes Quickshell files
-that differ from rogctl's copies; without it, rogctl leaves them alone and exits with 1.
-`rogctl configure` exits with 0 on success and 1 on an error.
+`$XDG_DATA_HOME` defaults to `~/.local/share` and `$XDG_CONFIG_HOME` to `~/.config`.
+
+For Noctalia, DMS and Quickshell, rogctl records each file it writes, with a checksum, in
+`$XDG_STATE_HOME/rogctl/DESKTOP.files` (`~/.local/state` by default). Updating and removing
+touch only those files, and only while they're unchanged. An update deletes the files the
+new version no longer ships, and removing deletes a directory only once it's empty. Files you
+add are never touched.
+
+If you changed one of rogctl's files, rogctl leaves it alone and exits with 1. `--force`
+overwrites or removes it anyway. `--force` also replaces a link where a plugin directory goes;
+`--remove` deletes such a link, never what it points to. `rogctl configure` exits with 0 on
+success and 1 on an error.
 
 ## Exit codes
 

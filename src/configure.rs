@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -151,7 +151,7 @@ macro_rules! say {
 }
 
 /// `desktop`: `None` lists the choices. `force` replaces a link where a plugin
-/// directory goes, and Quickshell files that differ from rogctl's.
+/// directory goes, and overwrites or deletes files the user changed.
 pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
     let Some(name) = desktop else {
         let _ = io::stdout().write_all(choices().as_bytes());
@@ -206,7 +206,7 @@ fn install(desktop: Desktop, force: bool) -> Result<()> {
 
 fn uninstall(desktop: Desktop, force: bool) -> Result<()> {
     match desktop {
-        Desktop::Noctalia => remove_noctalia(),
+        Desktop::Noctalia => remove_noctalia(force),
         Desktop::Waybar => {
             say!(
                 "rogctl doesn't edit your Waybar config. To remove the module, take \
@@ -217,22 +217,27 @@ fn uninstall(desktop: Desktop, force: bool) -> Result<()> {
             Ok(())
         }
         Desktop::Quickshell => remove_quickshell(force),
-        Desktop::Dms => remove_dms(),
+        Desktop::Dms => remove_dms(force),
         Desktop::Kde => remove_kde(),
         Desktop::Gnome => remove_gnome(),
     }
 }
 
-fn noctalia_dir() -> Result<PathBuf> {
-    Ok(data_home()?.join("noctalia/plugins/rog-mouse-battery"))
+fn noctalia() -> Result<Copied> {
+    Ok(Copied {
+        dir: data_home()?.join("noctalia/plugins/rog-mouse-battery"),
+        own_dir: true,
+        bundle: &NOCTALIA,
+        record: record_path(Desktop::Noctalia)?,
+    })
 }
 
 fn install_noctalia(force: bool) -> Result<()> {
     find_program("noctalia")?;
-    let dir = noctalia_dir()?;
-    let updating = exists(&dir)?;
-    replace_dir(&dir, &NOCTALIA, force)?;
-    say!("Copied the plugin to {}", dir.display());
+    let noctalia = noctalia()?;
+    let updating = exists(&noctalia.dir)?;
+    noctalia.install(force)?;
+    say!("Copied the plugin to {}", noctalia.dir.display());
     run_tool(Command::new("noctalia").args(["msg", "plugins", "enable", NOCTALIA_ID]))?;
     if updating {
         // Settings in plugin.toml only load with the config.
@@ -244,19 +249,21 @@ fn install_noctalia(force: bool) -> Result<()> {
     Ok(())
 }
 
-fn remove_noctalia() -> Result<()> {
-    let dir = noctalia_dir()?;
-    if !exists(&dir)? {
+fn remove_noctalia(force: bool) -> Result<()> {
+    let noctalia = noctalia()?;
+    if !exists(&noctalia.dir)? {
         return not_installed(Desktop::Noctalia);
     }
+    // Before disabling it, so a refusal leaves the plugin as it was.
+    noctalia.removable(force)?;
     // Noctalia may not be running; the files go either way.
     if let Err(e) =
         run_tool(Command::new("noctalia").args(["msg", "plugins", "disable", NOCTALIA_ID]))
     {
         eprintln!("{e}; removing the plugin anyway");
     }
-    remove_path(&dir)?;
-    say!("Removed {}", dir.display());
+    noctalia.remove(force)?;
+    say!("Removed the plugin from {}", noctalia.dir.display());
     Ok(())
 }
 
@@ -278,97 +285,73 @@ fn print_waybar_module() {
 
 /// Quickshell has no plugin directory: the files go next to the user's
 /// `shell.qml`, among their own files.
-fn quickshell_dir() -> Result<PathBuf> {
+fn quickshell() -> Result<Copied> {
     let dir = config_home()?.join("quickshell");
-    if dir.join("shell.qml").is_file() {
-        Ok(dir)
-    } else {
-        Err(format!(
+    if !dir.join("shell.qml").is_file() {
+        return Err(format!(
             "there's no shell.qml in {}. If your config is elsewhere, copy RogMouse.qml and \
              RogMouseWidget.qml from https://github.com/humblemonk/rogctl/tree/main/quickshell \
              next to its shell.qml",
             dir.display()
-        ))
+        ));
     }
+    Ok(Copied {
+        dir,
+        own_dir: false,
+        bundle: &QUICKSHELL,
+        record: record_path(Desktop::Quickshell)?,
+    })
 }
 
 fn install_quickshell(force: bool) -> Result<()> {
-    let dir = quickshell_dir()?;
-    refuse_edited(&dir, &QUICKSHELL, force, "overwrite")?;
-    write_files(&dir, &QUICKSHELL)?;
+    let quickshell = quickshell()?;
+    quickshell.install(force)?;
     say!(
         "Copied RogMouse.qml and RogMouseWidget.qml to {}\n\
          Now put RogMouseWidget {{}} in your bar. Its settings are at the top of RogMouse.qml.",
-        dir.display()
+        quickshell.dir.display()
     );
     Ok(())
 }
 
 fn remove_quickshell(force: bool) -> Result<()> {
-    let dir = quickshell_dir()?;
-    refuse_edited(&dir, &QUICKSHELL, force, "remove")?;
-    let mut removed = false;
-    for file in QUICKSHELL.files {
-        removed |= remove_path(&dir.join(file.path))?;
-    }
-    if !removed {
+    let quickshell = quickshell()?;
+    if !quickshell.remove(force)? {
         return not_installed(Desktop::Quickshell);
     }
     say!(
         "Removed RogMouse.qml and RogMouseWidget.qml from {}\n\
          Take RogMouseWidget {{}} out of your bar too.",
-        dir.display()
+        quickshell.dir.display()
     );
     Ok(())
 }
 
-/// Errs if any of `bundle`'s files in `dir` differ from rogctl's: the user may
-/// have changed them.
-fn refuse_edited(dir: &Path, bundle: &Bundle, force: bool, verb: &str) -> Result<()> {
-    if force {
-        return Ok(());
-    }
-    let edited: Vec<&str> = bundle
-        .files
-        .iter()
-        .filter(|f| fs::read(dir.join(f.path)).is_ok_and(|ours| ours != f.contents))
-        .map(|f| f.path)
-        .collect();
-    if edited.is_empty() {
-        return Ok(());
-    }
-    let (is, them) = if edited.len() == 1 {
-        ("is", "it")
-    } else {
-        ("are", "them")
-    };
-    Err(format!(
-        "{} in {} {is} different from rogctl's copy. Pass --force to {verb} {them} anyway",
-        edited.join(" and "),
-        dir.display()
-    ))
-}
-
-fn dms_dir() -> Result<PathBuf> {
-    Ok(config_home()?.join("DankMaterialShell/plugins/RogMouseBattery"))
+fn dms() -> Result<Copied> {
+    Ok(Copied {
+        dir: config_home()?.join("DankMaterialShell/plugins/RogMouseBattery"),
+        own_dir: true,
+        bundle: &DMS,
+        record: record_path(Desktop::Dms)?,
+    })
 }
 
 fn install_dms(force: bool) -> Result<()> {
     find_program("dms")?;
-    let dir = dms_dir()?;
-    replace_dir(&dir, &DMS, force)?;
-    say!("Copied the plugin to {}", dir.display());
+    let dms = dms()?;
+    dms.install(force)?;
+    say!("Copied the plugin to {}", dms.dir.display());
     run_tool(Command::new("dms").args(["ipc", "plugin-scan", "scan"]))?;
     say!("Now enable {WIDGET_NAME} in Settings → Plugins, then add it to the bar.");
     Ok(())
 }
 
-fn remove_dms() -> Result<()> {
-    let dir = dms_dir()?;
-    if !remove_path(&dir)? {
+fn remove_dms(force: bool) -> Result<()> {
+    let dms = dms()?;
+    if !dms.remove(force)? {
         return not_installed(Desktop::Dms);
     }
-    say!("Removed {}", dir.display());
+    say!("Removed the plugin from {}", dms.dir.display());
     // DankMaterialShell may not be running; the files are gone either way.
     if let Err(e) = run_tool(Command::new("dms").args(["ipc", "plugin-scan", "scan"])) {
         eprintln!("{e}");
@@ -511,23 +494,6 @@ fn exists(path: &Path) -> Result<bool> {
     }
 }
 
-/// Fills `dir` with `bundle`'s files and nothing else, so files an older
-/// version had don't linger. Won't replace a link without `force`: it's likely
-/// a developer's link into a checkout, as the widget readmes once suggested.
-fn replace_dir(dir: &Path, bundle: &Bundle, force: bool) -> Result<()> {
-    if let Ok(meta) = fs::symlink_metadata(dir)
-        && meta.is_symlink()
-        && !force
-    {
-        return Err(format!(
-            "{} is a link, perhaps to a rogctl checkout. Pass --force to replace it with a copy",
-            dir.display()
-        ));
-    }
-    remove_path(dir)?;
-    write_files(dir, bundle)
-}
-
 fn write_files(dir: &Path, bundle: &Bundle) -> Result<()> {
     for file in bundle.files {
         let path = dir.join(file.path);
@@ -539,18 +505,252 @@ fn write_files(dir: &Path, bundle: &Bundle) -> Result<()> {
     Ok(())
 }
 
-/// Deletes a file or directory; a link, not what it points to. Returns whether
-/// there was anything to delete.
-fn remove_path(path: &Path) -> Result<bool> {
-    let removed = match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
-        Ok(_) => fs::remove_file(path),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => Err(e),
-    };
-    removed
-        .map(|()| true)
-        .map_err(|e| format!("{}: {e}", path.display()))
+/// A widget rogctl copies into place itself, rather than handing it to the
+/// desktop's own tool. Updating and removing it touch only the files rogctl
+/// wrote, and only while they're as rogctl left them, going by its record of
+/// what it wrote.
+struct Copied {
+    dir: PathBuf,
+    /// `dir` is the widget's alone, so it may be deleted once empty. Not so
+    /// for Quickshell, whose files go in the user's own config directory.
+    own_dir: bool,
+    bundle: &'static Bundle,
+    /// Each file written, relative to `dir`, with the checksum of what was
+    /// written.
+    record: PathBuf,
+}
+
+/// A file rogctl wrote, relative to the widget's directory, and the checksum
+/// of what it wrote.
+type Entry = (String, u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    Missing,
+    /// What rogctl wrote there.
+    Ours,
+    /// Something else: the user changed it, or it isn't rogctl's.
+    Edited,
+}
+
+impl Copied {
+    /// Writes the bundle, and deletes files an earlier version wrote that this
+    /// one doesn't have.
+    fn install(&self, force: bool) -> Result<()> {
+        if self.own_dir && is_link(&self.dir) {
+            if !force {
+                return Err(format!(
+                    "{} is a link, perhaps to a rogctl checkout. Pass --force to replace it \
+                     with a copy",
+                    self.dir.display()
+                ));
+            }
+            // Only the link goes, never what it points to.
+            fs::remove_file(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        }
+        let record = self.read_record()?.unwrap_or_default();
+        let recorded = |path: &str| record.iter().find(|(p, _)| p == path).map(|&(_, sum)| sum);
+
+        let mut edited = Vec::new();
+        for file in self.bundle.files {
+            let ours = [Some(checksum(file.contents)), recorded(file.path)];
+            if self.find(file.path, &ours)? == Found::Edited {
+                edited.push(file.path.to_owned());
+            }
+        }
+        if !force {
+            self.refuse(&edited, "overwrite")?;
+        }
+        // Files an earlier version wrote and this one dropped go, unless the
+        // user changed them.
+        let mut obsolete = Vec::new();
+        for (path, sum) in &record {
+            if self.bundle.files.iter().any(|f| f.path == path) {
+                continue;
+            }
+            match self.find(path, &[Some(*sum)])? {
+                Found::Missing => {}
+                Found::Ours => obsolete.push(path.clone()),
+                Found::Edited => say!(
+                    "Left {}: you changed it, and this version doesn't use it.",
+                    self.dir.join(path).display()
+                ),
+            }
+        }
+
+        write_files(&self.dir, self.bundle)?;
+        self.delete(&obsolete)?;
+        self.write_record()
+    }
+
+    /// The files `remove` deletes: those rogctl wrote. Errs if the user changed
+    /// any, unless `force`. Empty for a link, which `remove` deletes instead.
+    fn removable(&self, force: bool) -> Result<Vec<String>> {
+        if self.own_dir && is_link(&self.dir) {
+            return Ok(Vec::new());
+        }
+        // With no record, the files this version ships are what rogctl wrote.
+        let entries = self.read_record()?.unwrap_or_else(|| {
+            self.bundle
+                .files
+                .iter()
+                .map(|f| (f.path.to_owned(), checksum(f.contents)))
+                .collect()
+        });
+        let mut ours = Vec::new();
+        let mut edited = Vec::new();
+        for (path, sum) in entries {
+            match self.find(&path, &[Some(sum)])? {
+                Found::Missing => {}
+                Found::Ours => ours.push(path),
+                Found::Edited => edited.push(path),
+            }
+        }
+        if !force {
+            self.refuse(&edited, "remove")?;
+        }
+        ours.append(&mut edited);
+        Ok(ours)
+    }
+
+    /// Deletes the files rogctl wrote, then the directories they leave empty.
+    /// Returns whether there was anything to delete.
+    fn remove(&self, force: bool) -> Result<bool> {
+        if self.own_dir && is_link(&self.dir) {
+            // Only the link goes, never what it points to.
+            fs::remove_file(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+            self.delete_record()?;
+            return Ok(true);
+        }
+        let files = self.removable(force)?;
+        self.delete(&files)?;
+        self.delete_record()?;
+        if self.own_dir && self.dir.exists() {
+            say!(
+                "Left {}: it has files rogctl didn't write.",
+                self.dir.display()
+            );
+        }
+        Ok(!files.is_empty())
+    }
+
+    /// What's at `path` in the widget's directory, where `ours` are the
+    /// checksums of what rogctl may have written there.
+    fn find(&self, path: &str, ours: &[Option<u64>]) -> Result<Found> {
+        let full = self.dir.join(path);
+        match fs::read(&full) {
+            Ok(bytes) if ours.contains(&Some(checksum(&bytes))) => Ok(Found::Ours),
+            Ok(_) => Ok(Found::Edited),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Found::Missing),
+            Err(e) => Err(format!("{}: {e}", full.display())),
+        }
+    }
+
+    fn refuse(&self, edited: &[String], verb: &str) -> Result<()> {
+        if edited.is_empty() {
+            return Ok(());
+        }
+        let (is, them) = if edited.len() == 1 {
+            ("is", "it")
+        } else {
+            ("are", "them")
+        };
+        Err(format!(
+            "{} in {} {is} different from what rogctl wrote. Pass --force to {verb} {them} \
+             anyway",
+            edited.join(" and "),
+            self.dir.display()
+        ))
+    }
+
+    /// Deletes `paths`, then each directory above them that's left empty, up to
+    /// the widget's directory, included only if it's the widget's alone.
+    fn delete(&self, paths: &[String]) -> Result<()> {
+        for path in paths {
+            let mut full = self.dir.join(path);
+            fs::remove_file(&full).map_err(|e| format!("{}: {e}", full.display()))?;
+            while full.pop() && full.starts_with(&self.dir) {
+                let keep = full == self.dir && !self.own_dir;
+                // remove_dir fails on a directory that isn't empty.
+                if keep || fs::remove_dir(&full).is_err() {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `None` when there's no record: nothing installed yet, or installed by
+    /// hand.
+    fn read_record(&self) -> Result<Option<Vec<Entry>>> {
+        match fs::read_to_string(&self.record) {
+            Ok(text) => Ok(Some(parse_record(&text))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", self.record.display())),
+        }
+    }
+
+    fn write_record(&self) -> Result<()> {
+        let mut text = format!(
+            "# Files `rogctl configure` wrote to {}, with their checksums.\n",
+            self.dir.display()
+        );
+        for file in self.bundle.files {
+            text += &format!("{:016x} {}\n", checksum(file.contents), file.path);
+        }
+        let parent = self.record.parent().unwrap_or(&self.dir);
+        fs::create_dir_all(parent)
+            .and_then(|()| fs::write(&self.record, text))
+            .map_err(|e| format!("{}: {e}", self.record.display()))
+    }
+
+    fn delete_record(&self) -> Result<()> {
+        match fs::remove_file(&self.record) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                Err(format!("{}: {e}", self.record.display()))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Skips lines that aren't a checksum and a plain relative path, so a damaged
+/// record can't point outside the widget's directory.
+fn parse_record(text: &str) -> Vec<Entry> {
+    text.lines()
+        .filter_map(|line| {
+            let (sum, path) = line.split_once(' ')?;
+            let sum = u64::from_str_radix(sum, 16).ok()?;
+            let plain = !path.is_empty()
+                && Path::new(path)
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_)));
+            plain.then(|| (path.to_owned(), sum))
+        })
+        .collect()
+}
+
+/// `$XDG_STATE_HOME/rogctl/DESKTOP.files`.
+fn record_path(desktop: Desktop) -> Result<PathBuf> {
+    let state = xdg_dir(
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::var_os("HOME"),
+        ".local/state",
+    )?;
+    Ok(state.join(format!("rogctl/{}.files", desktop.name())))
+}
+
+/// 64-bit FNV-1a. Unlike std's hasher it's the same in every Rust version,
+/// which a record kept across rogctl updates needs. It only has to notice
+/// edits, not resist them.
+fn checksum(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
+        (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink())
 }
 
 /// Checked before writing anything, so a missing tool doesn't leave a widget
@@ -670,63 +870,154 @@ mod tests {
         assert!(xdg_dir(None, None, ".config").is_err());
     }
 
-    fn read(path: PathBuf) -> String {
-        fs::read_to_string(path).unwrap()
+    /// A widget in a fresh temporary directory, as Noctalia's.
+    fn copied(temp: &TempDir, own_dir: bool) -> Copied {
+        Copied {
+            dir: temp.0.join("plugin"),
+            own_dir,
+            bundle: &NOCTALIA,
+            record: temp.0.join("state/noctalia.files"),
+        }
+    }
+
+    fn write(path: PathBuf, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
     }
 
     #[test]
-    fn replace_dir_drops_old_files() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.0.join("plugin");
-        fs::create_dir_all(dir.join("translations")).unwrap();
-        fs::write(dir.join("old.luau"), "from an older version").unwrap();
-        fs::write(dir.join("plugin.toml"), "edited").unwrap();
+    fn checksum_is_fnv1a() {
+        assert_eq!(checksum(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(checksum(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
 
-        replace_dir(&dir, &NOCTALIA, false).unwrap();
-        assert!(!dir.join("old.luau").exists());
+    #[test]
+    fn records_and_removes_its_files() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        widget.install(false).unwrap();
+        assert!(widget.dir.join("translations/en.json").is_file());
+        let record = widget.read_record().unwrap().unwrap();
+        assert_eq!(record.len(), NOCTALIA.files.len());
+
+        assert_eq!(widget.remove(false), Ok(true));
+        assert!(!widget.dir.exists(), "empty directories go too");
+        assert!(!widget.record.exists());
+        assert_eq!(widget.remove(false), Ok(false));
+    }
+
+    /// An update replaces what the old version wrote, without --force, and
+    /// deletes the files the new version dropped.
+    #[test]
+    fn updates_an_older_version() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        write(widget.dir.join("plugin.toml"), "version 1");
+        write(widget.dir.join("old/dropped.luau"), "version 1");
+        write(widget.dir.join("kept.luau"), "edited");
+        let sum = checksum(b"version 1");
+        write(
+            widget.record.clone(),
+            &format!(
+                "# header\n{sum:016x} plugin.toml\n{sum:016x} old/dropped.luau\n\
+                 {sum:016x} kept.luau\n"
+            ),
+        );
+
+        widget.install(false).unwrap();
         assert_eq!(
-            read(dir.join("plugin.toml")).as_bytes(),
+            fs::read(widget.dir.join("plugin.toml")).unwrap(),
             NOCTALIA.files[1].contents
         );
-        assert!(dir.join("translations/en.json").is_file());
+        assert!(!widget.dir.join("old").exists());
+        assert!(
+            widget.dir.join("kept.luau").is_file(),
+            "dropped, but edited"
+        );
+        assert!(
+            widget
+                .read_record()
+                .unwrap()
+                .unwrap()
+                .iter()
+                .all(|(p, _)| p != "old/dropped.luau")
+        );
+    }
+
+    #[test]
+    fn leaves_edited_and_unknown_files_alone() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        widget.install(false).unwrap();
+        write(widget.dir.join("widget.luau"), "edited");
+        write(widget.dir.join("notes.txt"), "the user's");
+
+        let err = widget.install(false).unwrap_err();
+        assert!(err.starts_with("widget.luau in"), "{err}");
+        assert!(widget.remove(false).is_err());
+        assert_eq!(
+            fs::read_to_string(widget.dir.join("widget.luau")).unwrap(),
+            "edited"
+        );
+
+        assert_eq!(widget.remove(true), Ok(true));
+        assert!(!widget.dir.join("widget.luau").exists());
+        assert!(widget.dir.join("notes.txt").is_file(), "never rogctl's");
+    }
+
+    /// Without a record, only files matching this version's count as rogctl's.
+    #[test]
+    fn without_a_record_trusts_only_identical_files() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        write_files(&widget.dir, &NOCTALIA).unwrap();
+        assert!(widget.install(false).is_ok());
+
+        fs::remove_file(&widget.record).unwrap();
+        write(widget.dir.join("plugin.toml"), "from somewhere else");
+        assert!(widget.install(false).is_err());
+        assert!(widget.remove(false).is_err());
+    }
+
+    /// Quickshell's files share the user's config directory, which stays.
+    #[test]
+    fn keeps_a_directory_it_doesnt_own() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, false);
+        widget.install(false).unwrap();
+        assert_eq!(widget.remove(false), Ok(true));
+        assert!(widget.dir.is_dir());
     }
 
     /// Writing through a link would overwrite the checkout it points to.
     #[test]
-    fn replace_dir_leaves_a_linked_checkout_alone() {
+    fn leaves_a_linked_checkout_alone() {
         let temp = TempDir::new().unwrap();
         let checkout = temp.0.join("checkout");
-        fs::create_dir(&checkout).unwrap();
-        fs::write(checkout.join("widget.luau"), "work in progress").unwrap();
-        let link = temp.0.join("plugin");
-        std::os::unix::fs::symlink(&checkout, &link).unwrap();
+        write(checkout.join("widget.luau"), "work in progress");
+        let widget = copied(&temp, true);
+        std::os::unix::fs::symlink(&checkout, &widget.dir).unwrap();
 
-        assert!(replace_dir(&link, &NOCTALIA, false).is_err());
-        assert!(link.is_symlink());
+        assert!(widget.install(false).is_err());
+        assert!(is_link(&widget.dir));
 
-        replace_dir(&link, &NOCTALIA, true).unwrap();
-        assert!(!link.is_symlink() && link.join("plugin.toml").is_file());
-        assert_eq!(read(checkout.join("widget.luau")), "work in progress");
+        widget.install(true).unwrap();
+        assert!(!is_link(&widget.dir) && widget.dir.join("plugin.toml").is_file());
+        assert_eq!(
+            fs::read_to_string(checkout.join("widget.luau")).unwrap(),
+            "work in progress"
+        );
         assert!(!checkout.join("plugin.toml").exists());
 
-        assert_eq!(remove_path(&link), Ok(true));
-        assert_eq!(remove_path(&link), Ok(false));
+        fs::remove_dir_all(&widget.dir).unwrap();
+        std::os::unix::fs::symlink(&checkout, &widget.dir).unwrap();
+        assert_eq!(widget.remove(false), Ok(true));
+        assert!(!widget.dir.exists() && checkout.join("widget.luau").is_file());
     }
 
     #[test]
-    fn refuses_to_touch_edited_files() {
-        let temp = TempDir::new().unwrap();
-        assert!(refuse_edited(&temp.0, &QUICKSHELL, false, "overwrite").is_ok());
-
-        write_files(&temp.0, &QUICKSHELL).unwrap();
-        assert!(
-            refuse_edited(&temp.0, &QUICKSHELL, false, "overwrite").is_ok(),
-            "unchanged copies can go"
-        );
-
-        fs::write(temp.0.join("RogMouse.qml"), "edited").unwrap();
-        let err = refuse_edited(&temp.0, &QUICKSHELL, false, "remove").unwrap_err();
-        assert!(err.starts_with("RogMouse.qml in"), "{err}");
-        assert!(refuse_edited(&temp.0, &QUICKSHELL, true, "remove").is_ok());
+    fn record_rejects_paths_outside_the_directory() {
+        let entries = parse_record("# header\n0a ok.qml\n0b ../escape\n0c /abs\nzz bad.qml\n");
+        assert_eq!(entries, [("ok.qml".to_owned(), 10)]);
     }
 }
