@@ -26,11 +26,17 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
 
 ## Getting started
 
-You need a Rust toolchain (`cargo`); most distributions package it as `rust` or `rustup`.
-
 1. **Check your mouse is supported.** Find it in [Supported mice](#supported-mice).
 
-2. **Install rogctl.** This puts `rogctl` in `~/.cargo/bin`, which needs to be on your `PATH`.
+2. **Install rogctl.** On Arch Linux, install it from the AUR, which includes the udev rule
+   (skip step 3, then replug the mouse):
+
+   ```sh
+   paru -S rogctl        # or: yay -S rogctl
+   ```
+
+   Elsewhere, build it with a Rust toolchain (`cargo`; most distributions package it as `rust`
+   or `rustup`). This puts `rogctl` in `~/.cargo/bin`, which needs to be on your `PATH`.
 
    ```sh
    git clone https://github.com/humblemonk/rogctl.git
@@ -38,8 +44,8 @@ You need a Rust toolchain (`cargo`); most distributions package it as `rust` or 
    cargo install --path .
    ```
 
-3. **Allow access to the mouse without root.** This installs a udev rule for the supported
-   USB IDs:
+3. **Allow access to the mouse without root.** Skip this if you installed from the AUR. This
+   installs a udev rule for the supported USB IDs:
 
    ```sh
    sudo cp udev/70-rogctl.rules /etc/udev/rules.d/
