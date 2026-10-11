@@ -94,6 +94,9 @@ PluginComponent {
         onTriggered: {
             interval = 10000;
             root.restarting = false;
+            // Forget the last rogctl's pid: until the new one prints a line,
+            // there's nothing to signal.
+            root.lastStatus = null;
             watcher.running = true;
         }
     }
@@ -103,7 +106,7 @@ PluginComponent {
     Connections {
         target: PluginService
         function onGlobalVarChanged(changedId, varName) {
-            if (changedId === root.pluginId && varName === "refresh" && watcher.running && root.lastStatus?.pid)
+            if (changedId === root.pluginId && varName === "refresh" && watcher.running && !root.restarting && root.lastStatus?.pid)
                 Quickshell.execDetached(["kill", "-USR1", String(root.lastStatus.pid)]);
         }
     }
