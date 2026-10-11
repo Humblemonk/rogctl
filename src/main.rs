@@ -293,8 +293,8 @@ impl LowWarning {
 }
 
 /// Blocks SIGUSR1 so it can be waited for in `wait_or_refresh` rather than
-/// killing the process. Nothing else in rogctl uses signals, so blocking it for
-/// the whole (single-threaded) process is safe.
+/// killing the process. Nothing else in rogctl uses SIGUSR1, and `watch` is
+/// single-threaded, so blocking it for the whole process is safe.
 fn block_refresh_signal() -> libc::sigset_t {
     // SAFETY: plain libc calls on a local, zero-initialized sigset_t.
     unsafe {

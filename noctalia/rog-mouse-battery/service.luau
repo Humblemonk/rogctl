@@ -85,6 +85,9 @@ end
 function startStream()
   local binary = binaryName()
   exitedAt = os.time()
+  -- Forget the last rogctl's pid: until the new one prints a line, there's
+  -- nothing to signal.
+  lastStatus = nil
   streamSettings = currentSettings()
   if not noctalia.commandExists(binary) and not binary:find("/") then
     publishError(noctalia.tr("error.missing_binary", { binary = binary }))
@@ -110,7 +113,8 @@ end
 -- each line since runStream doesn't.
 local function refreshNow()
   local pid = lastStatus and lastStatus.pid
-  if streaming and pid ~= nil then
+  -- While restarting, the pid is the rogctl being stopped.
+  if streaming and not restarting and pid ~= nil then
     noctalia.runAsync({ "kill", "-USR1", tostring(pid) })
   end
 end

@@ -352,8 +352,15 @@ fn read_packet(
     let offset = usize::from(report_id == 0);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() || !poll_readable(file, remaining)? {
+        if remaining.is_zero() {
             return Err(QueryError::Timeout);
+        }
+        match poll_readable(file, remaining) {
+            Ok(true) => {}
+            Ok(false) => return Err(QueryError::Timeout),
+            // A signal (the TUI's resize, say) cut the wait short.
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
         }
         buf.fill(0);
         match file.read(&mut buf[offset..]) {
@@ -375,14 +382,7 @@ fn poll_readable(file: &File, timeout: Duration) -> io::Result<bool> {
     // SAFETY: `pfd` is a valid pollfd for the duration of the call.
     let n = unsafe { libc::poll(&mut pfd, 1, ms) };
     match n {
-        -1 => {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                Ok(false)
-            } else {
-                Err(e)
-            }
-        }
+        -1 => Err(io::Error::last_os_error()),
         0 => Ok(false),
         _ if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 => {
             Err(io::Error::from(io::ErrorKind::BrokenPipe))
@@ -479,6 +479,38 @@ mod tests {
         let start = Instant::now();
         assert!(matches!(read(&mut file), Err(QueryError::Timeout)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A signal during the wait, as crossterm's resize handler sends in the
+    /// TUI, isn't a timeout: the reply that follows it is still read.
+    #[test]
+    fn read_packet_waits_through_a_signal() {
+        use std::os::unix::net::UnixDatagram;
+
+        extern "C" fn ignore(_: libc::c_int) {}
+        // SAFETY: an empty handler for SIGUSR2, which nothing else uses.
+        unsafe { libc::signal(libc::SIGUSR2, ignore as *const () as libc::sighandler_t) };
+
+        let (mouse, ours) = UnixDatagram::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let mut file = File::from(std::os::fd::OwnedFd::from(ours));
+        // SAFETY: returns this thread's own handle.
+        let reader = unsafe { libc::pthread_self() };
+        let fake = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            // SAFETY: the reader thread is alive, blocked in read_packet.
+            unsafe { libc::pthread_kill(reader, libc::SIGUSR2) };
+            std::thread::sleep(Duration::from_millis(50));
+            let mut battery = [0u8; 64];
+            battery[..5].copy_from_slice(&[0x12, 0x07, 0, 0, 0x50]);
+            mouse.send(&battery).unwrap();
+            mouse
+        });
+        let request = Query::Battery.request(0);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let reply = read_packet(&mut file, 0, deadline, |r| request.answered_by(r));
+        fake.join().unwrap();
+        assert_eq!(reply.unwrap()[..6], [0, 0x12, 0x07, 0, 0, 0x50]);
     }
 
     /// A mouse that echoes the change but never answers the save: the change
