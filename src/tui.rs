@@ -57,7 +57,9 @@ pub fn run(demo: Option<Option<String>>) -> ExitCode {
     let mut session = Session::default();
     match demo_model {
         Some(model) => {
-            let (reading, settings) = app::demo_state(&model.features);
+            let (mut reading, settings) = app::demo_state(&model.features);
+            // A mouse on its cable charges.
+            reading.charging = !model.wireless;
             app.show(Some(model), Link::Connected, Some(reading), settings);
             app.devices = 1;
         }

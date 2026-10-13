@@ -16,10 +16,14 @@ use crate::app::{App, Control, Edit, Link, Row, Target, Value};
 /// its hint fit an 80-column one.
 const MAX_WIDTH: u16 = 80;
 const LABEL_WIDTH: usize = 24;
+/// The widest DPI value, 42000.
+const DPI_WIDTH: usize = 5;
 
 /// The ROG palette. Only this block names colours; everything else uses the
 /// styles below.
-const RED: Color = Color::Rgb(0xe6, 0x00, 0x12);
+/// GearLink's red (#e60012) lightened so red text reads at 4.5:1 on the
+/// background and on the focus band.
+const RED: Color = Color::Rgb(0xff, 0x2d, 0x3d);
 const RED_BAND: Color = Color::Rgb(0x3d, 0x0a, 0x10);
 const BACKGROUND: Color = Color::Rgb(0x10, 0x10, 0x10);
 const TEXT: Color = Color::Rgb(0xf2, 0xf2, 0xf2);
@@ -59,6 +63,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
     let mut hits = Hits::default();
     frame.render_widget(Block::new().style(BASE), frame.area());
     let area = frame.area();
+    let frame_width = area.width;
     let area = Rect {
         width: area.width.min(MAX_WIDTH),
         ..area
@@ -71,28 +76,30 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(header_line(app)), header);
+    // The header and footer can outgrow MAX_WIDTH (a long name, Tab, the
+    // version); they may use the terminal's whole width.
+    let full_width = |r: Rect| Rect {
+        width: frame_width,
+        ..r
+    };
+    frame.render_widget(Paragraph::new(header_line(app)), full_width(header));
     match app.link {
         Link::Connected => draw_settings(frame, app, body, &mut hits),
-        Link::Asleep | Link::Disconnected | Link::Error(_) => draw_notice(frame, app, body),
+        Link::Asleep | Link::Disconnected | Link::Error(_) => draw_link_notice(frame, app, body),
     }
     if let Some(m) = &app.message {
+        // Red is for errors; ✓ and ✗ tell them apart without colour too.
         let line = if m.error {
-            Line::from(vec![Span::styled(format!(" ✗ {}", m.text), ACCENT)])
+            Line::styled(format!(" ✗ {}", m.text), ACCENT)
         } else {
-            Line::from(vec![
-                Span::styled(" ✓ ", ACCENT),
-                Span::styled(m.text.clone(), BOLD),
-            ])
+            Line::styled(format!(" ✓ {}", m.text), BOLD)
         };
         frame.render_widget(Paragraph::new(line), message);
     }
-    // The keys can outgrow MAX_WIDTH (Tab, the version); they may use it all.
-    let footer = Rect {
-        width: frame.area().width,
-        ..footer
-    };
-    frame.render_widget(Paragraph::new(footer_line(app)), footer);
+    frame.render_widget(
+        Paragraph::new(footer_line(app, frame_width)),
+        full_width(footer),
+    );
     if app.help {
         draw_help(frame, area);
     }
@@ -101,14 +108,10 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
 
 /// A bordered section with GearLink's thin grey lines and a white heading.
 fn panel(title: &str) -> Block<'static> {
-    let block = Block::bordered()
+    Block::bordered()
         .border_type(BorderType::Plain)
-        .border_style(Style::new().fg(LINE));
-    if title.is_empty() {
-        block
-    } else {
-        block.title(Span::styled(format!(" {title} "), BOLD))
-    }
+        .border_style(Style::new().fg(LINE))
+        .title(Span::styled(format!(" {title} "), BOLD))
 }
 
 fn header_line(app: &App) -> Line<'static> {
@@ -139,30 +142,76 @@ fn header_line(app: &App) -> Line<'static> {
         spans.push(Span::styled(format!(" ({word})"), MUTED));
     }
     if app.demo {
-        spans.push(Span::styled("  [demo]", ACCENT));
+        spans.push(Span::styled("  [demo]", BOLD));
     }
     Line::from(spans)
 }
 
-fn footer_line(app: &App) -> Line<'static> {
-    let mut keys = vec![
-        ("↑↓", "select"),
-        ("←→", "change"),
-        ("Enter", "apply"),
-        ("Esc", "cancel"),
-        ("r", "reload"),
-    ];
-    if app.devices > 1 {
-        keys.push(("Tab", "next mouse"));
+/// The keys, then the version. A narrow terminal drops the version first,
+/// then the keys least needed; outside help, `?` and `q` are never dropped.
+fn footer_line(app: &App, width: u16) -> Line<'static> {
+    const ALWAYS: u8 = u8::MAX;
+    // Only the keys that do something on this screen, each with how long it
+    // stays as the terminal narrows: the lowest goes first.
+    let mut keys = if app.help {
+        // Help swallows every key until Esc, ?, q or a click closes it.
+        vec![("Esc", "close help", ALWAYS)]
+    } else {
+        let mut keys = match app.link {
+            Link::Connected => vec![
+                ("↑↓", "select", 2),
+                ("←→", "change", 3),
+                // The last action key: nothing else says Enter switches or makes
+                // a stage active.
+                ("Enter", "apply", 4),
+                ("Esc", "cancel", 0),
+                ("r", "reload", 1),
+            ],
+            // Retrying is what this screen is for.
+            Link::Asleep | Link::Disconnected | Link::Error(_) => vec![("r", "retry", 6)],
+        };
+        if app.devices > 1 {
+            keys.push(("Tab", "next mouse", 5));
+        }
+        keys.extend([("?", "help", ALWAYS), ("q", "quit", ALWAYS)]);
+        keys
+    };
+
+    // " key what", two spaces between keys and before the version.
+    let used = |keys: &[(&str, &str, u8)]| {
+        let items: usize = keys
+            .iter()
+            .map(|&(key, what, _)| Span::raw(key).width() + 1 + Span::raw(what).width())
+            .sum();
+        1 + items + 2 * keys.len().saturating_sub(1)
+    };
+    let width = usize::from(width);
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    let show_version = used(&keys) + 2 + version.len() <= width;
+    while used(&keys) > width {
+        let least_needed = keys
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(_, _, keep))| keep != ALWAYS)
+            .min_by_key(|&(_, &(_, _, keep))| keep)
+            .map(|(at, _)| at);
+        let Some(at) = least_needed else {
+            break;
+        };
+        keys.remove(at);
     }
-    keys.extend([("?", "help"), ("q", "quit")]);
+
     let mut spans = vec![Span::raw(" ")];
-    for (key, what) in keys {
+    for (i, (key, what, _)) in keys.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
         spans.push(Span::styled(key, BOLD));
-        spans.push(Span::styled(format!(" {what}  "), MUTED));
+        spans.push(Span::styled(format!(" {what}"), MUTED));
     }
-    // Short enough that the footer still fits 80 columns with one mouse.
-    spans.push(Span::styled(concat!("v", env!("CARGO_PKG_VERSION")), MUTED));
+    if show_version {
+        spans.push(Span::styled(format!("  {version}"), MUTED));
+    }
     Line::from(spans)
 }
 
@@ -176,6 +225,20 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
             rows.len() as u16 + 2
         }
     };
+    // Cut-off panels could hide the focused row, and a change to it.
+    let needed = height(&performance) + height(&battery);
+    if needed > area.height {
+        let rows = needed + 3;
+        draw_notice(
+            frame,
+            area,
+            vec![Line::styled(
+                format!("Make the terminal taller: the settings need {rows} rows."),
+                BOLD,
+            )],
+        );
+        return;
+    }
     let [top, bottom, _] = Layout::vertical([
         Constraint::Length(height(&performance)),
         Constraint::Length(height(&battery)),
@@ -227,16 +290,14 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
 fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
     let control = row.control;
     let focused = app.focused() == Some(control);
-    let mut spans = if focused {
-        vec![
+    let label = format!("{:<LABEL_WIDTH$}", control.label());
+    let mut spans = match (focused, row.locked) {
+        (true, _) => vec![
             Span::styled("▌ ", Style::new().fg(RED)),
-            Span::styled(format!("{:<LABEL_WIDTH$}", control.label()), BOLD),
-        ]
-    } else {
-        vec![Span::styled(
-            format!("  {:<LABEL_WIDTH$}", control.label()),
-            Style::new().fg(TEXT),
-        )]
+            Span::styled(label, BOLD),
+        ],
+        (false, Some(_)) => vec![Span::styled(format!("  {label}"), MUTED)],
+        (false, None) => vec![Span::styled(format!("  {label}"), Style::new().fg(TEXT))],
     };
 
     let edit = app.edit.filter(|e| e.control == control);
@@ -274,8 +335,18 @@ fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
     if let Some(why) = row.locked {
         spans.push(Span::styled(format!("  🔒 {why}"), MUTED));
     }
-    if edit.is_some() {
-        spans.push(Span::styled("  Enter to apply", MUTED));
+    if let Some(edit) = edit {
+        let dpi = app.model.map(|m| m.features.dpi);
+        let hint = match (edit.typed, dpi) {
+            // The range up front, rather than as an error after Enter.
+            (true, Some(dpi)) => format!("  {}–{}, Enter to apply", dpi.min, dpi.max),
+            // Said before the change, as changing it back doesn't undo it.
+            _ if control == Control::LiftOff => {
+                "  Enter to apply; resets sensor calibration".into()
+            }
+            _ => "  Enter to apply".into(),
+        };
+        spans.push(Span::styled(hint, MUTED));
     }
     (Line::from(spans), columns)
 }
@@ -313,7 +384,18 @@ fn value_spans(
                 (None, _) if focused => BOLD,
                 (None, _) => Style::new().fg(TEXT),
             };
-            vec![Span::styled(value.to_string(), style)]
+            let text = match value {
+                // Padded so the stages' swatches and "● active" line up.
+                Value::Dpi(_) => format!("{:<DPI_WIDTH$}", value.to_string()),
+                Value::PollingRate(_)
+                | Value::Debounce(_)
+                | Value::Switch(_)
+                | Value::Degrees(_)
+                | Value::LiftOff(_)
+                | Value::PowerOff(_)
+                | Value::Percent(_) => value.to_string(),
+            };
+            vec![Span::styled(text, style)]
         }
         (None, None) => vec![Span::styled("unknown", MUTED)],
     }
@@ -381,7 +463,7 @@ fn unit(value: Value) -> Option<&'static str> {
     }
 }
 
-fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_link_notice(frame: &mut Frame, app: &App, area: Rect) {
     let name = app.model.map_or("The mouse", |m| m.name);
     let (title, hint) = match &app.link {
         Link::Disconnected => (
@@ -407,12 +489,17 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
         Link::Connected | Link::Asleep | Link::Disconnected => BOLD,
     };
     let text = vec![
-        Line::raw(""),
         Line::styled(title, title_style),
         Line::raw(""),
         Line::styled(hint, MUTED),
     ];
-    let block = panel("").padding(ratatui::widgets::Padding::horizontal(1));
+    draw_notice(frame, area, text);
+}
+
+/// Text in place of the settings. No frame: an empty box the height of the
+/// screen would dwarf it.
+fn draw_notice(frame: &mut Frame, area: Rect, text: Vec<Line>) {
+    let block = Block::new().padding(ratatui::widgets::Padding::new(2, 2, 1, 0));
     frame.render_widget(
         Paragraph::new(text).block(block).wrap(Wrap { trim: true }),
         area,
@@ -423,7 +510,7 @@ const HELP: &[(&str, &str)] = &[
     ("↑ ↓  k j", "Select a setting"),
     ("← → h l", "Change the value"),
     ("Shift, PgUp PgDn", "Change it in bigger steps"),
-    ("0-9", "Type a DPI value"),
+    ("0-9, Backspace", "Type a DPI value"),
     ("Enter, Space", "Apply the change, switch on or off,"),
     ("", "or make a DPI stage the active one"),
     ("Esc", "Cancel the change"),
@@ -449,7 +536,14 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         " Applied changes are stored on the mouse.",
         MUTED,
     ));
-    let width = area.width.min(64);
+    lines.push(Line::styled(" ? or Esc closes this.", MUTED));
+    // Wide enough for the longest line and the border.
+    let width = lines
+        .iter()
+        .map(|l| l.width() + 3)
+        .max()
+        .map_or(area.width, |w| u16::try_from(w).unwrap_or(u16::MAX))
+        .min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
         x: area.x + (area.width - width) / 2,
@@ -549,6 +643,14 @@ mod tests {
         }
         assert!(!screen.contains("debounce"), "not on this mouse:\n{screen}");
 
+        app.handle_key(KeyCode::Char('9'), KeyModifiers::NONE);
+        let screen = render(&app, 80, 24);
+        assert!(
+            screen.contains("9▏ ■  100–42000, Enter to apply"),
+            "{screen}"
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
         app.handle_key(KeyCode::Right, KeyModifiers::NONE);
         let screen = render(&app, 80, 24);
         assert!(screen.contains("◀ 450 ▶"), "{screen}");
@@ -628,15 +730,20 @@ mod tests {
         }
     }
 
-    /// The version ends the footer and fits 80 columns; with Tab too, the
-    /// footer uses a wider terminal rather than being cut at MAX_WIDTH.
+    /// The version ends the footer when it fits (a narrower terminal drops it,
+    /// `narrow_footer_keeps_help_and_quit`); with Tab too, the footer uses a
+    /// wider terminal rather than being cut at MAX_WIDTH.
     #[test]
     fn footer_ends_with_the_version() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let mut app = demo(model);
         let version = concat!("v", env!("CARGO_PKG_VERSION"));
         let footer = |app: &App, width| render(app, width, 24).lines().last().unwrap().to_owned();
-        assert!(footer(&app, 80).ends_with(version), "{}", footer(&app, 80));
+        assert!(
+            footer(&app, 100).ends_with(version),
+            "{}",
+            footer(&app, 100)
+        );
         app.devices = 2;
         let wide = footer(&app, 120);
         assert!(
@@ -739,6 +846,165 @@ mod tests {
         }
     }
 
+    /// The help box is as wide as its longest line, so nothing is cut off.
+    #[test]
+    fn help_fits_its_lines() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        app.help = true;
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("again to apply;"), "{screen}");
+    }
+
+    /// A narrow terminal drops the version, then the least needed keys;
+    /// `?` and `q` stay.
+    #[test]
+    fn narrow_footer_keeps_help_and_quit() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        let footer = |app: &App, width| render(app, width, 24).lines().last().unwrap().to_owned();
+        let keys = " ↑↓ select  ←→ change  Enter apply  Esc cancel  r reload  ? help  q quit";
+        assert_eq!(
+            footer(&app, 72),
+            keys,
+            "the version goes, every key fits exactly"
+        );
+        app.devices = 2;
+        for width in [20, 40, 60, 79] {
+            let footer = footer(&app, width);
+            assert!(footer.ends_with("? help  q quit"), "{width}: {footer:?}");
+        }
+        assert_eq!(
+            footer(&app, 60),
+            " ←→ change  Enter apply  Tab next mouse  ? help  q quit"
+        );
+        assert_eq!(footer(&app, 40), " Tab next mouse  ? help  q quit");
+        app.help = true;
+        let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            footer(&app, 100),
+            format!(" Esc close help  {version}"),
+            "only Esc works"
+        );
+
+        let mut app = App::new(false);
+        assert_eq!(footer(&app, 24), " r retry  ? help  q quit");
+        app.devices = 2;
+        assert_eq!(
+            footer(&app, 39),
+            " r retry  ? help  q quit",
+            "retry outlasts Tab"
+        );
+    }
+
+    /// Rather than cut a panel off, and maybe the focused row with it.
+    #[test]
+    fn short_terminal_asks_for_more_rows() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let app = demo(model);
+        assert!(!render(&app, 80, 20).contains("taller"));
+        let screen = render(&app, 80, 19);
+        assert!(
+            screen.contains("need 20 rows") && !screen.contains("DPI"),
+            "{screen}"
+        );
+    }
+
+    /// Without a mouse the footer offers only the keys that do something.
+    #[test]
+    fn footer_keys_fit_the_screen() {
+        let mut app = App::new(false);
+        let footer = render(&app, 80, 24).lines().last().unwrap().to_owned();
+        assert!(footer.starts_with(" r retry  ? help  q quit"), "{footer}");
+        app.devices = 2;
+        let footer = render(&app, 80, 24).lines().last().unwrap().to_owned();
+        assert!(footer.contains("Tab next mouse"), "{footer}");
+    }
+
+    /// WCAG contrast of two colours of the palette or the mouse's.
+    fn contrast(a: Color, b: Color) -> f64 {
+        let luminance = |c: Color| {
+            let Color::Rgb(r, g, b) = c else {
+                panic!("not a palette colour: {c:?}");
+            };
+            let channel = |c: u8| {
+                let c = f64::from(c) / 255.0;
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// All text reads at 4.5:1, on every model, focused, edited, applied, in
+    /// help and on every notice. Lines, swatches and the focus bar aren't text.
+    #[test]
+    fn text_has_enough_contrast() {
+        let check = |app: &App| {
+            let buffer = draw_to_buffer(app, 80, 24);
+            for cell in buffer.content() {
+                let symbol = cell.symbol();
+                if symbol.trim().is_empty() || "─│┌┐└┘■▌".contains(symbol) {
+                    continue;
+                }
+                let ratio = contrast(cell.fg, cell.bg);
+                assert!(ratio >= 4.5, "{symbol:?} at {ratio:.2}: {cell:?}");
+            }
+        };
+        let mut seen = Vec::new();
+        for model in MODELS {
+            // Models with the same features draw alike.
+            if seen.contains(&model.features) {
+                continue;
+            }
+            seen.push(model.features);
+            let mut app = demo(model);
+            // Each row edited, then applied (focused, with the ✓ message).
+            for _ in app.rows() {
+                app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+                check(&app);
+                if let Some(Action::Apply { change, done }) =
+                    app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+                {
+                    app.simulate(&change);
+                    app.ok(done);
+                }
+                check(&app);
+                app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+            }
+            app.error("x");
+            check(&app);
+            app.help = true;
+            check(&app);
+            for link in [Link::Asleep, Link::Disconnected, Link::Error("x".into())] {
+                app.show(Some(model), link, None, Default::default());
+                check(&app);
+            }
+        }
+    }
+
+    /// A lift-off change also resets the sensor calibration; say so first.
+    #[test]
+    fn lift_off_edit_warns_of_calibration_reset() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        while app.focused() != Some(Control::LiftOff) {
+            app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        let screen = render(&app, 80, 24);
+        let row = screen.lines().find(|l| l.contains("Lift-off")).unwrap();
+        assert!(
+            row.contains("◀ High ▶  Enter to apply; resets sensor calibration │"),
+            "{row}"
+        );
+    }
+
     #[test]
     fn locked_motion_sync_says_why() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
@@ -752,5 +1018,21 @@ mod tests {
             row.contains('🔒') && row.contains("not at 8000 Hz"),
             "{screen}"
         );
+        let buffer = draw_to_buffer(&app, 80, 24);
+        let y = (0..24).find(|&y| buffer[(3, y)].symbol() == "M").unwrap();
+        assert_eq!(buffer[(3, y)].fg, GREY, "the label is dimmed too");
+    }
+
+    /// The stages' swatches line up whatever the DPI's digits.
+    #[test]
+    fn stage_swatches_line_up() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let screen = render(&demo(model), 80, 24);
+        let columns: Vec<usize> = screen
+            .lines()
+            .filter(|l| l.contains("DPI stage"))
+            .map(|l| l.chars().position(|c| c == '■').unwrap())
+            .collect();
+        assert!(columns.windows(2).all(|w| w[0] == w[1]), "{screen}");
     }
 }

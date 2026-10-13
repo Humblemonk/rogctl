@@ -182,7 +182,9 @@ impl App {
         }
     }
 
-    /// Shows what was just read. Keeps the focus, drops any unsent edit.
+    /// Shows what was just read. Keeps the focus, drops any unsent edit, and
+    /// drops the message if the mouse came or went: it was about the old
+    /// screen. Callers set a message after this.
     pub fn show(
         &mut self,
         model: Option<&'static Model>,
@@ -190,6 +192,9 @@ impl App {
         reading: Option<Reading>,
         settings: MouseSettings,
     ) {
+        if self.link != link {
+            self.message = None;
+        }
         self.model = model;
         self.link = link;
         self.reading = reading;
@@ -368,11 +373,18 @@ impl App {
                 self.edit = None;
                 return (self.devices > 1).then_some(Action::NextDevice);
             }
-            KeyCode::Esc => self.edit = None,
+            KeyCode::Esc => {
+                // The message is often about the edit, e.g. a DPI out of range.
+                self.edit = None;
+                self.message = None;
+            }
             KeyCode::Up | KeyCode::Char('k') => self.move_focus(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_focus(1),
             KeyCode::Left | KeyCode::Char('h') => self.adjust(-1, big),
             KeyCode::Right | KeyCode::Char('l') => self.adjust(1, big),
+            // Shift+h and Shift+l arrive as capitals.
+            KeyCode::Char('H') => self.adjust(-1, true),
+            KeyCode::Char('L') => self.adjust(1, true),
             KeyCode::PageDown => self.adjust(-1, true),
             KeyCode::PageUp => self.adjust(1, true),
             KeyCode::Char(c @ '0'..='9') => self.type_digit(c),
@@ -881,6 +893,10 @@ mod tests {
         assert_eq!(app.edit.map(|e| e.value), Some(Value::Dpi(450)));
         app.handle_key(KeyCode::Left, KeyModifiers::SHIFT);
         assert_eq!(app.edit.map(|e| e.value), Some(Value::Dpi(100)));
+        app.handle_key(KeyCode::Char('L'), KeyModifiers::SHIFT);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Dpi(600)), "Shift+l");
+        app.handle_key(KeyCode::Char('H'), KeyModifiers::SHIFT);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Dpi(100)), "Shift+h");
 
         for c in "1625".chars() {
             press(&mut app, KeyCode::Char(c));
@@ -900,9 +916,23 @@ mod tests {
         }
         assert_eq!(press(&mut app, KeyCode::Enter), None, "under 100");
         assert!(app.message.as_ref().is_some_and(|m| m.error));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!((app.edit, &app.message), (None, &None), "Esc drops both");
+        for c in "99".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Backspace);
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.edit, None);
+
+        // A reread of the same mouse keeps the message; one that went to
+        // sleep drops it, as it was about the old screen.
+        let (model, reading, settings) = (app.model, app.reading, app.settings.clone());
+        app.show(model, Link::Connected, reading, settings);
+        assert!(app.message.is_some());
+        app.show(model, Link::Asleep, None, MouseSettings::default());
+        assert_eq!(app.message, None);
     }
 
     #[test]
