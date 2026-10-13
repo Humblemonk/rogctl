@@ -74,9 +74,9 @@ when a change depends on their runtime behaviour.
 
 ## Per widget
 
-- **Noctalia**: with the user's permission, `~/.local/share/noctalia/plugins/rog-mouse-battery`
-  is a symlink to this repo's plugin directory, so `.luau` edits hot-reload. `plugin.toml`
-  changes need `noctalia msg config-reload`. Logs: `~/.cache/noctalia/noctalia.log`. Docs:
+- **Noctalia**: `rogctl configure noctalia` copies the plugin to
+  `~/.local/share/noctalia/plugins/rog-mouse-battery`; it's never a symlink, so edits only
+  take effect after installing again (with the user's permission). Logs: `~/.cache/noctalia/noctalia.log`. Docs:
   <https://docs.noctalia.dev/noctalia/plugins/development/>.
 - **Waybar**: `waybar/config.json` runs `rogctl watch --format waybar`. Waybar hides a custom
   module whose `text` is empty, which is how "disconnected" hides it.

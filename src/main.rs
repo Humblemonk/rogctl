@@ -222,6 +222,8 @@ impl Output {
 }
 
 fn cmd_battery(output: Output) -> ExitCode {
+    // The Plasma widget runs `battery`, not `watch`.
+    configure::notify_if_outdated();
     let mut status = poll();
     status.low = is_low(&status, output.low_threshold);
     if output.print(&status).is_err() {
@@ -356,6 +358,7 @@ fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
     // Before the first line: a widget only learns the pid from that, and
     // SIGUSR1 would kill the process until it's blocked.
     let refresh = block_refresh_signal();
+    configure::notify_if_outdated();
     let mut last_known: Option<Status> = None;
     let mut low_warning = LowWarning::default();
     let mut retry = ERROR_RETRY;

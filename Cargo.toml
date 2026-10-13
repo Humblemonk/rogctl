@@ -1,6 +1,6 @@
 [package]
 name = "rogctl"
-version = "2.3.1"
+version = "2.4.0"
 edition = "2024"
 rust-version = "1.88"
 description = "rogctl - Battery status and settings for ASUS mice on Linux"

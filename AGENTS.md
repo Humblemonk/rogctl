@@ -120,8 +120,8 @@ Tests that need a mouse can't run in CI; keep protocol parsing in pure functions
   or a selected row is clicked, so an agent driving it may send navigation keys and `q` but
   never Enter, Space or mouse clicks. Test changes with `--demo` and unit tests.
 - **Don't change the user's system without asking first.** This includes `cargo install`,
-  `rogctl configure` (except against a scratch `HOME`, as `widgets.md` explains), creating the
-  plugin symlink, `noctalia msg plugins enable|disable`, editing anything under
+  `rogctl configure` (except against a scratch `HOME`, as `widgets.md` explains),
+  `noctalia msg plugins enable|disable`, editing anything under
   `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, installing or
   enabling any of the other widgets (`kpackagetool6`, `gnome-extensions`, DMS plugin links,
   Waybar or Quickshell config edits), installing a desktop or shell to test with, and anything
