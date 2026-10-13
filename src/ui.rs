@@ -148,26 +148,34 @@ fn header_line(app: &App) -> Line<'static> {
 }
 
 /// The keys, then the version. A narrow terminal drops the version first,
-/// then the keys least needed; `?` and `q` are never dropped.
+/// then the keys least needed; outside help, `?` and `q` are never dropped.
 fn footer_line(app: &App, width: u16) -> Line<'static> {
     const ALWAYS: u8 = u8::MAX;
     // Only the keys that do something on this screen, each with how long it
     // stays as the terminal narrows: the lowest goes first.
-    let mut keys = match app.link {
-        Link::Connected => vec![
-            ("↑↓", "select", 3),
-            ("←→", "change", 4),
-            // A pending edit's row says "Enter to apply" too.
-            ("Enter", "apply", 2),
-            ("Esc", "cancel", 0),
-            ("r", "reload", 1),
-        ],
-        Link::Asleep | Link::Disconnected | Link::Error(_) => vec![("r", "retry", 5)],
+    let mut keys = if app.help {
+        // Help swallows every key until Esc, ?, q or a click closes it.
+        vec![("Esc", "close help", ALWAYS)]
+    } else {
+        let mut keys = match app.link {
+            Link::Connected => vec![
+                ("↑↓", "select", 2),
+                ("←→", "change", 3),
+                // The last action key: nothing else says Enter switches or makes
+                // a stage active.
+                ("Enter", "apply", 4),
+                ("Esc", "cancel", 0),
+                ("r", "reload", 1),
+            ],
+            // Retrying is what this screen is for.
+            Link::Asleep | Link::Disconnected | Link::Error(_) => vec![("r", "retry", 6)],
+        };
+        if app.devices > 1 {
+            keys.push(("Tab", "next mouse", 5));
+        }
+        keys.extend([("?", "help", ALWAYS), ("q", "quit", ALWAYS)]);
+        keys
     };
-    if app.devices > 1 {
-        keys.push(("Tab", "next mouse", 5));
-    }
-    keys.extend([("?", "help", ALWAYS), ("q", "quit", ALWAYS)]);
 
     // " key what", two spaces between keys and before the version.
     let used = |keys: &[(&str, &str, u8)]| {
@@ -722,15 +730,20 @@ mod tests {
         }
     }
 
-    /// The version ends the footer and fits 80 columns; with Tab too, the
-    /// footer uses a wider terminal rather than being cut at MAX_WIDTH.
+    /// The version ends the footer when it fits (a narrower terminal drops it,
+    /// `narrow_footer_keeps_help_and_quit`); with Tab too, the footer uses a
+    /// wider terminal rather than being cut at MAX_WIDTH.
     #[test]
     fn footer_ends_with_the_version() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let mut app = demo(model);
         let version = concat!("v", env!("CARGO_PKG_VERSION"));
         let footer = |app: &App, width| render(app, width, 24).lines().last().unwrap().to_owned();
-        assert!(footer(&app, 80).ends_with(version), "{}", footer(&app, 80));
+        assert!(
+            footer(&app, 100).ends_with(version),
+            "{}",
+            footer(&app, 100)
+        );
         app.devices = 2;
         let wide = footer(&app, 120);
         assert!(
@@ -863,14 +876,25 @@ mod tests {
         }
         assert_eq!(
             footer(&app, 60),
-            " ↑↓ select  ←→ change  Tab next mouse  ? help  q quit"
+            " ←→ change  Enter apply  Tab next mouse  ? help  q quit"
         );
         assert_eq!(footer(&app, 40), " Tab next mouse  ? help  q quit");
+        app.help = true;
+        let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            footer(&app, 100),
+            format!(" Esc close help  {version}"),
+            "only Esc works"
+        );
 
         let mut app = App::new(false);
         assert_eq!(footer(&app, 24), " r retry  ? help  q quit");
         app.devices = 2;
-        assert_eq!(footer(&app, 39), " Tab next mouse  ? help  q quit");
+        assert_eq!(
+            footer(&app, 39),
+            " r retry  ? help  q quit",
+            "retry outlasts Tab"
+        );
     }
 
     /// Rather than cut a panel off, and maybe the focused row with it.

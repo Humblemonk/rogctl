@@ -59,9 +59,9 @@ several models looks and behaves the same on all of them.
   everything fits one screen; a terminal too short for both panels gets a "make the
   terminal taller" notice instead, so the focused row is never off screen.
 - **Footer keys** are only the ones that do something on the screen shown: with no mouse
-  connected, just `r`, `?`, `q` (and Tab with several mice). A terminal too narrow for them
-  drops the version, then the least needed keys (`footer_line()`); `?` and `q` are never
-  dropped.
+  connected, just `r`, `?`, `q` (and Tab with several mice); with help open, just Esc. A
+  terminal too narrow for them drops the version, then the least needed keys
+  (`footer_line()`); outside help, `?` and `q` are never dropped.
 - **Colours** follow GearLink's ROG theme: near-black, white text, grey detail, one red
   accent (the header's `///`, focus band, active stage, pending edit, switches that are on,
   errors, the header's battery at or below the mouse's low-battery warning). Nothing else is
