@@ -148,47 +148,63 @@ fn header_line(app: &App) -> Line<'static> {
 }
 
 /// The keys, then the version. A narrow terminal drops the version first,
-/// then the keys least needed, so `?` and `q` always show.
+/// then the keys least needed; `?` and `q` are never dropped.
 fn footer_line(app: &App, width: u16) -> Line<'static> {
-    // Only the keys that do something on this screen.
+    const ALWAYS: u8 = u8::MAX;
+    // Only the keys that do something on this screen, each with how long it
+    // stays as the terminal narrows: the lowest goes first.
     let mut keys = match app.link {
         Link::Connected => vec![
-            ("↑↓", "select"),
-            ("←→", "change"),
-            ("Enter", "apply"),
-            ("Esc", "cancel"),
-            ("r", "reload"),
+            ("↑↓", "select", 3),
+            ("←→", "change", 4),
+            // A pending edit's row says "Enter to apply" too.
+            ("Enter", "apply", 2),
+            ("Esc", "cancel", 0),
+            ("r", "reload", 1),
         ],
-        Link::Asleep | Link::Disconnected | Link::Error(_) => vec![("r", "retry")],
+        Link::Asleep | Link::Disconnected | Link::Error(_) => vec![("r", "retry", 5)],
     };
     if app.devices > 1 {
-        keys.push(("Tab", "next mouse"));
+        keys.push(("Tab", "next mouse", 5));
     }
-    keys.extend([("?", "help"), ("q", "quit")]);
-    let line = |keys: &[(&'static str, &'static str)], version: bool| {
-        let mut spans = vec![Span::raw(" ")];
-        for &(key, what) in keys {
-            spans.push(Span::styled(key, BOLD));
-            spans.push(Span::styled(format!(" {what}  "), MUTED));
-        }
-        if version {
-            spans.push(Span::styled(concat!("v", env!("CARGO_PKG_VERSION")), MUTED));
-        }
-        Line::from(spans)
+    keys.extend([("?", "help", ALWAYS), ("q", "quit", ALWAYS)]);
+
+    // " key what", two spaces between keys and before the version.
+    let used = |keys: &[(&str, &str, u8)]| {
+        let items: usize = keys
+            .iter()
+            .map(|&(key, what, _)| Span::raw(key).width() + 1 + Span::raw(what).width())
+            .sum();
+        1 + items + 2 * keys.len().saturating_sub(1)
     };
-    let fits = |line: &Line| line.width() <= usize::from(width);
-    let full = line(&keys, true);
-    if fits(&full) {
-        return full;
+    let width = usize::from(width);
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    let show_version = used(&keys) + 2 + version.len() <= width;
+    while used(&keys) > width {
+        let least_needed = keys
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(_, _, keep))| keep != ALWAYS)
+            .min_by_key(|&(_, &(_, _, keep))| keep)
+            .map(|(at, _)| at);
+        let Some(at) = least_needed else {
+            break;
+        };
+        keys.remove(at);
     }
-    for least_needed in ["Esc", "r", "←→", "↑↓", "Tab", "Enter"] {
-        let shorter = line(&keys, false);
-        if fits(&shorter) {
-            return shorter;
+
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (key, what, _)) in keys.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
         }
-        keys.retain(|&(key, _)| key != least_needed);
+        spans.push(Span::styled(key, BOLD));
+        spans.push(Span::styled(format!(" {what}"), MUTED));
     }
-    line(&keys, false)
+    if show_version {
+        spans.push(Span::styled(format!("  {version}"), MUTED));
+    }
+    Line::from(spans)
 }
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
@@ -833,17 +849,28 @@ mod tests {
     fn narrow_footer_keeps_help_and_quit() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let mut app = demo(model);
-        app.devices = 2;
         let footer = |app: &App, width| render(app, width, 24).lines().last().unwrap().to_owned();
+        let keys = " ↑↓ select  ←→ change  Enter apply  Esc cancel  r reload  ? help  q quit";
+        assert_eq!(
+            footer(&app, 72),
+            keys,
+            "the version goes, every key fits exactly"
+        );
+        app.devices = 2;
         for width in [20, 40, 60, 79] {
             let footer = footer(&app, width);
             assert!(footer.ends_with("? help  q quit"), "{width}: {footer:?}");
         }
         assert_eq!(
             footer(&app, 60),
-            " ↑↓ select  Enter apply  Tab next mouse  ? help  q quit"
+            " ↑↓ select  ←→ change  Tab next mouse  ? help  q quit"
         );
-        assert_eq!(footer(&app, 40), " Enter apply  ? help  q quit");
+        assert_eq!(footer(&app, 40), " Tab next mouse  ? help  q quit");
+
+        let mut app = App::new(false);
+        assert_eq!(footer(&app, 24), " r retry  ? help  q quit");
+        app.devices = 2;
+        assert_eq!(footer(&app, 39), " Tab next mouse  ? help  q quit");
     }
 
     /// Rather than cut a panel off, and maybe the focused row with it.

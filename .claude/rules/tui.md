@@ -60,15 +60,17 @@ several models looks and behaves the same on all of them.
   terminal taller" notice instead, so the focused row is never off screen.
 - **Footer keys** are only the ones that do something on the screen shown: with no mouse
   connected, just `r`, `?`, `q` (and Tab with several mice). A terminal too narrow for them
-  drops the version, then the least needed keys (`footer_line()`); `?` and `q` always show.
+  drops the version, then the least needed keys (`footer_line()`); `?` and `q` are never
+  dropped.
 - **Colours** follow GearLink's ROG theme: near-black, white text, grey detail, one red
   accent (the header's `///`, focus band, active stage, pending edit, switches that are on,
   errors, the header's battery at or below the mouse's low-battery warning). Nothing else is
   red: the ✓ of a success and `[demo]` are white. They're named once in the palette at the
   top of `ui.rs`; use its styles (`BASE`, `MUTED`, `BOLD`, `ACCENT`, `FOCUSED`). Text needs
   4.5:1 contrast on the background and the focus band (`text_has_enough_contrast` checks
-  every model and state), which is why `RED` is GearLink's #e60012 lightened. The DPI swatches, read from the mouse, are the only other colours. The
-  footer ends with the version.
+  every model and state), which is why `RED` is GearLink's #e60012 lightened. The DPI
+  swatches, read from the mouse, are the only other colours. The footer ends with the
+  version when it fits.
 
 ## Adding a setting
 
