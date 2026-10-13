@@ -52,6 +52,8 @@ filenames.
 Try it without installing: `cargo run -- --json`, `cargo run -- list`,
 `cargo run -- watch --interval 2 --json`, and without a mouse
 `cargo run -- settings --demo` (or `--demo "ROG Chakram"`, any name in `MODELS`).
+`battery` and `watch` write `~/.local/state/rogctl/notified` and may send a desktop
+notification about out-of-date widgets; run them with a scratch `XDG_STATE_HOME` to avoid it.
 
 ## Conventions
 
