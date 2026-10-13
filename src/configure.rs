@@ -194,7 +194,7 @@ Installs the battery widget for DESKTOP, or with --remove removes it:
     text
 }
 
-/// The installed widgets that differ from the ones built into this binary.
+/// The installed widgets older than the ones built into this binary.
 fn outdated() -> Vec<Desktop> {
     Desktop::ALL
         .into_iter()
@@ -209,14 +209,46 @@ fn is_outdated(desktop: Desktop) -> Result<bool> {
         Desktop::Waybar => Ok(false),
         Desktop::Quickshell => quickshell()?.is_outdated(),
         Desktop::Dms => dms()?.is_outdated(),
-        Desktop::Kde => Ok(differs(&kde_dir()?, &KDE)),
-        Desktop::Gnome => Ok(differs(&gnome_dir()?, &GNOME)),
+        Desktop::Kde => Ok(package_outdated(&kde_dir()?, &KDE, "/KPlugin/Version")),
+        Desktop::Gnome => Ok(package_outdated(&gnome_dir()?, &GNOME, "/version-name")),
     }
 }
 
 /// For a widget its desktop's tool installed, which keeps no record: whether
-/// it's there, with one of the bundle's files missing or different. Nobody
-/// edits these files, so going by them is safe.
+/// its files differ from the bundle and its version, at `pointer` in its
+/// `metadata.json`, is older than this rogctl's.
+fn package_outdated(dir: &Path, bundle: &Bundle, pointer: &str) -> bool {
+    if !differs(dir, bundle) {
+        return false;
+    }
+    let version = fs::read(dir.join("metadata.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|json| json.pointer(pointer)?.as_str().map(str::to_owned));
+    is_older(version.as_deref(), env!("CARGO_PKG_VERSION"))
+}
+
+/// Whether `installed` is an older version than `ours`. An unknown or
+/// unreadable version counts as older. The same version with other files is
+/// a build from a checkout, so it doesn't. If `ours` is unreadable, nothing
+/// counts as older.
+fn is_older(installed: Option<&str>, ours: &str) -> bool {
+    let parse = |v: &str| {
+        v.split('.')
+            .map(|n| n.parse::<u32>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    let Some(ours) = parse(ours) else {
+        return false;
+    };
+    installed
+        .and_then(parse)
+        .is_none_or(|installed| installed < ours)
+}
+
+/// Whether a widget is there, with one of the bundle's files missing or
+/// different. Nobody edits the files of the widgets this checks, so going by
+/// them is safe.
 fn differs(dir: &Path, bundle: &Bundle) -> bool {
     dir.exists()
         && bundle
@@ -231,19 +263,15 @@ fn differs(dir: &Path, bundle: &Bundle) -> bool {
 /// too. `battery` and `watch` call it, so it ignores every error and never
 /// waits.
 pub fn notify_if_outdated() {
-    let Ok(dir) = state_dir() else {
+    let Ok(marker) = state_dir().map(|d| d.join("notified")) else {
         return;
     };
-    let marker = dir.join("notified");
     let version = env!("CARGO_PKG_VERSION");
     if fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
         return;
     }
     // Without the marker, every `battery` poll would notify again.
-    if fs::create_dir_all(&dir)
-        .and_then(|()| fs::write(&marker, version))
-        .is_err()
-    {
+    if write_creating_dirs(&marker, version).is_err() {
         return;
     }
     let stale = outdated();
@@ -587,12 +615,18 @@ fn exists(path: &Path) -> Result<bool> {
 fn write_files(dir: &Path, bundle: &Bundle) -> Result<()> {
     for file in bundle.files {
         let path = dir.join(file.path);
-        let parent = path.parent().unwrap_or(dir);
-        fs::create_dir_all(parent)
-            .and_then(|()| fs::write(&path, file.contents))
+        write_creating_dirs(&path, file.contents)
             .map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// `fs::write`, creating the directories above `path` first.
+fn write_creating_dirs(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(path, contents)
 }
 
 /// A widget rogctl copies into place itself, rather than handing it to the
@@ -683,20 +717,23 @@ impl Copied {
         Ok(ours)
     }
 
-    /// Whether rogctl installed this widget from another version's bundle. Goes
-    /// by the record, not the files, so the user's own edits don't count.
+    /// Whether rogctl installed this widget from an older version's bundle.
+    /// Goes by the record, not the files, so the user's own edits don't count.
     /// `false` with no record, or once every recorded file is gone.
     fn is_outdated(&self) -> Result<bool> {
-        let Some(mut record) = self.read_record()? else {
+        let Some(text) = self.read_record_text()? else {
             return Ok(false);
         };
+        let mut record = parse_record(&text);
         if !record.iter().any(|(path, _)| self.dir.join(path).exists()) {
             return Ok(false);
         }
         let mut current = self.bundle_entries();
         record.sort();
         current.sort();
-        Ok(record != current)
+        // Records written before rogctl recorded its version count as older.
+        let version = text.lines().find_map(|l| l.strip_prefix("version "));
+        Ok(record != current && is_older(version, env!("CARGO_PKG_VERSION")))
     }
 
     fn bundle_entries(&self) -> Vec<Entry> {
@@ -771,8 +808,12 @@ impl Copied {
     /// `None` when there's no record: nothing installed yet, or installed by
     /// hand.
     fn read_record(&self) -> Result<Option<Vec<Entry>>> {
+        Ok(self.read_record_text()?.map(|text| parse_record(&text)))
+    }
+
+    fn read_record_text(&self) -> Result<Option<String>> {
         match fs::read_to_string(&self.record) {
-            Ok(text) => Ok(Some(parse_record(&text))),
+            Ok(text) => Ok(Some(text)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("{}: {e}", self.record.display())),
         }
@@ -786,9 +827,8 @@ impl Copied {
         for file in self.bundle.files {
             text += &format!("{:016x} {}\n", checksum(file.contents), file.path);
         }
-        let parent = self.record.parent().unwrap_or(&self.dir);
-        fs::create_dir_all(parent)
-            .and_then(|()| fs::write(&self.record, text))
+        text += &format!("version {}\n", env!("CARGO_PKG_VERSION"));
+        write_creating_dirs(&self.record, text)
             .map_err(|e| format!("{}: {e}", self.record.display()))
     }
 
@@ -970,8 +1010,7 @@ mod tests {
     }
 
     fn write(path: PathBuf, text: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
+        write_creating_dirs(&path, text).unwrap();
     }
 
     #[test]
@@ -1090,7 +1129,26 @@ mod tests {
         write(widget.dir.join("plugin.toml"), "edited");
         assert_eq!(widget.is_outdated(), Ok(false), "edits don't count");
 
-        let record = fs::read_to_string(&widget.record).unwrap();
+        let current = fs::read_to_string(&widget.record).unwrap();
+        let ours = format!("version {}", env!("CARGO_PKG_VERSION"));
+        write(
+            widget.record.clone(),
+            &current
+                .replacen("widget.luau", "new.luau", 1)
+                .replace(&ours, "version 99.0.0"),
+        );
+        assert_eq!(widget.is_outdated(), Ok(false), "a newer version");
+        write(
+            widget.record.clone(),
+            &current.replacen("widget.luau", "new.luau", 1),
+        );
+        assert_eq!(
+            widget.is_outdated(),
+            Ok(false),
+            "a checkout's build of this version"
+        );
+
+        let record = current.replace(&ours, "version 2.3.1");
         write(
             widget.record.clone(),
             &record.replacen("widget.luau", "old.luau", 1),
@@ -1103,8 +1161,56 @@ mod tests {
         write(widget.record.clone(), &changed);
         assert_eq!(widget.is_outdated(), Ok(true), "a file changed since");
 
+        let unversioned = current.replace(&format!("{ours}\n"), "");
+        write(
+            widget.record.clone(),
+            &format!("{unversioned}0a dropped.luau\n"),
+        );
+        assert_eq!(
+            widget.is_outdated(),
+            Ok(true),
+            "a record from before versions"
+        );
+
         fs::remove_dir_all(&widget.dir).unwrap();
         assert_eq!(widget.is_outdated(), Ok(false), "deleted by hand");
+    }
+
+    #[test]
+    fn compares_versions_by_number() {
+        assert!(is_older(Some("2.3.1"), "2.4.0"));
+        assert!(!is_older(Some("2.10.0"), "2.4.0"));
+        assert!(!is_older(Some("2.4.0"), "2.4.0"));
+        assert!(is_older(None, "2.4.0"));
+        assert!(
+            is_older(Some("2.4.0-rc1"), "2.4.0"),
+            "unreadable counts as older"
+        );
+        assert!(!is_older(Some("2.3.1"), "2.5.0-rc.1"), "unless it's ours");
+    }
+
+    #[test]
+    fn package_outdated_needs_older_files() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.0.join("plasmoid");
+        let pointer = "/KPlugin/Version";
+        write_files(&dir, &KDE).unwrap();
+        assert!(!package_outdated(&dir, &KDE, pointer));
+        write(dir.join("contents/ui/main.qml"), "changed");
+        assert!(
+            !package_outdated(&dir, &KDE, pointer),
+            "this version, from a checkout"
+        );
+        write(
+            dir.join("metadata.json"),
+            r#"{"KPlugin": {"Version": "99.0.0"}}"#,
+        );
+        assert!(!package_outdated(&dir, &KDE, pointer), "newer");
+        write(
+            dir.join("metadata.json"),
+            r#"{"KPlugin": {"Version": "2.3.1"}}"#,
+        );
+        assert!(package_outdated(&dir, &KDE, pointer));
     }
 
     #[test]
