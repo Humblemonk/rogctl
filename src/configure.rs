@@ -231,16 +231,16 @@ fn differs(dir: &Path, bundle: &Bundle) -> bool {
 /// too. `battery` and `watch` call it, so it ignores every error and never
 /// waits.
 pub fn notify_if_outdated() {
-    let Ok(marker) = state_dir().map(|d| d.join("notified")) else {
+    let Ok(dir) = state_dir() else {
         return;
     };
+    let marker = dir.join("notified");
     let version = env!("CARGO_PKG_VERSION");
     if fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
         return;
     }
     // Without the marker, every `battery` poll would notify again.
-    let dir = marker.parent().unwrap_or(&marker);
-    if fs::create_dir_all(dir)
+    if fs::create_dir_all(&dir)
         .and_then(|()| fs::write(&marker, version))
         .is_err()
     {
@@ -578,13 +578,10 @@ fn xdg_dir(xdg: Option<OsString>, home: Option<OsString>, fallback: &str) -> Res
         .ok_or_else(|| "HOME isn't set".to_owned())
 }
 
-/// Whether anything is at `path`, a dangling link included.
+/// Whether anything is at `path`, or why rogctl can't tell.
 fn exists(path: &Path) -> Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
+    path.try_exists()
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn write_files(dir: &Path, bundle: &Bundle) -> Result<()> {

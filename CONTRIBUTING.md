@@ -78,15 +78,15 @@ The protocol details are in [`.claude/rules/protocol.md`](.claude/rules/protocol
 
 ## Working on the Noctalia plugin
 
-Link your checkout into Noctalia's local plugin folder and enable it:
+Install the plugin from your checkout, which copies it into Noctalia's plugin folder and
+enables it:
 
 ```sh
-ln -s "$PWD/noctalia/rog-mouse-battery" ~/.local/share/noctalia/plugins/rog-mouse-battery
-noctalia msg plugins enable humblemonk/rog-mouse-battery
+cargo run -- configure noctalia
 ```
 
-- `.luau` edits reload in the running shell automatically.
-- Changes to `plugin.toml` need `noctalia msg config-reload`.
+- Run it again after each change: the plugin is a copy, so edits don't reach the running shell
+  until then. It reloads Noctalia's config itself.
 - Script errors appear in `~/.cache/noctalia/noctalia.log`.
 - The service runs whichever `rogctl` is first on Noctalia's `PATH`. To test a local build, set
   the plugin's **rogctl command** setting to `/path/to/rogctl/target/debug/rogctl`.
