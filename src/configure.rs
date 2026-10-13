@@ -238,8 +238,13 @@ pub fn notify_if_outdated() {
     if fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
         return;
     }
-    if let Some(dir) = marker.parent() {
-        let _ = fs::create_dir_all(dir).and_then(|()| fs::write(&marker, version));
+    // Without the marker, every `battery` poll would notify again.
+    let dir = marker.parent().unwrap_or(&marker);
+    if fs::create_dir_all(dir)
+        .and_then(|()| fs::write(&marker, version))
+        .is_err()
+    {
+        return;
     }
     let stale = outdated();
     if stale.is_empty() {
