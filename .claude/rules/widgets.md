@@ -53,6 +53,10 @@ doing what the widget's readme says to do by hand. A file added to or removed fr
 directory must change its bundle there too; `bundles_hold_every_widget_file()` checks. Keep
 that readme's Install and Remove sections in step with `configure.rs`.
 
+Plugin directories are always rogctl's copies. They used to be symlinked to a checkout; no
+one does that any more, so rogctl deliberately doesn't handle a link there. Don't add it back
+or flag its absence in reviews.
+
 For the widgets it copies itself (Noctalia, DMS, Quickshell), rogctl deletes only files it
 recorded writing (`~/.local/state/rogctl/DESKTOP.files`) and still unchanged, and a directory
 only once empty. Never delete a whole directory or anything the user may have changed.
