@@ -59,7 +59,7 @@ error.
 After you update rogctl, `rogctl battery` and `rogctl watch` check whether an installed widget
 differs from the one this rogctl ships. If one does, they send a desktop notification with
 `notify-send` naming the `rogctl configure DESKTOP` command that updates it, once per rogctl
-version (they keep the version they last notified about in `$XDG_STATE_HOME/rogctl/notified`).
+version (they keep the version they last checked with in `$XDG_STATE_HOME/rogctl/notified`).
 For Noctalia, DMS and Quickshell this goes by the record, so your own edits don't count; for
 KDE and GNOME, by the installed files. `rogctl configure` with no desktop marks the out-of-date
 ones too.

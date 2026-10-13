@@ -226,8 +226,10 @@ fn differs(dir: &Path, bundle: &Bundle) -> bool {
 }
 
 /// Once per rogctl version, tells the user in a desktop notification which
-/// installed widgets to update with `rogctl configure`. `battery` and `watch`
-/// call it, so it ignores every error and never waits.
+/// installed widgets to update with `rogctl configure`. Which widgets are out
+/// of date only changes with rogctl's version, so it checks once per version
+/// too. `battery` and `watch` call it, so it ignores every error and never
+/// waits.
 pub fn notify_if_outdated() {
     let Ok(marker) = state_dir().map(|d| d.join("notified")) else {
         return;
@@ -235,6 +237,9 @@ pub fn notify_if_outdated() {
     let version = env!("CARGO_PKG_VERSION");
     if fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
         return;
+    }
+    if let Some(dir) = marker.parent() {
+        let _ = fs::create_dir_all(dir).and_then(|()| fs::write(&marker, version));
     }
     let stale = outdated();
     if stale.is_empty() {
@@ -260,10 +265,7 @@ pub fn notify_if_outdated() {
         return;
     };
     // Reaped on its own thread, so `watch` doesn't wait on it.
-    std::thread::spawn(move || child.wait());
-    if let Some(dir) = marker.parent() {
-        let _ = fs::create_dir_all(dir).and_then(|()| fs::write(&marker, version));
-    }
+    let _ = std::thread::Builder::new().spawn(move || child.wait());
 }
 
 fn install(desktop: Desktop, force: bool) -> Result<()> {
