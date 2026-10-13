@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,11 +154,14 @@ macro_rules! say {
 /// user changed.
 pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
     let Some(name) = desktop else {
-        let _ = io::stdout().write_all(choices().as_bytes());
+        let _ = io::stdout().write_all(choices(color(&io::stdout())).as_bytes());
         return ExitCode::SUCCESS;
     };
     let Some(desktop) = Desktop::parse(name) else {
-        eprint!("Unknown desktop {name:?}.\n\n{}", choices());
+        eprint!(
+            "Unknown desktop {name:?}.\n\n{}",
+            choices(color(&io::stderr()))
+        );
         return ExitCode::FAILURE;
     };
     let done = if remove {
@@ -175,23 +178,41 @@ pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
     }
 }
 
-fn choices() -> String {
+/// Whether to colour what goes to `stream`: only a terminal, and not with
+/// `NO_COLOR` set (<https://no-color.org>).
+fn color(stream: &impl IsTerminal) -> bool {
+    stream.is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
+fn choices(color: bool) -> String {
     let mut text = "\
 Usage: rogctl configure DESKTOP [--remove] [--force]
 
 Installs the battery widget for DESKTOP, or with --remove removes it:
 "
     .to_owned();
-    let stale = outdated();
     for desktop in Desktop::ALL {
-        let note = if stale.contains(&desktop) {
-            " (installed, out of date)"
-        } else {
-            ""
-        };
-        text += &format!("  {:<12}{}{note}\n", desktop.name(), desktop.description());
+        text += &format!("  {:<12}{}\n", desktop.name(), desktop.description());
+    }
+    for desktop in outdated() {
+        text += &format!("\n{}\n", outdated_message(desktop, color));
     }
     text
+}
+
+/// Said in the `rogctl configure` listing and the desktop notification.
+/// `color` puts the warning in bold yellow and the command in bold.
+fn outdated_message(desktop: Desktop, color: bool) -> String {
+    let (warn, bold, reset) = if color {
+        ("\x1b[1;33m", "\x1b[1m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    format!(
+        "{warn}The {} widget is out of date.{reset} Run: {bold}rogctl configure {}{reset}",
+        desktop.title(),
+        desktop.name()
+    )
 }
 
 /// The installed widgets older than the ones built into this binary.
@@ -279,14 +300,8 @@ pub fn notify_if_outdated() {
         return;
     }
     let body: Vec<String> = stale
-        .iter()
-        .map(|d| {
-            format!(
-                "The {} widget is out of date. Run: rogctl configure {}",
-                d.title(),
-                d.name()
-            )
-        })
+        .into_iter()
+        .map(|d| outdated_message(d, false))
         .collect();
     let Ok(mut child) = Command::new("notify-send")
         .args([WIDGET_NAME, &body.join("\n")])
@@ -1174,6 +1189,18 @@ mod tests {
 
         fs::remove_dir_all(&widget.dir).unwrap();
         assert_eq!(widget.is_outdated(), Ok(false), "deleted by hand");
+    }
+
+    #[test]
+    fn outdated_message_colours_only_when_asked() {
+        let plain = "The Noctalia widget is out of date. Run: rogctl configure noctalia";
+        assert_eq!(outdated_message(Desktop::Noctalia, false), plain);
+        let colored = outdated_message(Desktop::Noctalia, true);
+        assert!(colored.starts_with("\x1b[1;33mThe Noctalia"));
+        let stripped = ["\x1b[1;33m", "\x1b[1m", "\x1b[0m"]
+            .iter()
+            .fold(colored, |text, code| text.replace(code, ""));
+        assert_eq!(stripped, plain);
     }
 
     #[test]
