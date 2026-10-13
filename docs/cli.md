@@ -57,12 +57,14 @@ overwrites or removes it anyway. `rogctl configure` exits with 0 on success and 
 error.
 
 After you update rogctl, `rogctl battery` and `rogctl watch` check whether an installed widget
-differs from the one this rogctl ships. If one does, they send a desktop notification with
-`notify-send` naming the `rogctl configure DESKTOP` command that updates it, once per rogctl
-version (they keep the version they last checked with in `$XDG_STATE_HOME/rogctl/notified`).
-For Noctalia, DMS and Quickshell this goes by the record, so your own edits don't count; for
-KDE and GNOME, by the installed files. `rogctl configure` with no desktop marks the out-of-date
-ones too.
+is older than the one this rogctl ships: its files differ, and it came from an earlier rogctl
+version. A widget from a newer rogctl, or from a build of this version, doesn't count. If one
+is older, they send a desktop notification with `notify-send` naming the
+`rogctl configure DESKTOP` command that updates it, once per rogctl version (they keep the
+version they last checked with in `$XDG_STATE_HOME/rogctl/notified`). For Noctalia, DMS and
+Quickshell this goes by the record, which also holds the version, so your own edits don't
+count; for KDE and GNOME, by the installed files and the version in their `metadata.json`.
+`rogctl configure` with no desktop names the out-of-date ones too.
 
 ## Exit codes
 
