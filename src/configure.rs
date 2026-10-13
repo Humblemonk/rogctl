@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// What every widget is called in its desktop's widget picker.
@@ -150,8 +150,8 @@ macro_rules! say {
     }};
 }
 
-/// `desktop`: `None` lists the choices. `force` replaces a link where a plugin
-/// directory goes, and overwrites or deletes files the user changed.
+/// `desktop`: `None` lists the choices. `force` overwrites or deletes files the
+/// user changed.
 pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
     let Some(name) = desktop else {
         let _ = io::stdout().write_all(choices().as_bytes());
@@ -182,10 +182,88 @@ Usage: rogctl configure DESKTOP [--remove] [--force]
 Installs the battery widget for DESKTOP, or with --remove removes it:
 "
     .to_owned();
+    let stale = outdated();
     for desktop in Desktop::ALL {
-        text += &format!("  {:<12}{}\n", desktop.name(), desktop.description());
+        let note = if stale.contains(&desktop) {
+            " (installed, out of date)"
+        } else {
+            ""
+        };
+        text += &format!("  {:<12}{}{note}\n", desktop.name(), desktop.description());
     }
     text
+}
+
+/// The installed widgets that differ from the ones built into this binary.
+fn outdated() -> Vec<Desktop> {
+    Desktop::ALL
+        .into_iter()
+        .filter(|&d| is_outdated(d).unwrap_or(false))
+        .collect()
+}
+
+/// `false` when the widget isn't installed, or rogctl can't tell.
+fn is_outdated(desktop: Desktop) -> Result<bool> {
+    match desktop {
+        Desktop::Noctalia => noctalia()?.is_outdated(),
+        Desktop::Waybar => Ok(false),
+        Desktop::Quickshell => quickshell()?.is_outdated(),
+        Desktop::Dms => dms()?.is_outdated(),
+        Desktop::Kde => Ok(differs(&kde_dir()?, &KDE)),
+        Desktop::Gnome => Ok(differs(&gnome_dir()?, &GNOME)),
+    }
+}
+
+/// For a widget its desktop's tool installed, which keeps no record: whether
+/// it's there, with one of the bundle's files missing or different. Nobody
+/// edits these files, so going by them is safe.
+fn differs(dir: &Path, bundle: &Bundle) -> bool {
+    dir.exists()
+        && bundle
+            .files
+            .iter()
+            .any(|f| fs::read(dir.join(f.path)).ok().as_deref() != Some(f.contents))
+}
+
+/// Once per rogctl version, tells the user in a desktop notification which
+/// installed widgets to update with `rogctl configure`. `battery` and `watch`
+/// call it, so it ignores every error and never waits.
+pub fn notify_if_outdated() {
+    let Ok(marker) = state_dir().map(|d| d.join("notified")) else {
+        return;
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    if fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
+        return;
+    }
+    let stale = outdated();
+    if stale.is_empty() {
+        return;
+    }
+    let body: Vec<String> = stale
+        .iter()
+        .map(|d| {
+            format!(
+                "The {} widget is out of date. Run: rogctl configure {}",
+                d.title(),
+                d.name()
+            )
+        })
+        .collect();
+    let Ok(mut child) = Command::new("notify-send")
+        .args([WIDGET_NAME, &body.join("\n")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    // Reaped on its own thread, so `watch` doesn't wait on it.
+    std::thread::spawn(move || child.wait());
+    if let Some(dir) = marker.parent() {
+        let _ = fs::create_dir_all(dir).and_then(|()| fs::write(&marker, version));
+    }
 }
 
 fn install(desktop: Desktop, force: bool) -> Result<()> {
@@ -359,9 +437,13 @@ fn remove_dms(force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Where kpackagetool6 installs a user's Plasma widgets.
+/// Where kpackagetool6 installs a user's Plasma widget.
+fn kde_dir() -> Result<PathBuf> {
+    Ok(data_home()?.join("plasma/plasmoids").join(KDE_ID))
+}
+
 fn kde_installed() -> Result<bool> {
-    exists(&data_home()?.join("plasma/plasmoids").join(KDE_ID))
+    exists(&kde_dir()?)
 }
 
 fn install_kde() -> Result<()> {
@@ -391,8 +473,12 @@ fn remove_kde() -> Result<()> {
     run_tool(Command::new("kpackagetool6").args(["--type", "Plasma/Applet", "--remove", KDE_ID]))
 }
 
+fn gnome_dir() -> Result<PathBuf> {
+    Ok(data_home()?.join("gnome-shell/extensions").join(GNOME_UUID))
+}
+
 fn gnome_installed() -> Result<bool> {
-    exists(&data_home()?.join("gnome-shell/extensions").join(GNOME_UUID))
+    exists(&gnome_dir()?)
 }
 
 fn install_gnome() -> Result<()> {
@@ -537,17 +623,6 @@ impl Copied {
     /// Writes the bundle, and deletes files an earlier version wrote that this
     /// one doesn't have.
     fn install(&self, force: bool) -> Result<()> {
-        if self.own_dir && is_link(&self.dir) {
-            if !force {
-                return Err(format!(
-                    "{} is a link, perhaps to a rogctl checkout. Pass --force to replace it \
-                     with a copy",
-                    self.dir.display()
-                ));
-            }
-            // Only the link goes, never what it points to.
-            fs::remove_file(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
-        }
         let record = self.read_record()?.unwrap_or_default();
         let recorded = |path: &str| record.iter().find(|(p, _)| p == path).map(|&(_, sum)| sum);
 
@@ -584,19 +659,10 @@ impl Copied {
     }
 
     /// The files `remove` deletes: those rogctl wrote. Errs if the user changed
-    /// any, unless `force`. Empty for a link, which `remove` deletes instead.
+    /// any, unless `force`.
     fn removable(&self, force: bool) -> Result<Vec<String>> {
-        if self.own_dir && is_link(&self.dir) {
-            return Ok(Vec::new());
-        }
         // With no record, the files this version ships are what rogctl wrote.
-        let entries = self.read_record()?.unwrap_or_else(|| {
-            self.bundle
-                .files
-                .iter()
-                .map(|f| (f.path.to_owned(), checksum(f.contents)))
-                .collect()
-        });
+        let entries = self.read_record()?.unwrap_or_else(|| self.bundle_entries());
         let mut ours = Vec::new();
         let mut edited = Vec::new();
         for (path, sum) in entries {
@@ -613,15 +679,33 @@ impl Copied {
         Ok(ours)
     }
 
+    /// Whether rogctl installed this widget from another version's bundle. Goes
+    /// by the record, not the files, so the user's own edits don't count.
+    /// `false` with no record, or once every recorded file is gone.
+    fn is_outdated(&self) -> Result<bool> {
+        let Some(mut record) = self.read_record()? else {
+            return Ok(false);
+        };
+        if !record.iter().any(|(path, _)| self.dir.join(path).exists()) {
+            return Ok(false);
+        }
+        let mut current = self.bundle_entries();
+        record.sort();
+        current.sort();
+        Ok(record != current)
+    }
+
+    fn bundle_entries(&self) -> Vec<Entry> {
+        self.bundle
+            .files
+            .iter()
+            .map(|f| (f.path.to_owned(), checksum(f.contents)))
+            .collect()
+    }
+
     /// Deletes the files rogctl wrote, then the directories they leave empty.
     /// Returns whether there was anything to delete.
     fn remove(&self, force: bool) -> Result<bool> {
-        if self.own_dir && is_link(&self.dir) {
-            // Only the link goes, never what it points to.
-            fs::remove_file(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
-            self.delete_record()?;
-            return Ok(true);
-        }
         let files = self.removable(force)?;
         self.delete(&files)?;
         self.delete_record()?;
@@ -730,14 +814,19 @@ fn parse_record(text: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// `$XDG_STATE_HOME/rogctl/DESKTOP.files`.
-fn record_path(desktop: Desktop) -> Result<PathBuf> {
+/// `$XDG_STATE_HOME/rogctl`, or `~/.local/state/rogctl`.
+fn state_dir() -> Result<PathBuf> {
     let state = xdg_dir(
         std::env::var_os("XDG_STATE_HOME"),
         std::env::var_os("HOME"),
         ".local/state",
     )?;
-    Ok(state.join(format!("rogctl/{}.files", desktop.name())))
+    Ok(state.join("rogctl"))
+}
+
+/// `$XDG_STATE_HOME/rogctl/DESKTOP.files`.
+fn record_path(desktop: Desktop) -> Result<PathBuf> {
+    Ok(state_dir()?.join(format!("{}.files", desktop.name())))
 }
 
 /// 64-bit FNV-1a. Unlike std's hasher it's the same in every Rust version,
@@ -747,10 +836,6 @@ fn checksum(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
         (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
-}
-
-fn is_link(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink())
 }
 
 /// Checked before writing anything, so a missing tool doesn't leave a widget
@@ -989,30 +1074,46 @@ mod tests {
         assert!(widget.dir.is_dir());
     }
 
-    /// Writing through a link would overwrite the checkout it points to.
+    /// Only a record from another bundle counts, not the user's edits.
     #[test]
-    fn leaves_a_linked_checkout_alone() {
+    fn outdated_goes_by_the_record() {
         let temp = TempDir::new().unwrap();
-        let checkout = temp.0.join("checkout");
-        write(checkout.join("widget.luau"), "work in progress");
-        let widget = copied(&temp, true);
-        std::os::unix::fs::symlink(&checkout, &widget.dir).unwrap();
+        let widget = copied(&temp, false);
+        assert_eq!(widget.is_outdated(), Ok(false), "not installed");
 
-        assert!(widget.install(false).is_err());
-        assert!(is_link(&widget.dir));
+        widget.install(false).unwrap();
+        assert_eq!(widget.is_outdated(), Ok(false));
+        write(widget.dir.join("plugin.toml"), "edited");
+        assert_eq!(widget.is_outdated(), Ok(false), "edits don't count");
 
-        widget.install(true).unwrap();
-        assert!(!is_link(&widget.dir) && widget.dir.join("plugin.toml").is_file());
-        assert_eq!(
-            fs::read_to_string(checkout.join("widget.luau")).unwrap(),
-            "work in progress"
+        let record = fs::read_to_string(&widget.record).unwrap();
+        write(
+            widget.record.clone(),
+            &record.replacen("widget.luau", "old.luau", 1),
         );
-        assert!(!checkout.join("plugin.toml").exists());
+        assert_eq!(widget.is_outdated(), Ok(true), "a file renamed since");
+        write(widget.record.clone(), &format!("{record}0a dropped.luau\n"));
+        assert_eq!(widget.is_outdated(), Ok(true), "a file dropped since");
+        let (sum, rest) = record.split_once("\n").unwrap().1.split_once(' ').unwrap();
+        let changed = format!("{:016x} {rest}", u64::from_str_radix(sum, 16).unwrap() ^ 1);
+        write(widget.record.clone(), &changed);
+        assert_eq!(widget.is_outdated(), Ok(true), "a file changed since");
 
         fs::remove_dir_all(&widget.dir).unwrap();
-        std::os::unix::fs::symlink(&checkout, &widget.dir).unwrap();
-        assert_eq!(widget.remove(false), Ok(true));
-        assert!(!widget.dir.exists() && checkout.join("widget.luau").is_file());
+        assert_eq!(widget.is_outdated(), Ok(false), "deleted by hand");
+    }
+
+    #[test]
+    fn differs_compares_installed_files() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.0.join("plasmoid");
+        assert!(!differs(&dir, &KDE), "not installed");
+        write_files(&dir, &KDE).unwrap();
+        assert!(!differs(&dir, &KDE));
+        write(dir.join("contents/ui/main.qml"), "older");
+        assert!(differs(&dir, &KDE));
+        fs::remove_file(dir.join("contents/ui/main.qml")).unwrap();
+        assert!(differs(&dir, &KDE), "a file added since");
     }
 
     #[test]

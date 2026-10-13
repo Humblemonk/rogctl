@@ -29,15 +29,3 @@ After updating rogctl, run `rogctl configure noctalia` again. To remove it:
 ```sh
 rogctl configure noctalia --remove
 ```
-
-## Developing it
-
-To try edits from your rogctl checkout as you make them, link the plugin directory instead:
-
-```sh
-ln -s "$PWD/noctalia/rog-mouse-battery" ~/.local/share/noctalia/plugins/rog-mouse-battery
-noctalia msg plugins enable humblemonk/rog-mouse-battery
-```
-
-`rogctl configure noctalia` won't replace the link unless you add `--force`, and
-`rogctl configure noctalia --remove` deletes only the link.
