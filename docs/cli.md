@@ -53,9 +53,16 @@ new version no longer ships, and removing deletes a directory only once it's emp
 add are never touched.
 
 If you changed one of rogctl's files, rogctl leaves it alone and exits with 1. `--force`
-overwrites or removes it anyway. `--force` also replaces a link where a plugin directory goes;
-`--remove` deletes such a link, never what it points to. `rogctl configure` exits with 0 on
-success and 1 on an error.
+overwrites or removes it anyway. `rogctl configure` exits with 0 on success and 1 on an
+error.
+
+After you update rogctl, `rogctl battery` and `rogctl watch` check whether an installed widget
+differs from the one this rogctl ships. If one does, they send a desktop notification with
+`notify-send` naming the `rogctl configure DESKTOP` command that updates it, once per rogctl
+version (they keep the version they last notified about in `$XDG_STATE_HOME/rogctl/notified`).
+For Noctalia, DMS and Quickshell this goes by the record, so your own edits don't count; for
+KDE and GNOME, by the installed files. `rogctl configure` with no desktop marks the out-of-date
+ones too.
 
 ## Exit codes
 
