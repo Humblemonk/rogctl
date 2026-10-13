@@ -10,8 +10,8 @@ paths:
 ## Behaviour
 
 - Nothing is written until Enter, Space or a click on the focused row. ←/→ and typed digits
-  only change a pending `Edit`; Esc, moving focus or `r` drop it. Every change is also saved
-  to the mouse's flash, so never write on each key press.
+  only change a pending `Edit`; Esc, moving focus or `r` drop it (Esc the status message
+  too). Every change is also saved to the mouse's flash, so never write on each key press.
 - The mouse goes through the same paths: `ui::draw()` returns `Hits` (each selectable row,
   and each value on its scale), `App::handle_mouse()` maps a click on the focused row to
   `confirm()` (Enter) and everything else to focus or a pending `Edit`: a first click
@@ -56,12 +56,19 @@ several models looks and behaves the same on all of them.
   power-off, warning) draw as a GearLink-style slider, red up to a ● on the value. ←/→ step
   through exactly that list (`arrows_walk_exactly_the_choices`). Two-way settings, DPI, angle
   tuning, locked rows and values outside the list stay text. No sidebar or pages while
-  everything fits one screen.
+  everything fits one screen; a terminal too short for both panels gets a "make the
+  terminal taller" notice instead, so the focused row is never off screen.
+- **Footer keys** are only the ones that do something on the screen shown: with no mouse
+  connected, just `r`, `?`, `q` (and Tab with several mice). A terminal too narrow for them
+  drops the version, then the least needed keys (`footer_line()`); `?` and `q` always show.
 - **Colours** follow GearLink's ROG theme: near-black, white text, grey detail, one red
-  accent (focus band, active stage, pending edit, switches that are on, errors, the header's
-  battery at or below the mouse's low-battery warning). They're named once in the palette at
-  the top of `ui.rs`; use its styles (`BASE`, `MUTED`, `BOLD`, `ACCENT`, `FOCUSED`). The DPI
-  swatches, read from the mouse, are the only other colours. The footer ends with the version.
+  accent (the header's `///`, focus band, active stage, pending edit, switches that are on,
+  errors, the header's battery at or below the mouse's low-battery warning). Nothing else is
+  red: the ✓ of a success and `[demo]` are white. They're named once in the palette at the
+  top of `ui.rs`; use its styles (`BASE`, `MUTED`, `BOLD`, `ACCENT`, `FOCUSED`). Text needs
+  4.5:1 contrast on the background and the focus band (`text_has_enough_contrast` checks
+  every model and state), which is why `RED` is GearLink's #e60012 lightened. The DPI swatches, read from the mouse, are the only other colours. The
+  footer ends with the version.
 
 ## Adding a setting
 
@@ -74,6 +81,8 @@ several models looks and behaves the same on all of them.
 4. `app.rs`: a `Control` (in its place in the row order) and `Value` variant, then `label()`,
    `value()`, `rows()`, `step()`, `change_for()`, `choices()` if it's a short list, plus
    `simulate()` and `demo_state()`. The compiler lists the matches to update.
-5. `ui.rs`: usually nothing; rows draw through `row_line()`.
+5. `ui.rs`: usually nothing; rows draw through `row_line()`. If applying it does more than
+   the value shows (lift-off also resets the sensor calibration), say so in the pending
+   edit's hint there.
 6. README.md: the settings list, and the key table if a main key changes (the full list is
    the `?` help). Say which mice have it.

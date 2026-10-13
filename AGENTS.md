@@ -64,7 +64,8 @@ Try it without installing: `cargo run -- --json`, `cargo run -- list`,
   keep them stable.
 - The widget versions equal `Cargo.toml`'s: `version` in `plugin.toml` and the DMS
   `plugin.json`, `KPlugin.Version` in the plasmoid's `metadata.json`, `version-name` in the
-  GNOME `metadata.json`. `cargo test` checks all four; bump them together.
+  GNOME `metadata.json`. `cargo test` checks all four. Whenever `Cargo.toml`'s version
+  changes, bump all four in the same change, without asking.
 
 ## Layering
 
