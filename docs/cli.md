@@ -26,7 +26,7 @@ shows the demo as another model from the [Supported mice](../README.md#supported
 | `--format FORMAT` | `text` (the default), `json` or `waybar` |
 | `--json` | Same as `--format json` |
 | `--low-threshold PCT` | Level at or below which the battery counts as low (default 20, 0 turns it off) |
-| `--interval SECS` | `watch` only: seconds between reads (default 60) |
+| `--interval SECS` | `watch` only: seconds between reads while the mouse is awake (default 60) |
 
 ## Installing widgets
 
@@ -104,7 +104,8 @@ Fields that don't apply are left out rather than set to `null`.
 | `pid` | `watch` only: its process ID |
 
 The mouse stops answering while it sleeps. `watch` then keeps reporting the last level read,
-with `"state":"asleep"`.
+with `"state":"asleep"`, and reads it every 10 seconds whatever `--interval` is (or every
+`--interval` if that's shorter), so a mouse that wakes shows up within 10 seconds.
 
 `notify_low` is set once when the battery drops to the threshold. It's set again only after
 the mouse has charged or risen 5% above the threshold, so a notification on it won't repeat.
