@@ -26,9 +26,9 @@ paths:
   (`device::candidate_nodes()`, no HID traffic) and reading the mice again only when that
   changes. It then shows what was just plugged in (the cable, so the header says wired) if
   it answers, else the mouse it was showing. It looks for a mouse every 2 s while none is
-  found, and retries a sleeping one every 5 s. While connected it reads the battery (`12 07`
-  only) every 10 s for the header, without dropping a pending edit; a mouse that went to
-  sleep shows as asleep.
+  found, and retries a sleeping one, or one that failed, every 10 s. While connected it
+  reads the battery (`12 07` only) every 10 s for the header, without dropping a pending
+  edit; a mouse that went to sleep shows as asleep.
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
   abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
   TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the

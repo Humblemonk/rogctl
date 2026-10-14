@@ -10,6 +10,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::{Command, ExecutableCommand};
 
+use crate::ASLEEP_RETRY;
 use crate::app::{self, Action, App, Link};
 use crate::device::{self, ApplyError, Device, QueryError};
 use crate::models::MODELS;
@@ -20,8 +21,6 @@ use crate::ui;
 const TICK: Duration = Duration::from_millis(250);
 /// How often to look for an unplugged or replugged mouse.
 const PRESENCE_CHECK: Duration = Duration::from_secs(2);
-/// How often to try a sleeping mouse again, as `watch` does after an error.
-const ASLEEP_RETRY: Duration = Duration::from_secs(5);
 /// How often to read the battery for the header while the mouse is connected,
 /// so a cable being plugged in shows as charging.
 const BATTERY_POLL: Duration = Duration::from_secs(10);
@@ -179,6 +178,7 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                     return;
                 }
             };
+            let wireless = dev.model.wireless;
             let applied = conn.apply(&change);
             // Read back either way, so the screen shows what the mouse has.
             let outcome = read(&mut conn);
@@ -186,7 +186,7 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
             session.show_outcome(app, outcome);
             match applied {
                 Ok(()) => app.ok(done),
-                Err(ApplyError::NotChanged(e)) if e.means_asleep(dev.model.wireless) => {
+                Err(ApplyError::NotChanged(e)) if e.means_asleep(wireless) => {
                     app.error(format!("No change made: the mouse didn't answer ({e})"));
                 }
                 Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
@@ -218,7 +218,9 @@ struct Session {
     /// `device::candidate_nodes()` as of the last load, to notice a change.
     nodes: Vec<PathBuf>,
     current: usize,
+    /// When sysfs was last rescanned.
     last_check: Option<Instant>,
+    /// When the mouse was last read (or a load found none).
     last_battery: Option<Instant>,
 }
 
@@ -283,7 +285,9 @@ impl Session {
         self.show_outcome(app, outcome);
     }
 
-    fn show_outcome(&self, app: &mut App, outcome: Result<Outcome, QueryError>) {
+    /// Shows what was just read from the current mouse.
+    fn show_outcome(&mut self, app: &mut App, outcome: Result<Outcome, QueryError>) {
+        self.last_battery = Some(Instant::now());
         let Some(dev) = self.devices.get(self.current) else {
             return;
         };
@@ -322,8 +326,8 @@ impl Session {
 
     /// Keeps the battery current and notices a mouse being unplugged, plugged
     /// in or waking up. Besides the battery, only looks at sysfs, except to
-    /// read the mice again when that changes, or when the mouse was missing or
-    /// asleep.
+    /// read the mice again when that changes, or when the mouse was missing,
+    /// asleep or failed. That shows whichever mouse answers, even after Tab.
     fn tick(&mut self, app: &mut App) {
         if app.link == Link::Connected
             && self
@@ -332,11 +336,10 @@ impl Session {
         {
             self.read_battery(app);
         }
-        let wait = match app.link {
-            Link::Asleep => ASLEEP_RETRY,
-            Link::Connected | Link::Disconnected | Link::Error(_) => PRESENCE_CHECK,
-        };
-        if self.last_check.is_some_and(|t| t.elapsed() < wait) {
+        if self
+            .last_check
+            .is_some_and(|t| t.elapsed() < PRESENCE_CHECK)
+        {
             return;
         }
         self.last_check = Some(Instant::now());
@@ -349,13 +352,18 @@ impl Session {
             .filter(|n| !self.nodes.contains(n))
             .collect();
         prefer.extend(self.current_path());
-        match app.link {
-            Link::Disconnected | Link::Asleep => self.load(app, &prefer),
-            Link::Connected | Link::Error(_) => {
-                if changed {
-                    self.load(app, &prefer);
-                }
-            }
+        let reload = changed
+            || match app.link {
+                Link::Disconnected => true,
+                // Rescans every PRESENCE_CHECK, but reads a sleeping mouse, or
+                // one that failed, less often.
+                Link::Asleep | Link::Error(_) => self
+                    .last_battery
+                    .is_none_or(|t| t.elapsed() >= ASLEEP_RETRY),
+                Link::Connected => false,
+            };
+        if reload {
+            self.load(app, &prefer);
         }
     }
 }

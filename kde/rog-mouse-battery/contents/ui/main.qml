@@ -102,9 +102,11 @@ PlasmoidItem {
         }
         status = s;
         checkLowBattery(s);
-        // Retry an error sooner: the receiver can reject a query for a moment,
-        // e.g. right after login.
-        pollTimer.interval = (s.state === "error" ? Math.min(10, interval) : interval) * 1000;
+        // Retry an error sooner, since it's often brief. Read a sleeping mouse
+        // every 10 s, as `rogctl watch` does, so one that wakes shows up within
+        // 10 s.
+        const retry = s.state === "asleep" || s.state === "error" ? 10 : interval;
+        pollTimer.interval = Math.min(retry, interval) * 1000;
         pollTimer.restart();
     }
 

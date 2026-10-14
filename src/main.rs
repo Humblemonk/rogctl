@@ -334,24 +334,35 @@ fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
     }
 }
 
-/// First retry after an error or while asleep. The receiver can reject a query
-/// for a moment, e.g. right after login, and a mouse that just woke shouldn't
-/// wait a whole interval to show its level.
+/// First retry after an error, which is often brief: a wired mouse rejecting a
+/// query, or its node going away for a moment. (A receiver rejecting a query
+/// means the mouse is asleep; see `ASLEEP_RETRY`.)
 const ERROR_RETRY: Duration = Duration::from_secs(5);
+
+/// How often to read a sleeping mouse (in the TUI, a failed one too), so one
+/// that wakes shows its level within about 10 s rather than a whole interval
+/// later. OpenRazer's battery notifier (`battery_notifier.py`) retries as often.
+const ASLEEP_RETRY: Duration = Duration::from_secs(10);
 
 /// A day. Far larger values would overflow the deadline in `wait_or_refresh`.
 const MAX_INTERVAL_SECS: u64 = 86_400;
 
-/// How long to wait before the next poll: the interval, or after errors and
-/// while asleep a retry that doubles each time up to the interval.
+/// How long to wait before the next poll: the interval; after errors a retry
+/// that doubles each time up to the interval; while asleep `ASLEEP_RETRY`.
 fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration {
-    if !matches!(state, State::Error | State::Asleep) {
-        *retry = ERROR_RETRY;
-        return interval;
+    match state {
+        State::Error => {
+            let wait = (*retry).min(interval);
+            *retry = retry.saturating_mul(2);
+            wait
+        }
+        // Leaves the error backoff alone, so errors between sleeps still back off.
+        State::Asleep => ASLEEP_RETRY.min(interval),
+        State::Connected | State::Disconnected => {
+            *retry = ERROR_RETRY;
+            interval
+        }
     }
-    let wait = (*retry).min(interval);
-    *retry = retry.saturating_mul(2);
-    wait
 }
 
 fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
@@ -683,10 +694,19 @@ mod tests {
         assert_eq!(waits, [5, 10, 20, 40, 60, 60]);
 
         assert_eq!(next_wait(State::Connected, interval, &mut retry), interval);
-        assert_eq!(next_wait(State::Asleep, interval, &mut retry), ERROR_RETRY);
+        assert_eq!(next_wait(State::Error, interval, &mut retry), ERROR_RETRY);
         assert_eq!(
             next_wait(State::Error, interval, &mut retry),
             2 * ERROR_RETRY
+        );
+
+        // Asleep never backs off, and doesn't reset the error backoff.
+        for _ in 0..6 {
+            assert_eq!(next_wait(State::Asleep, interval, &mut retry), ASLEEP_RETRY);
+        }
+        assert_eq!(
+            next_wait(State::Error, interval, &mut retry),
+            4 * ERROR_RETRY
         );
         assert_eq!(
             next_wait(State::Disconnected, interval, &mut retry),
@@ -696,6 +716,7 @@ mod tests {
         // Never waits longer than a short interval.
         let short = Duration::from_secs(2);
         assert_eq!(next_wait(State::Error, short, &mut retry), short);
+        assert_eq!(next_wait(State::Asleep, short, &mut retry), short);
     }
 
     #[test]
