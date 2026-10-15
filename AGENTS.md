@@ -105,6 +105,32 @@ Control flow for a change: key → `App::handle_key()` → `Action` → `tui::ap
 
 Tests that need a mouse can't run in CI; keep protocol parsing in pure functions.
 
+## Review
+
+The commands above and CI already cover fmt, clippy, tests and jscpd; don't report what they
+catch.
+
+**Severity.** Label each finding and lead with P0 and P1. When there are none, say so
+rather than promoting a lower one.
+
+- **P0**: changes the mouse or the user's system unasked, or leaves a widget stuck: a `51`
+  or `50` packet sent without Enter, Space or a click, to the wrong model, or with a value
+  that wasn't validated; a write outside rogctl's own state that `configure` wasn't asked
+  for; `watch` hanging or multiplying, so a widget shows a stale level for good (c5d7939,
+  42a9472)
+- **P1**: a battery level, charging or asleep state shown wrong on some mouse (4f0f059,
+  cb82df5), a setting read back or shown wrong, a change reported as not made or not saved
+  when it was (2fb1e13), a widget that stops reacting (2fb1e13), a supported mouse reported
+  missing, a panic, a changed exit code or JSON field
+- **P2**: users notice, but nothing is shown wrong: a misleading message, help or readme
+  wording, a widget that behaves unlike the others, a slow update. Also a broken Rust or
+  Layering rule that makes a P0/P1 likely later (`_` over rogctl's own enum, a raw byte
+  outside `protocol.rs`, a model name matched, `unwrap()` in production)
+- **P3**: no effect on users yet: naming, comments, duplication within the jscpd budget,
+  refactor preferences. List them in one line at the end, or leave them out
+
+Don't fix a P2 or P3 without asking.
+
 ## Workflow
 
 - For non-trivial features, read the relevant code and G-Helper's, and confirm a plan with
