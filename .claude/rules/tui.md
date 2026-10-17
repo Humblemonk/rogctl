@@ -55,9 +55,17 @@ several models looks and behaves the same on all of them.
 - **Scales:** settings with a short fixed list (`App::choices()`: polling rates, debounce,
   power-off, warning) draw as a GearLink-style slider, red up to a ● on the value. ←/→ step
   through exactly that list (`arrows_walk_exactly_the_choices`). Two-way settings, DPI, angle
-  tuning, locked rows and values outside the list stay text. No sidebar or pages while
-  everything fits one screen; a terminal too short for both panels gets a "make the
-  terminal taller" notice instead, so the focused row is never off screen.
+  tuning, locked rows and values outside the list stay text. No sidebar or pages: every
+  model fits one screen.
+- **Size:** every screen of every model fits 80x24 (`ui::MIN_SIZE`, btop's minimum): all
+  rows, a pending edit's hint, the header and a message, which wraps at spaces onto up to
+  three rows (`wrap_words()`). The tallest model (Harpe II) uses 20 of the 24 rows, 22 with a
+  three-row message, and the widest row with its hint 77 of a panel's 78 columns. Below
+  80x24 `draw()` shows only btop's "Terminal size too small" notice, keys only quit
+  (`App::handle_key_too_small()`: q, Ctrl+C) and clicks are ignored, so nothing changes out
+  of sight. Only the footer may drop keys at 80 columns; a demo header too long for 80 drops
+  "Battery:".
+  `every_screen_fits_the_min_size` checks every model, focus, edit, message and notice.
 - **Footer keys** are only the ones that do something on the screen shown: with no mouse
   connected, just `r`, `?`, `q` (and Tab with several mice); with help open, just Esc. A
   terminal too narrow for them drops the version, then the least needed keys

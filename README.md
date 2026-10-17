@@ -88,6 +88,9 @@ on other computers too. Changing the lift-off distance also resets the sensor ca
 Want to look first? `rogctl settings --demo` shows the screen without a mouse and changes
 nothing.
 
+The settings screen needs a terminal of at least 80×24. In a smaller one it shows the size it
+needs, and only `q` and `Ctrl+C` work.
+
 ## Panel widgets
 
 Each widget shows the mouse's battery level in your panel or bar. It turns red when the
