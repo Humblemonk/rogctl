@@ -8,7 +8,7 @@ use std::ops::Range;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Wrap};
 
 use crate::app::{App, Control, Edit, Link, Row, Target, Value};
 
@@ -18,6 +18,12 @@ const MAX_WIDTH: u16 = 80;
 const LABEL_WIDTH: usize = 24;
 /// The widest DPI value, 42000.
 const DPI_WIDTH: usize = 5;
+
+/// The smallest terminal, as (width, height), that shows every setting of
+/// every model, a pending edit's hint and a message: the VT100's 80x24, still
+/// the default terminal window and btop's minimum.
+/// `every_screen_fits_the_min_size` checks it.
+pub const MIN_SIZE: (u16, u16) = (80, 24);
 
 /// The ROG palette. Only this block names colours; everything else uses the
 /// styles below.
@@ -58,20 +64,48 @@ impl Hits {
     }
 }
 
+/// Whether `area` is at least `MIN_SIZE`. Smaller, `draw()` shows only a
+/// notice, and keys only quit.
+pub fn fits(area: Rect) -> bool {
+    area.width >= MIN_SIZE.0 && area.height >= MIN_SIZE.1
+}
+
 /// Draws the screen and returns where its rows and scale values are.
 pub fn draw(frame: &mut Frame, app: &App) -> Hits {
     let mut hits = Hits::default();
     frame.render_widget(Block::new().style(BASE), frame.area());
+    if !fits(frame.area()) {
+        draw_too_small(frame);
+        return hits;
+    }
     let area = frame.area();
     let frame_width = area.width;
     let area = Rect {
         width: area.width.min(MAX_WIDTH),
         ..area
     };
+    // Red is for errors; ✓ and ✗ tell them apart without colour too. A long
+    // error ("…, but not saved on the mouse: …") wraps rather than lose its
+    // end, each line indented by one column.
+    let message_lines: Vec<Line> = app.message.as_ref().map_or_else(Vec::new, |m| {
+        let (mark, style) = if m.error {
+            ("✗", ACCENT)
+        } else {
+            ("✓", BOLD)
+        };
+        let text = format!("{mark} {}", m.text);
+        wrap_words(&text, usize::from(area.width).saturating_sub(1))
+            .into_iter()
+            .map(|line| Line::styled(format!(" {line}"), style))
+            .collect()
+    });
+    // rogctl's longest message takes two rows; three still leave the tallest
+    // model all its rows at 80x24.
+    let message_rows = message_lines.len().clamp(1, 3) as u16;
     let [header, body, message, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
-        Constraint::Length(1),
+        Constraint::Length(message_rows),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -82,20 +116,15 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
         width: frame_width,
         ..r
     };
-    frame.render_widget(Paragraph::new(header_line(app)), full_width(header));
+    frame.render_widget(
+        Paragraph::new(header_line(app, frame_width)),
+        full_width(header),
+    );
     match app.link {
         Link::Connected => draw_settings(frame, app, body, &mut hits),
         Link::Asleep | Link::Disconnected | Link::Error(_) => draw_link_notice(frame, app, body),
     }
-    if let Some(m) = &app.message {
-        // Red is for errors; ✓ and ✗ tell them apart without colour too.
-        let line = if m.error {
-            Line::styled(format!(" ✗ {}", m.text), ACCENT)
-        } else {
-            Line::styled(format!(" ✓ {}", m.text), BOLD)
-        };
-        frame.render_widget(Paragraph::new(line), message);
-    }
+    frame.render_widget(Paragraph::new(message_lines), message);
     frame.render_widget(
         Paragraph::new(footer_line(app, frame_width)),
         full_width(footer),
@@ -114,7 +143,18 @@ fn panel(title: &str) -> Block<'static> {
         .title(Span::styled(format!(" {title} "), BOLD))
 }
 
-fn header_line(app: &App) -> Line<'static> {
+/// The mouse, its link and battery, and `[demo]`. A header too long for
+/// `width` (a long name in the demo) drops the word "Battery:".
+fn header_line(app: &App, width: u16) -> Line<'static> {
+    let line = header_spans(app, "Battery: ");
+    if line.width() <= usize::from(width) {
+        line
+    } else {
+        header_spans(app, "")
+    }
+}
+
+fn header_spans(app: &App, battery_label: &str) -> Line<'static> {
     // GearLink puts red stripes before the mouse's name.
     let mut spans = vec![Span::styled(" /// ", ACCENT)];
     match app.model {
@@ -135,7 +175,7 @@ fn header_line(app: &App) -> Line<'static> {
                 .low_battery_warning
                 .is_some_and(|warn| warn > 0 && r.battery <= warn);
         spans.push(Span::styled(
-            format!("  Battery: {}%", r.battery),
+            format!("  {battery_label}{}%", r.battery),
             if low { ACCENT } else { Style::new().fg(TEXT) },
         ));
         // Detail in parentheses is grey, like "(wireless)".
@@ -225,20 +265,6 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
             rows.len() as u16 + 2
         }
     };
-    // Cut-off panels could hide the focused row, and a change to it.
-    let needed = height(&performance) + height(&battery);
-    if needed > area.height {
-        let rows = needed + 3;
-        draw_notice(
-            frame,
-            area,
-            vec![Line::styled(
-                format!("Make the terminal taller: the settings need {rows} rows."),
-                BOLD,
-            )],
-        );
-        return;
-    }
     let [top, bottom, _] = Layout::vertical([
         Constraint::Length(height(&performance)),
         Constraint::Length(height(&battery)),
@@ -496,10 +522,57 @@ fn draw_link_notice(frame: &mut Frame, app: &App, area: Rect) {
     draw_notice(frame, area, text);
 }
 
+/// `text` broken at spaces into lines at most `width` columns wide; a word
+/// wider than that gets a line of its own.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if Span::raw(&*line).width() + 1 + Span::raw(word).width() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            Some(_) | None => lines.push(word.to_owned()),
+        }
+    }
+    lines
+}
+
+/// btop's notice in place of everything: the terminal's size, each side red
+/// while it is too small, and the size rogctl needs.
+fn draw_too_small(frame: &mut Frame) {
+    let area = frame.area();
+    let (min_width, min_height) = MIN_SIZE;
+    let side = |have: u16, need: u16| {
+        Span::styled(have.to_string(), if have < need { ACCENT } else { BOLD })
+    };
+    let lines = vec![
+        Line::styled("Terminal size too small:", BOLD),
+        Line::from(vec![
+            Span::raw("Width = "),
+            side(area.width, min_width),
+            Span::raw(" Height = "),
+            side(area.height, min_height),
+        ]),
+        Line::raw(""),
+        Line::styled("Needed for rogctl:", BOLD),
+        Line::raw(format!("Width = {min_width} Height = {min_height}")),
+    ];
+    let top = area.height.saturating_sub(lines.len() as u16) / 2;
+    frame.render_widget(
+        Paragraph::new(lines).centered(),
+        Rect {
+            y: area.y + top,
+            height: area.height - top,
+            ..area
+        },
+    );
+}
+
 /// Text in place of the settings. No frame: an empty box the height of the
 /// screen would dwarf it.
 fn draw_notice(frame: &mut Frame, area: Rect, text: Vec<Line>) {
-    let block = Block::new().padding(ratatui::widgets::Padding::new(2, 2, 1, 0));
+    let block = Block::new().padding(Padding::new(2, 2, 1, 0));
     frame.render_widget(
         Paragraph::new(text).block(block).wrap(Wrap { trim: true }),
         area,
@@ -806,7 +879,7 @@ mod tests {
         };
         for model in MODELS {
             let app = demo(model);
-            let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(MIN_SIZE.0, MIN_SIZE.1)).unwrap();
             let mut hits = Hits::default();
             terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
             let buffer = terminal.backend().buffer();
@@ -856,13 +929,18 @@ mod tests {
         assert!(screen.contains("again to apply;"), "{screen}");
     }
 
-    /// A narrow terminal drops the version, then the least needed keys;
-    /// `?` and `q` stay.
+    /// A line's text, without its styles.
+    fn text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// A narrow footer drops the version, then the least needed keys; `?`
+    /// and `q` stay. At 80 columns only Tab, with several mice, costs a key.
     #[test]
     fn narrow_footer_keeps_help_and_quit() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let mut app = demo(model);
-        let footer = |app: &App, width| render(app, width, 24).lines().last().unwrap().to_owned();
+        let footer = |app: &App, width| text(&footer_line(app, width));
         let keys = " ↑↓ select  ←→ change  Enter apply  Esc cancel  r reload  ? help  q quit";
         assert_eq!(
             footer(&app, 72),
@@ -870,6 +948,10 @@ mod tests {
             "the version goes, every key fits exactly"
         );
         app.devices = 2;
+        assert_eq!(
+            footer(&app, MIN_SIZE.0),
+            " ↑↓ select  ←→ change  Enter apply  r reload  Tab next mouse  ? help  q quit"
+        );
         for width in [20, 40, 60, 79] {
             let footer = footer(&app, width);
             assert!(footer.ends_with("? help  q quit"), "{width}: {footer:?}");
@@ -897,17 +979,157 @@ mod tests {
         );
     }
 
-    /// Rather than cut a panel off, and maybe the focused row with it.
+    /// Below 80x24 only btop's notice draws: the terminal's size, the side
+    /// that is too small in red, the size needed, and nothing to click.
     #[test]
-    fn short_terminal_asks_for_more_rows() {
+    fn too_small_terminal_shows_the_size_needed() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let app = demo(model);
-        assert!(!render(&app, 80, 20).contains("taller"));
-        let screen = render(&app, 80, 19);
-        assert!(
-            screen.contains("need 20 rows") && !screen.contains("DPI"),
-            "{screen}"
-        );
+        assert!(!render(&app, 80, 24).contains("too small"));
+        let screen = render(&app, 79, 24);
+        for text in [
+            "Terminal size too small:",
+            "Width = 79 Height = 24",
+            "Needed for rogctl:",
+            "Width = 80 Height = 24",
+        ] {
+            assert!(screen.contains(text), "{text:?}\n{screen}");
+        }
+        assert!(!screen.contains("DPI"), "{screen}");
+
+        let buffer = draw_to_buffer(&app, 79, 24);
+        let (y, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("Width = 79"))
+            .unwrap();
+        let at = |number: &str| {
+            let x = line.find(number).unwrap();
+            buffer[(x as u16, y as u16)].fg
+        };
+        assert_eq!(at("79"), RED, "too narrow");
+        assert_eq!(at("24"), TEXT, "tall enough");
+
+        for (w, h) in [(79, 24), (80, 23), (1, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let mut hits = Hits::default();
+            terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+            assert!(hits.0.is_empty(), "{w}x{h}");
+        }
+    }
+
+    /// Whether every word of `text` is in `line`, in order.
+    fn in_order(line: &str, text: &str) -> bool {
+        let mut rest = line;
+        text.split_whitespace().all(|word| match rest.find(word) {
+            Some(at) => {
+                rest = &rest[at + word.len()..];
+                true
+            }
+            None => false,
+        })
+    }
+
+    /// Every model, focused row, pending edit, message, help and notice fits
+    /// 80x24 (`MIN_SIZE`): each row shows whole on its own line, with its
+    /// hint, and the header and messages whole. Only the footer may drop
+    /// keys and the version.
+    #[test]
+    fn every_screen_fits_the_min_size() {
+        let (w, h) = MIN_SIZE;
+        let fits = |app: &App| {
+            let name = app.model.map(|m| m.name);
+            let screen = render(app, w, h);
+            let lines: Vec<&str> = screen.lines().collect();
+            let header = text(&header_line(app, w));
+            assert!(in_order(lines[0], &header), "{name:?}: header\n{screen}");
+            for row in app.rows() {
+                let label = row.control.label();
+                let row_text = text(&row_line(app, row).0);
+                let line = lines.iter().find(|l| l.contains(&label));
+                assert!(
+                    line.is_some_and(|l| in_order(l, &row_text)),
+                    "{name:?}: {row_text:?} is cut\n{screen}"
+                );
+            }
+            if let Some(m) = &app.message {
+                // The rows between the panels and the footer.
+                let below = lines[..lines.len() - 1].join(" ");
+                assert!(
+                    in_order(&below, &m.text),
+                    "{name:?}: {:?} is cut\n{screen}",
+                    m.text
+                );
+            }
+        };
+        let typed_dpi = [KeyCode::Char('1'), KeyCode::Char('2'), KeyCode::Char('3')];
+        for model in MODELS {
+            let mut app = demo(model);
+            // The longest battery text: full, but not charging.
+            app.reading = app.reading.map(|r| crate::protocol::Reading {
+                battery: 100,
+                charging: false,
+                ..r
+            });
+            assert!(
+                header_line(&app, w).width() <= usize::from(w),
+                "{}",
+                model.name
+            );
+            for _ in app.rows() {
+                for keys in [&[][..], &[KeyCode::Right], &typed_dpi] {
+                    for &key in keys {
+                        app.handle_key(key, KeyModifiers::NONE);
+                    }
+                    for row in app.rows() {
+                        let (line, _) = row_line(&app, row);
+                        assert!(
+                            line.width() <= usize::from(MAX_WIDTH - 2),
+                            "{}: {:?} is wider than its panel",
+                            model.name,
+                            text(&line)
+                        );
+                    }
+                    fits(&app);
+                    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+                }
+                app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+            }
+            // The longest message rogctl writes takes two rows, and an
+            // unusually long OS error a third.
+            app.error(
+                "Power-saving rate set to 1000 Hz, but not saved on the mouse: \
+                 this mouse doesn't have that setting",
+            );
+            fits(&app);
+            app.error(format!("{} (os error 5)", "Input/output error ".repeat(9)));
+            fits(&app);
+            app.message = None;
+
+            app.help = true;
+            let screen = render(&app, w, h);
+            for (keys, what) in HELP {
+                let line = screen.lines().find(|l| l.contains(what));
+                assert!(
+                    line.is_some_and(|l| l.contains(keys)),
+                    "{keys:?} {what:?}\n{screen}"
+                );
+            }
+            app.help = false;
+
+            for (link, hint) in [
+                (Link::Asleep, "or press r."),
+                (Link::Disconnected, "rogctl keeps looking."),
+                (
+                    Link::Error("Permission denied".into()),
+                    "replug the receiver or cable.",
+                ),
+            ] {
+                app.link = link;
+                let screen = render(&app, w, h);
+                assert!(screen.contains(hint), "{hint:?}\n{screen}");
+            }
+        }
     }
 
     /// Without a mouse the footer offers only the keys that do something.

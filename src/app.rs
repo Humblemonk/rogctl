@@ -395,6 +395,14 @@ impl App {
         None
     }
 
+    /// While the terminal is too small to show the settings, keys only quit
+    /// (q, Ctrl+C): nothing may change what can't be seen, so a pending edit
+    /// waits, unapplied, for the terminal to grow.
+    pub fn handle_key_too_small(&mut self, code: KeyCode, mods: KeyModifiers) {
+        self.quit = code == KeyCode::Char('q')
+            || (mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c'));
+    }
+
     /// Only Enter's path writes. A click selects a row, then applies like
     /// Enter; a click on a scale's value or the wheel (up is higher) only
     /// changes the pending edit. A click while help is open closes it.
@@ -860,6 +868,38 @@ mod tests {
             Change::PollingRate(PollingRate::HZ_4000)
         );
         assert_eq!(app.edit, None);
+    }
+
+    /// Behind the too-small notice no key applies, moves or drops anything;
+    /// q and Ctrl+C still quit, with help open too.
+    #[test]
+    fn too_small_terminal_keys_only_quit() {
+        let mut app = demo("ROG Harpe II Ace");
+        focus(&mut app, Control::PollingRate);
+        press(&mut app, KeyCode::Right);
+        let edit = app.edit;
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+            KeyCode::Esc,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Char('r'),
+            KeyCode::Char('?'),
+        ] {
+            app.handle_key_too_small(code, KeyModifiers::NONE);
+            assert!(!app.quit, "{code:?}");
+        }
+        assert_eq!(app.edit, edit);
+        assert_eq!(app.focused(), Some(Control::PollingRate));
+        assert!(!app.help);
+        app.handle_key_too_small(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.quit);
+
+        let mut app = demo("ROG Harpe II Ace");
+        app.help = true;
+        app.handle_key_too_small(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.quit, "q quits rather than closing hidden help");
     }
 
     #[test]

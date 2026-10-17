@@ -119,9 +119,20 @@ fn event_loop(
 ) -> io::Result<()> {
     loop {
         let mut hits = ui::Hits::default();
-        terminal.draw(|frame| hits = ui::draw(frame, app))?;
+        let mut fits = true;
+        terminal.draw(|frame| {
+            fits = ui::fits(frame.area());
+            hits = ui::draw(frame, app);
+        })?;
         if event::poll(TICK)? {
             let action = match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
+                    app.handle_key_too_small(key.code, key.modifiers);
+                    None
+                }
+                // Nothing on the too-small notice is clickable, and a click
+                // would still change focus or a pending edit.
+                Event::Mouse(_) if !fits => None,
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.handle_key(key.code, key.modifiers)
                 }
