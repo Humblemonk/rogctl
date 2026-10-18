@@ -81,6 +81,19 @@ pub fn draw(frame: &mut Frame, app: &App) -> Option<Hits> {
 fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
     let area = frame.area();
     let frame_width = area.width;
+    let panels = match app.link {
+        Link::Connected => Some(panels(app)),
+        Link::Asleep | Link::Disconnected | Link::Error(_) => None,
+    };
+    let needed: u16 = panels
+        .iter()
+        .flatten()
+        .map(|(_, rows)| panel_height(rows))
+        .sum();
+    // The message gets the rows the header, panels and footer leave, at
+    // least one and at most MESSAGE_ROWS, so a long one shortens before the
+    // settings give way.
+    let message_room = usize::from(area.height.saturating_sub(needed + 2)).clamp(1, MESSAGE_ROWS);
     // Red is for errors; ✓ and ✗ tell them apart without colour too. A long
     // error ("…, but not saved on the mouse: …") wraps across the terminal's
     // width, each line indented by one column.
@@ -91,7 +104,7 @@ fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
             ("✓", BOLD)
         };
         let text = format!("{mark} {}", m.text);
-        wrap_words(&text, usize::from(frame_width) - 1, MESSAGE_ROWS)
+        wrap_words(&text, usize::from(frame_width) - 1, message_room)
             .into_iter()
             .map(|line| Line::styled(format!(" {line}"), style))
             .collect()
@@ -111,10 +124,6 @@ fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
     // Cut-off panels could hide the focused row, and a change to it. MIN_SIZE
     // fits every model (`every_screen_fits_the_min_size`); this catches what
     // that test doesn't.
-    let needed: u16 = match app.link {
-        Link::Connected => panels(app).iter().map(|(_, rows)| panel_height(rows)).sum(),
-        Link::Asleep | Link::Disconnected | Link::Error(_) => 0,
-    };
     if needed > body.height {
         draw_too_small(frame, (MIN_SIZE.0, area.height - body.height + needed));
         return None;
@@ -131,9 +140,9 @@ fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
         Paragraph::new(header_line(app, frame_width)),
         full_width(header),
     );
-    match app.link {
-        Link::Connected => draw_settings(frame, app, body, &mut hits),
-        Link::Asleep | Link::Disconnected | Link::Error(_) => draw_link_notice(frame, app, body),
+    match panels {
+        Some(panels) => draw_settings(frame, app, panels, body, &mut hits),
+        None => draw_link_notice(frame, app, body),
     }
     frame.render_widget(Paragraph::new(message_lines), full_width(message));
     frame.render_widget(
@@ -286,8 +295,13 @@ fn panel_height(rows: &[Row]) -> u16 {
     }
 }
 
-fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
-    let panels = panels(app);
+fn draw_settings(
+    frame: &mut Frame,
+    app: &App,
+    panels: [(&'static str, Vec<Row>); 2],
+    area: Rect,
+    hits: &mut Hits,
+) {
     let [top, bottom, _] = Layout::vertical([
         Constraint::Length(panel_height(&panels[0].1)),
         Constraint::Length(panel_height(&panels[1].1)),
@@ -543,17 +557,17 @@ fn draw_link_notice(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// `text` broken at spaces into lines at most `width` columns wide; a word
-/// wider than that gets a line of its own. Past `max_lines` the text is cut,
-/// and the last line ends in "…" to show it.
+/// wider than that (a long path) is broken across lines. Past `max_lines` the
+/// text is cut, and the last line ends in "…" to show it.
 fn wrap_words(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
+    for word in text.split_whitespace().flat_map(|w| split_wide(w, width)) {
         match lines.last_mut() {
-            Some(line) if Span::raw(&*line).width() + 1 + Span::raw(word).width() <= width => {
+            Some(line) if Span::raw(&*line).width() + 1 + Span::raw(&*word).width() <= width => {
                 line.push(' ');
-                line.push_str(word);
+                line.push_str(&word);
             }
-            Some(_) | None => lines.push(word.to_owned()),
+            Some(_) | None => lines.push(word),
         }
     }
     if lines.len() > max_lines {
@@ -564,6 +578,22 @@ fn wrap_words(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         }
     }
     lines
+}
+
+/// `word` in pieces at most `width` columns wide.
+fn split_wide(word: &str, width: usize) -> Vec<String> {
+    let mut pieces: Vec<String> = Vec::new();
+    let mut buf = [0; 4];
+    for c in word.chars() {
+        let c = &*c.encode_utf8(&mut buf);
+        match pieces.last_mut() {
+            Some(piece) if Span::raw(&*piece).width() + Span::raw(c).width() <= width => {
+                piece.push_str(c);
+            }
+            Some(_) | None => pieces.push(c.to_owned()),
+        }
+    }
+    pieces
 }
 
 /// btop's notice in place of everything: the terminal's size, each side red
@@ -1055,21 +1085,33 @@ mod tests {
         let panels: u16 = panels(&app).iter().map(|(_, r)| panel_height(r)).sum();
         // The header, a one-row message and the footer.
         let needed = panels + 3;
-        let draw_at = |height| {
+        let draw_at = |app: &App, height| {
             let mut terminal = Terminal::new(TestBackend::new(MIN_SIZE.0, height)).unwrap();
             let mut hits = None;
             terminal
-                .draw(|frame| hits = draw_screen(frame, &app))
+                .draw(|frame| hits = draw_screen(frame, app))
                 .unwrap();
             (hits, screen_text(terminal.backend().buffer()))
         };
-        let (hits, screen) = draw_at(needed - 1);
+        let (hits, screen) = draw_at(&app, needed - 1);
         assert!(hits.is_none(), "{screen}");
         let size = format!("Width = 80 Height = {needed}");
         assert!(screen.contains(&size), "{size:?}\n{screen}");
         assert!(!screen.contains("DPI"), "{screen}");
-        let (hits, screen) = draw_at(needed);
+        let (hits, screen) = draw_at(&app, needed);
         assert!(hits.is_some(), "{screen}");
+
+        // A long message shortens to one row first, so the settings and Esc
+        // stay.
+        app.error("word ".repeat(100));
+        let (hits, screen) = draw_at(&app, needed);
+        assert!(hits.is_some(), "{screen}");
+        let lines: Vec<&str> = screen.lines().collect();
+        let message = lines[lines.len() - 2];
+        assert!(
+            message.starts_with(" ✗ word") && message.ends_with('…'),
+            "{screen}"
+        );
     }
 
     /// A message too long for three rows ends in "…" rather than being cut
@@ -1100,6 +1142,8 @@ mod tests {
         assert_eq!(wrap_words("aa bb cc dd", 5, 1), ["aa b…"]);
         assert_eq!(wrap_words("aa bb cc dd", 6, 1), ["aa bb…"]);
         assert!(wrap_words("", 5, 1).is_empty());
+        assert_eq!(wrap_words("abcdefgh", 3, 3), ["abc", "def", "gh"], "broken");
+        assert_eq!(wrap_words("abcdefgh x", 3, 2), ["abc", "de…"]);
     }
 
     /// Whether every word of `text` is in `line`, in order.

@@ -86,8 +86,8 @@ when a change depends on their runtime behaviour.
   module only when its formatted output is empty, and `"{icon} {text}"` never is, so
   `config.json` sets `hide-empty-text`: rogctl's empty `text` for "disconnected" then hides it.
 - **Quickshell**: no plugin system; `configure` copies the three `.qml` files into the user's
-  config. `RogMouseSettings.qml` holds the settings and is the user's (`Bundle::users`):
-  written only when missing, never overwritten, removed only while unchanged.
+  config. `RogMouseSettings.qml` holds the settings (`Bundle::users`): updated and removed
+  only while unchanged, and once edited never overwritten, even with `--force`.
   Reference: <https://quickshell.org/docs/>.
 - **DankMaterialShell**: plugin docs are in the DMS repository under
   `.agents/skills/dms-plugin-dev/` and `quickshell/PLUGINS/`

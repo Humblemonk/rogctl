@@ -21,7 +21,16 @@ export default class RogMouseBatteryPreferences extends ExtensionPreferences {
       text: settings.get_string("binary"),
       show_apply_button: true,
     });
-    binary.connect("apply", () => settings.set_string("binary", binary.text));
+    const saveBinary = () => {
+      if (binary.text !== settings.get_string("binary"))
+        settings.set_string("binary", binary.text);
+    };
+    binary.connect("apply", saveBinary);
+    // Closing the window also saves a command typed but not applied.
+    window.connect("close-request", () => {
+      saveBinary();
+      return false;
+    });
     group.add(binary);
 
     const interval = new Adw.SpinRow({

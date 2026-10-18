@@ -119,15 +119,13 @@ fn event_loop(
     session: &mut Session,
 ) -> io::Result<()> {
     loop {
-        let (size, mut hits) = draw(terminal, app)?;
+        let (size, hits) = draw(terminal, app)?;
         if event::poll(TICK)? {
             let event = event::read()?;
-            // A key or click sent while the terminal is resized can come
-            // before the resize: draw again, so it acts on the screen at the
-            // terminal's new size rather than on hits that are gone.
-            if matches!(event, Event::Key(_) | Event::Mouse(_)) && terminal.size()? != size {
-                (_, hits) = draw(terminal, app)?;
-            }
+            // Every event acts on the screen as drawn, the one the user saw,
+            // even if a resize comes next. A click's position is only good
+            // on that screen, so it's dropped once the terminal was resized.
+            let resized = matches!(event, Event::Mouse(_)) && terminal.size()? != size;
             let action = match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match hits {
                     Some(_) => app.handle_key(key.code, key.modifiers),
@@ -138,6 +136,7 @@ fn event_loop(
                 },
                 // Nothing on the too-small notice is clickable, and a click
                 // would still change focus or a pending edit.
+                Event::Mouse(_) if resized => None,
                 Event::Mouse(mouse) => hits.and_then(|hits| {
                     app.handle_mouse(mouse.kind, hits.target_at(mouse.column, mouse.row))
                 }),

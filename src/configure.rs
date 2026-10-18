@@ -26,9 +26,9 @@ struct Bundle {
     #[cfg_attr(not(test), allow(dead_code))]
     dir: &'static str,
     files: &'static [File],
-    /// Files among `files` that are the user's once written, their settings:
-    /// written only when missing, never counted as edited, and removed only
-    /// while unchanged.
+    /// Files among `files` that hold the user's settings: updated and removed
+    /// only while unchanged, and once edited kept, even with --force, rather
+    /// than counted as edited.
     users: &'static [&'static str],
 }
 
@@ -451,25 +451,34 @@ fn quickshell() -> Result<Copied> {
 
 fn install_quickshell(force: bool) -> Result<()> {
     let quickshell = quickshell()?;
-    quickshell.install(force).map_err(|e| {
+    let written = quickshell.install(force).map_err(|e| {
         // Before 2.6.0 the settings were at the top of RogMouse.qml, so an
-        // edited one most likely holds them.
+        // edited one most likely holds them, and --force overwrites it.
         if e.starts_with("RogMouse.qml ") {
             format!(
-                "{e}. Its settings now go in RogMouseSettings.qml, which updates leave \
-                 alone: copy yours there after updating"
+                "{e}. Its settings now go in RogMouseSettings.qml: note yours at the top of \
+                 RogMouse.qml first, then set them there"
             )
         } else {
             e
         }
     })?;
     say!(
-        "Copied RogMouse.qml and RogMouseWidget.qml to {}\n\
+        "Copied {} to {}\n\
          Now put RogMouseWidget {{}} in your bar. Its settings are in RogMouseSettings.qml \
-         there, which updates leave alone.",
+         there; updates keep your changes to it.",
+        and_list(&written),
         quickshell.dir.display()
     );
     Ok(())
+}
+
+/// "a", "a and b", "a, b and c".
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.concat(),
+    }
 }
 
 fn remove_quickshell(force: bool) -> Result<()> {
@@ -704,8 +713,9 @@ enum Found {
 
 impl Copied {
     /// Writes the bundle, and deletes files an earlier version wrote that this
-    /// one doesn't have.
-    fn install(&self, force: bool) -> Result<()> {
+    /// one doesn't have. Returns the files written: all but the user's edited
+    /// settings.
+    fn install(&self, force: bool) -> Result<Vec<&'static str>> {
         let record = self.read_record()?.unwrap_or_default();
         let recorded = |path: &str| record.iter().find(|(p, _)| p == path).map(|&(_, sum)| sum);
 
@@ -741,23 +751,27 @@ impl Copied {
             }
         }
 
+        let mut entries = Vec::new();
         let mut written = Vec::new();
         for file in self.bundle.files {
-            let path = self.dir.join(file.path);
-            if self.bundle.is_users(file.path) && exists(&path)? {
+            let ours = [Some(checksum(file.contents)), recorded(file.path)];
+            if self.bundle.is_users(file.path) && self.find(file.path, &ours)? == Found::Edited {
                 // The user's settings stay; the record keeps what rogctl
                 // wrote there, if it wrote them.
                 if let Some(sum) = recorded(file.path) {
-                    written.push((file.path.to_owned(), sum));
+                    entries.push((file.path.to_owned(), sum));
                 }
                 continue;
             }
+            let path = self.dir.join(file.path);
             write_creating_dirs(&path, file.contents)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            written.push((file.path.to_owned(), checksum(file.contents)));
+            entries.push((file.path.to_owned(), checksum(file.contents)));
+            written.push(file.path);
         }
         self.delete(&obsolete)?;
-        self.write_record(&written)
+        self.write_record(&entries)?;
+        Ok(written)
     }
 
     /// The files `remove` deletes: those rogctl wrote. Errs if the user changed
@@ -1094,6 +1108,14 @@ mod tests {
     }
 
     #[test]
+    fn and_list_joins_names() {
+        assert_eq!(and_list(&[]), "");
+        assert_eq!(and_list(&["a"]), "a");
+        assert_eq!(and_list(&["a", "b"]), "a and b");
+        assert_eq!(and_list(&["a", "b", "c"]), "a, b and c");
+    }
+
+    #[test]
     fn checksum_is_fnv1a() {
         assert_eq!(checksum(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(checksum(b"a"), 0xaf63_dc4c_8601_ec8c);
@@ -1219,9 +1241,24 @@ mod tests {
         assert_eq!(widget.remove(false), Ok(true));
         assert!(!settings.exists(), "unchanged, so rogctl's to remove");
 
-        widget.install(false).unwrap();
+        // An older version's settings, unchanged: updated.
+        write(settings.clone(), "older default");
+        write(
+            widget.record.clone(),
+            &format!("{:016x} RogMouseSettings.qml\n", checksum(b"older default")),
+        );
+        let written = widget.install(false).unwrap();
+        assert_eq!(
+            fs::read(&settings).ok().as_deref(),
+            default.map(|f| f.contents)
+        );
+        assert!(written.contains(&"RogMouseSettings.qml"));
+
         write(settings.clone(), "edited");
-        widget.install(false).unwrap();
+        assert_eq!(
+            widget.install(false).unwrap(),
+            ["RogMouse.qml", "RogMouseWidget.qml"]
+        );
         widget.install(true).unwrap();
         assert_eq!(fs::read_to_string(&settings).unwrap(), "edited");
         assert_eq!(widget.is_outdated(), Ok(false));

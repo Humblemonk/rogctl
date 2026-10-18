@@ -12,7 +12,7 @@ import Quickshell.Io
 Singleton {
     id: root
 
-    // Settings: edit them in RogMouseSettings.qml, which updates leave alone.
+    // Settings: edit them in RogMouseSettings.qml; updates keep your changes.
     readonly property string binary: settings.binary
     readonly property int interval: settings.interval
     readonly property int lowThreshold: settings.lowThreshold

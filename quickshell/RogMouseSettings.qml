@@ -1,6 +1,5 @@
-// Your settings for RogMouse.qml. `rogctl configure quickshell` writes this
-// file only when it's missing and never overwrites it, so edits here survive
-// updates.
+// Your settings for RogMouse.qml. `rogctl configure quickshell` updates this
+// file only while it's unchanged, so edits here survive updates.
 
 import QtQuick
 
