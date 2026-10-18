@@ -17,6 +17,10 @@ use crate::protocol::{
 pub const ASUS_VID: u16 = 0x0b05;
 const MAX_PACKET: usize = 65;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long a write still waits for its echo after an `FF AA`. A Harpe II Ace
+/// on the SpeedNova echoes about 1 ms after one, and answers a read in 5 ms,
+/// or about 70 ms after sitting unused.
+const ECHO_AFTER_REJECTION: Duration = Duration::from_millis(150);
 /// Reports the kernel buffers per open hidraw file (`HIDRAW_BUFFER_SIZE`).
 const HIDRAW_QUEUE: usize = 64;
 
@@ -280,10 +284,10 @@ impl Connection {
     /// Sends a change or a save. An `FF AA` doesn't end the wait for its
     /// echo: the Harpe II Ace can send one just before a save's (protocol.md),
     /// and another process's request can draw one too. Only if no echo comes
-    /// does the rejection count.
+    /// within `ECHO_AFTER_REJECTION` does the rejection count.
     fn write(&mut self, request: &Request) -> Result<(), QueryError> {
         self.send(request)?;
-        let deadline = Instant::now() + REPLY_TIMEOUT;
+        let mut deadline = Instant::now() + REPLY_TIMEOUT;
         let mut refused = None;
         loop {
             match read_packet(&mut self.file, self.model.report_id, deadline, |r| {
@@ -291,7 +295,10 @@ impl Connection {
             }) {
                 Ok(reply) => match protocol::check_reply(&reply) {
                     Ok(()) => return Ok(()),
-                    Err(e) => refused = Some(e),
+                    Err(e) => {
+                        refused = Some(e);
+                        deadline = deadline.min(Instant::now() + ECHO_AFTER_REJECTION);
+                    }
                 },
                 Err(QueryError::Timeout) => return Err(refused.unwrap_or(QueryError::Timeout)),
                 Err(e) => return Err(e),
@@ -689,6 +696,20 @@ mod tests {
         assert_eq!(got.len(), queries.len());
         assert!(settings.polling_rate.is_some());
         assert_eq!(settings.lighting, None);
+    }
+
+    /// After an `FF AA` with no echo, the save is asked again well before
+    /// the full reply timeout, so the screen barely pauses.
+    #[test]
+    fn a_rejection_with_no_echo_is_not_waited_out() {
+        let start = Instant::now();
+        let (result, _) = apply_to_fake(vec![
+            vec![Answer::Echo],
+            vec![Answer::Rejected],
+            vec![Answer::Echo],
+        ]);
+        assert!(result.is_ok(), "{result:?}");
+        assert!(start.elapsed() < REPLY_TIMEOUT, "{:?}", start.elapsed());
     }
 
     /// A rejection with no echo is asked once more; rejected again, it's

@@ -16,7 +16,7 @@ use crate::app::{self, Action, App, Link};
 use crate::device::{self, ApplyError, Device, QueryError};
 use crate::models::MODELS;
 use crate::protocol::{MouseSettings, Reading};
-use crate::ui;
+use crate::ui::{self, ColorMode};
 
 /// How long to wait for a key before checking on the mouse.
 const TICK: Duration = Duration::from_millis(250);
@@ -118,8 +118,9 @@ fn event_loop(
     app: &mut App,
     session: &mut Session,
 ) -> io::Result<()> {
+    let colors = ColorMode::detect();
     loop {
-        let (size, hits) = draw(terminal, app)?;
+        let (size, hits) = draw(terminal, app, colors)?;
         if event::poll(TICK)? {
             let event = event::read()?;
             // Every event acts on the screen as drawn, the one the user saw,
@@ -158,9 +159,13 @@ fn event_loop(
 
 /// Draws the screen: the terminal size it was drawn at, and `ui::draw()`'s
 /// hits (`None` while the terminal is too small).
-fn draw(terminal: &mut DefaultTerminal, app: &App) -> io::Result<(Size, Option<ui::Hits>)> {
+fn draw(
+    terminal: &mut DefaultTerminal,
+    app: &App,
+    colors: ColorMode,
+) -> io::Result<(Size, Option<ui::Hits>)> {
     let mut hits = None;
-    let frame = terminal.draw(|frame| hits = ui::draw(frame, app))?;
+    let frame = terminal.draw(|frame| hits = ui::draw(frame, app, colors))?;
     Ok((frame.area.as_size(), hits))
 }
 
@@ -210,6 +215,12 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                     app.error(format!("No change made: the mouse didn't answer ({e})"));
                 }
                 Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
+                // The read-back found the mouse asleep: that, not the save,
+                // is what the user can act on.
+                Err(ApplyError::NotSaved(_)) if app.link == Link::Asleep => app.error(format!(
+                    "{done}, but the mouse went to sleep or out of range before confirming \
+                     the save"
+                )),
                 // A Harpe II Ace keeps such a change (protocol.md); another
                 // mouse may not.
                 Err(ApplyError::NotSaved(QueryError::Rejected)) => app.error(format!(

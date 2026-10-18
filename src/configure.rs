@@ -199,7 +199,7 @@ pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
 /// Whether to colour what goes to `stream`: only a terminal, and not with
 /// `NO_COLOR` set (<https://no-color.org>).
 fn color(stream: &impl IsTerminal) -> bool {
-    stream.is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+    stream.is_terminal() && !crate::no_color()
 }
 
 fn choices(color: bool) -> String {

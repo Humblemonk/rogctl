@@ -5,11 +5,12 @@
 use ratatui::Frame;
 use std::ops::Range;
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::{border, line};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Widget, Wrap};
 
 use crate::app::{App, Control, Edit, Link, Panel, Row, Target, Value};
 
@@ -37,12 +38,137 @@ const TEXT: Color = Color::Rgb(0xf2, 0xf2, 0xf2);
 const GREY: Color = Color::Rgb(0x8c, 0x8c, 0x8c);
 const LINE: Color = Color::Rgb(0x3a, 0x3a, 0x3a);
 
+/// The palette's stand-ins among the xterm 256 colours, for terminals
+/// without 24-bit colour. Picked so text still reads at 4.5:1, not as the
+/// nearest: the nearest red is pinker and fails on the nearest band.
+const INDEXED: [(Color, u8); 6] = [
+    (RED, 203),
+    (RED_BAND, 52),
+    (BACKGROUND, 233),
+    (TEXT, 255),
+    (GREY, 247),
+    (LINE, 237),
+];
+
 const BASE: Style = Style::new().fg(TEXT).bg(BACKGROUND);
 const MUTED: Style = Style::new().fg(GREY);
 const BOLD: Style = Style::new().fg(TEXT).add_modifier(Modifier::BOLD);
 const ACCENT: Style = Style::new().fg(RED).add_modifier(Modifier::BOLD);
 /// The focused row: a dark red band, as GearLink marks the selected item.
 const FOCUSED: Style = Style::new().bg(RED_BAND);
+
+/// The colours the terminal shows. Everything is drawn in 24-bit colour, then
+/// converted for the others (`Downsample`), so the palette stays in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    /// `COLORTERM` says the terminal has 24-bit colour.
+    TrueColor,
+    /// The xterm 256 colours, which nearly every terminal has.
+    Indexed,
+    /// `NO_COLOR` is set: the terminal's own colours, with the focus band in
+    /// reverse video. Bold, underline and the marks (▌, ◀ ▶, ●, ✓ ✗, 🔒)
+    /// still tell every state apart.
+    None,
+}
+
+impl ColorMode {
+    pub fn detect() -> Self {
+        Self::from_env(
+            crate::no_color(),
+            std::env::var("COLORTERM").ok().as_deref(),
+        )
+    }
+
+    fn from_env(no_color: bool, colorterm: Option<&str>) -> Self {
+        match (no_color, colorterm) {
+            (true, _) => Self::None,
+            (false, Some("truecolor" | "24bit")) => Self::TrueColor,
+            (false, _) => Self::Indexed,
+        }
+    }
+}
+
+/// Converts what was drawn to `ColorMode`'s colours. Drawn last, over the
+/// whole screen.
+struct Downsample(ColorMode);
+
+impl Widget for Downsample {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let Some(cell) = buf.cell_mut((x, y)) else {
+                    continue;
+                };
+                match self.0 {
+                    ColorMode::TrueColor => return,
+                    ColorMode::Indexed => {
+                        cell.fg = indexed(cell.fg);
+                        cell.bg = indexed(cell.bg);
+                    }
+                    ColorMode::None => {
+                        if cell.bg == RED_BAND {
+                            cell.modifier |= Modifier::REVERSED;
+                        }
+                        cell.fg = Color::Reset;
+                        cell.bg = Color::Reset;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A colour as one of the 256: the palette's stand-in, or the nearest for
+/// the mouse's own colours (the swatches).
+fn indexed(color: Color) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    let index = INDEXED
+        .iter()
+        .find(|&&(palette, _)| palette == color)
+        .map_or_else(|| nearest_indexed([r, g, b]), |&(_, index)| index);
+    Color::Indexed(index)
+}
+
+/// The levels of the xterm colour cube (16-231) on each axis.
+const CUBE: [u8; 6] = [0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff];
+
+/// What colours 16-255 are in xterm; terminals set 0-15 themselves, so
+/// those aren't used.
+fn xterm_rgb(index: u8) -> [u8; 3] {
+    let i = usize::from(index.saturating_sub(16));
+    match index {
+        16..=231 => [CUBE[i / 36], CUBE[i / 6 % 6], CUBE[i % 6]],
+        232..=255 => [8 + 10 * (index - 232); 3],
+        0..=15 => [0; 3],
+    }
+}
+
+/// The nearest of colours 16-255: the closest cube colour or grey.
+fn nearest_indexed(rgb: [u8; 3]) -> u8 {
+    let level = |c: u8| {
+        (0u8..6)
+            .min_by_key(|&i| CUBE[usize::from(i)].abs_diff(c))
+            .unwrap_or(0)
+    };
+    let [r, g, b] = rgb.map(level);
+    let cube = 16 + 36 * r + 6 * g + b;
+    let average = rgb.iter().map(|&c| u16::from(c)).sum::<u16>() / 3;
+    let grey = 232 + u8::try_from((average.saturating_sub(3) / 10).min(23)).unwrap_or(23);
+    let distance = |index: u8| -> u32 {
+        xterm_rgb(index)
+            .iter()
+            .zip(rgb)
+            .map(|(&a, b)| u32::from(a.abs_diff(b)).pow(2))
+            .sum()
+    };
+    if distance(grey) < distance(cube) {
+        grey
+    } else {
+        cube
+    }
+}
 
 /// Where each clickable thing was drawn, for the mouse.
 #[derive(Debug, Default)]
@@ -68,14 +194,17 @@ impl Hits {
 /// Draws the screen and returns where its rows and scale values are, or
 /// `None` when the terminal is too small and only a notice is drawn: then keys
 /// only quit and clicks are ignored, so nothing changes out of sight.
-pub fn draw(frame: &mut Frame, app: &App) -> Option<Hits> {
+pub fn draw(frame: &mut Frame, app: &App, colors: ColorMode) -> Option<Hits> {
     frame.render_widget(Block::new().style(BASE), frame.area());
     let (min_width, min_height) = MIN_SIZE;
-    if frame.area().width < min_width || frame.area().height < min_height {
+    let hits = if frame.area().width < min_width || frame.area().height < min_height {
         draw_too_small(frame, MIN_SIZE);
-        return None;
-    }
-    draw_screen(frame, app)
+        None
+    } else {
+        draw_screen(frame, app)
+    };
+    frame.render_widget(Downsample(colors), frame.area());
+    hits
 }
 
 /// `draw()` on a terminal of at least `MIN_SIZE`.
@@ -752,10 +881,14 @@ mod tests {
 
     /// Draws `app` on a test terminal and returns its cells.
     fn draw_to_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        draw_in(app, width, height, ColorMode::TrueColor)
+    }
+
+    fn draw_in(app: &App, width: u16, height: u16, colors: ColorMode) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
-                draw(frame, app);
+                draw(frame, app, colors);
             })
             .unwrap();
         terminal.backend().buffer().clone()
@@ -1090,7 +1223,9 @@ mod tests {
             let app = demo(model);
             let mut terminal = Terminal::new(TestBackend::new(MIN_SIZE.0, MIN_SIZE.1)).unwrap();
             let mut hits = None;
-            terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+            terminal
+                .draw(|frame| hits = draw(frame, &app, ColorMode::TrueColor))
+                .unwrap();
             let hits = hits.unwrap();
             let buffer = terminal.backend().buffer();
             for row in app.rows() {
@@ -1121,7 +1256,9 @@ mod tests {
             for (w, h) in [(80, 24), (120, 40)] {
                 let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
                 let mut hits = None;
-                terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+                terminal
+                    .draw(|frame| hits = draw(frame, &app, ColorMode::TrueColor))
+                    .unwrap();
                 for (area, target) in &hits.unwrap().0 {
                     assert!(area.right() <= w && area.bottom() <= h, "{target:?}");
                 }
@@ -1217,7 +1354,9 @@ mod tests {
         for (w, h) in [(79, 24), (80, 23), (1, 1)] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             let mut hits = Some(Hits::default());
-            terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+            terminal
+                .draw(|frame| hits = draw(frame, &app, ColorMode::TrueColor))
+                .unwrap();
             assert!(hits.is_none(), "{w}x{h}");
         }
     }
@@ -1381,8 +1520,8 @@ mod tests {
             // The longest message rogctl writes takes two rows, and an
             // unusually long OS error a third.
             app.error(
-                "Power-saving rate set to 1000 Hz, but not saved on the mouse: \
-                 this mouse doesn't have that setting",
+                "Power-saving rate set to 1000 Hz, but the mouse went to sleep or out \
+                 of range before confirming the save",
             );
             fits(&app);
             // An unusually long OS error takes a third row where the panels
@@ -1440,8 +1579,10 @@ mod tests {
     /// WCAG contrast of two colours of the palette or the mouse's.
     fn contrast(a: Color, b: Color) -> f64 {
         let luminance = |c: Color| {
-            let Color::Rgb(r, g, b) = c else {
-                panic!("not a palette colour: {c:?}");
+            let [r, g, b] = match c {
+                Color::Rgb(r, g, b) => [r, g, b],
+                Color::Indexed(i) if i >= 16 => xterm_rgb(i),
+                _ => panic!("not a palette colour: {c:?}"),
             };
             let channel = |c: u8| {
                 let c = f64::from(c) / 255.0;
@@ -1458,18 +1599,25 @@ mod tests {
     }
 
     /// All text reads at 4.5:1, on every model, focused, edited, applied, in
-    /// help and on every notice. Lines, swatches and the focus bar aren't text.
+    /// help and on every notice, in 24-bit and in 256 colours. Lines,
+    /// swatches and the focus bar aren't text.
     #[test]
     fn text_has_enough_contrast() {
         let check = |app: &App| {
-            let buffer = draw_to_buffer(app, 80, 24);
-            for cell in buffer.content() {
-                let symbol = cell.symbol();
-                if symbol.trim().is_empty() || "─│┌┐└┘├┤■▌".contains(symbol) {
-                    continue;
+            for colors in [ColorMode::TrueColor, ColorMode::Indexed] {
+                let buffer = draw_in(app, 80, 24, colors);
+                for cell in buffer.content() {
+                    let symbol = cell.symbol();
+                    if symbol.trim().is_empty() || "─│┌┐└┘├┤■▌".contains(symbol)
+                    {
+                        continue;
+                    }
+                    let ratio = contrast(cell.fg, cell.bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{colors:?}: {symbol:?} at {ratio:.2}: {cell:?}"
+                    );
                 }
-                let ratio = contrast(cell.fg, cell.bg);
-                assert!(ratio >= 4.5, "{symbol:?} at {ratio:.2}: {cell:?}");
             }
         };
         let mut seen = Vec::new();
@@ -1502,6 +1650,60 @@ mod tests {
                 check(&app);
             }
         }
+    }
+
+    /// `NO_COLOR` wins, then `COLORTERM`; without either, 256 colours.
+    #[test]
+    fn color_mode_follows_the_environment() {
+        assert_eq!(
+            ColorMode::from_env(true, Some("truecolor")),
+            ColorMode::None
+        );
+        assert_eq!(
+            ColorMode::from_env(false, Some("truecolor")),
+            ColorMode::TrueColor
+        );
+        assert_eq!(
+            ColorMode::from_env(false, Some("24bit")),
+            ColorMode::TrueColor
+        );
+        assert_eq!(ColorMode::from_env(false, Some("yes")), ColorMode::Indexed);
+        assert_eq!(ColorMode::from_env(false, None), ColorMode::Indexed);
+    }
+
+    /// The mouse's colours (the swatches) go to the nearest of the 256.
+    #[test]
+    fn swatches_take_the_nearest_of_256() {
+        assert_eq!(nearest_indexed([0xff, 0, 0]), 196);
+        assert_eq!(nearest_indexed([0, 0xff, 0]), 46);
+        assert_eq!(nearest_indexed([0xff, 0x80, 0]), 208);
+        assert_eq!(nearest_indexed([0xff; 3]), 231);
+        assert_eq!(nearest_indexed([0x80; 3]), 244);
+        assert_eq!(xterm_rgb(196), [0xff, 0, 0]);
+        assert_eq!(xterm_rgb(244), [0x80; 3]);
+        assert_eq!(indexed(RED), Color::Indexed(203), "the palette's stand-in");
+    }
+
+    /// Under `NO_COLOR` nothing is coloured; the focused row shows in
+    /// reverse video instead of the red band.
+    #[test]
+    fn no_color_draws_no_colours() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let app = demo(model);
+        let buffer = draw_in(&app, 80, 24, ColorMode::None);
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|c| c.fg == Color::Reset && c.bg == Color::Reset)
+        );
+        let focused = screen_text(&buffer)
+            .lines()
+            .position(|l| l.contains("▌ DPI stage 1"))
+            .unwrap();
+        let row = u16::try_from(focused).unwrap();
+        assert!(buffer[(5, row)].modifier.contains(Modifier::REVERSED));
+        assert!(!buffer[(5, row + 1)].modifier.contains(Modifier::REVERSED));
     }
 
     /// A lift-off change also resets the sensor calibration; say so first.

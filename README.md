@@ -133,8 +133,9 @@ If a widget says rogctl wasn't found, your desktop's `PATH` probably doesn't inc
   receiver or cable, or log out and back in.
 - **`asleep or out of range`**: the mouse is off, asleep or too far from the receiver. Move it
   to wake it and try again.
-- **Odd colours in `rogctl settings`**: it needs a terminal with 24-bit colour, which most
-  current ones have.
+- **Dull colours in `rogctl settings`**: without `COLORTERM=truecolor` in its environment
+  (often missing over SSH), rogctl uses the 256 standard colours. If your terminal has 24-bit
+  colour, set `COLORTERM=truecolor`. `NO_COLOR` turns colour off.
 
 Something else wrong, or a setting that reads or changes wrong?
 [Report it](CONTRIBUTING.md#reporting-a-problem).

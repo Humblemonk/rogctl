@@ -31,10 +31,11 @@ paths:
   reads the battery (`12 07`) for the header and the active DPI stage (`12 00`), which the
   mouse's DPI button changes without telling rogctl, every 10 s, without dropping a pending
   edit; a mouse that went to sleep shows as asleep.
-- A save answered `FF AA` with no echo after it is asked for once more
+- A save answered `FF AA` with no echo within 150 ms is asked for once more
   (`Connection::apply()`); rejected again, the message says the mouse didn't confirm saving
   it and that it may not last a power cycle, since the Harpe II Ace keeps such changes but
-  other mice may not (`protocol.md`).
+  other mice may not (`protocol.md`). If the read-back that follows finds the mouse asleep,
+  the message says it went to sleep or out of range before confirming the save instead.
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
   abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
   TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the
@@ -98,6 +99,12 @@ several models looks and behaves the same on all of them.
   every model and state), which is why `RED` is GearLink's #e60012 lightened. The DPI and
   lighting swatches, read from the mouse, are the only other colours. The footer ends with
   the version when it fits.
+- **Colour modes** (`ColorMode::detect()`): everything is drawn in 24-bit colour, then
+  `Downsample`, drawn last, converts it. `COLORTERM` of `truecolor` or `24bit` keeps 24-bit;
+  otherwise each palette colour becomes its stand-in in `INDEXED` (picked to keep 4.5:1, which
+  `text_has_enough_contrast` checks too) and a swatch the nearest of the 256. `NO_COLOR`
+  drops every colour and shows the focus band in reverse video, so no state may be told by
+  colour alone: bold, underline and the marks (▌, ◀ ▶, ●, ✓ ✗, 🔒) carry it.
 
 ## Adding a setting
 

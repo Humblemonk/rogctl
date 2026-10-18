@@ -93,7 +93,8 @@ Control flow for a change: key → `App::handle_key()` → `Action` → `tui::ap
   is fine for foreign enums (`KeyCode`, crossterm `Event`) with a comment.
 - Validate packet arguments before encoding: clamp or refuse (`None`), don't panic.
 - crossterm: act on `KeyEventKind::Press` only. ratatui: draw with `Frame::render_widget()`,
-  not direct buffer writes.
+  not direct buffer writes. The one exception is `ui.rs`'s `Downsample`, which converts the
+  drawn colours for the terminal (`tui.md`).
 - Meaningful names; delete code you replace rather than keeping versioned copies.
 
 ## Testing

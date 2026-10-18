@@ -97,9 +97,10 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   was just turned on with `FF AA`, for active-stage and polling-rate changes alike, and
   sometimes sends the save's echo 1 ms later; the change survives a power cycle either way
   (captured read-only, with only rogctl and its widget on the node). G-Helper logs such
-  errors and carries on. `Connection::save()` keeps waiting for the echo after an
-  `FF AA`; with none, `Connection::apply()` asks once more, which the mouse then echoes, and
-  reports the save as unconfirmed only if that's rejected too. Its
+  errors and carries on. `Connection::write()` keeps waiting up to 150 ms for the echo of a
+  change or save after an `FF AA` (this mouse answers a read in about 5 ms, or 70 ms after
+  sitting unused); with none, `Connection::apply()` asks for the save once more, which the
+  mouse then echoes, and reports the save as unconfirmed only if that's rejected too. Its
   DPI button changes the active stage without any input report on this node, so the TUI
   polls `12 00`.
 - Everything else is transcribed and untested; say so when a change depends on it. G-Helper

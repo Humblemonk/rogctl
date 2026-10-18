@@ -46,11 +46,15 @@ Singleton {
     // Emitted once per drop to the threshold, when rogctl flags it.
     signal lowBattery
 
+    // The binary the running rogctl started with: refresh goes through the
+    // same one, so a wrapper's pid means the same there.
+    property string _watchBinary: ""
+
     // Read the mouse now instead of waiting for the next interval. `rogctl
     // refresh` signals the pid only if it's a `rogctl watch`, unlike `kill`.
     function refresh() {
         if (watcher.running && status?.pid)
-            Quickshell.execDetached([root.binary, "refresh", String(status.pid)]);
+            Quickshell.execDetached([root._watchBinary, "refresh", String(status.pid)]);
     }
 
     function _publish(line) {
@@ -87,7 +91,9 @@ Singleton {
             };
         }
         onRunningChanged: {
-            if (!running)
+            if (running)
+                root._watchBinary = command[0];
+            else
                 restartTimer.start();
         }
     }

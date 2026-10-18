@@ -31,6 +31,9 @@ Lighting, and safer widgets.
   turning red once you've changed the value.
 - The settings panels share their dividing lines, so every mouse, lighting included, still
   fits an 80×24 terminal.
+- `rogctl settings` works in terminals without 24-bit colour: unless `COLORTERM` says the
+  terminal has it, it uses the 256 standard colours, chosen so text stays easy to read.
+  `NO_COLOR` turns colour off, with the selected row in reverse video.
 - The widgets refresh and restart rogctl with `rogctl refresh` and `rogctl stop` instead of
   signalling the process ID `watch` prints. Under a container wrapper (distrobox, toolbox,
   `flatpak-spawn`) that ID could belong to an unrelated program on the host.
@@ -44,8 +47,9 @@ Lighting, and safer widgets.
 ### Fixed
 
 - **Harpe II Ace:** the first change after the mouse sat unused no longer says "not saved on
-  the mouse" when it was saved. If the mouse really doesn't confirm, the message now says it
-  may not last a power cycle.
+  the mouse" when it was saved, and the screen pauses for about 0.15 s there instead of
+  0.5 s. If the mouse really doesn't confirm, the message now says it may not last a power
+  cycle, or that the mouse went to sleep or out of range if it did.
 - A change no longer reports "No change made" when another program using the mouse (a
   widget, ASUS GearLink) drew a stray error just before the mouse confirmed it.
 - Mice that report the battery in 25% steps (Chakram, Gladius II Wireless, Keris Wireless and
@@ -57,6 +61,8 @@ Lighting, and safer widgets.
 - A key or click that arrives as the terminal is resized can no longer change a setting on a
   screen you didn't see. A message too long for the space left ends in "…".
 - **Waybar:** the module now hides when no mouse is found, as the readme says.
+- **Quickshell:** refresh goes through the rogctl that's running, even after the rogctl
+  command setting changed.
 - **GNOME:** changing the settings no longer leaves extra copies of rogctl running. Spinning
   the interval restarts rogctl once, the command field applies on Apply rather than on every
   keystroke, and the charging icon shows at 95–99%.

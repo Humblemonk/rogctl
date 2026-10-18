@@ -264,6 +264,12 @@ fn carry_over(status: &mut Status, last_known: &mut Option<Status>) {
     }
 }
 
+/// Whether `NO_COLOR` asks for no colour (<https://no-color.org>): set and
+/// not empty.
+fn no_color() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+}
+
 /// The word for a mouse that's awake, as every widget and the TUI show it:
 /// "Battery: 79% (discharging)". The kernel's and desktops' words, not
 /// Solaar's "recharging".
