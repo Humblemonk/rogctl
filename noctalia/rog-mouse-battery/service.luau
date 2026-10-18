@@ -15,8 +15,10 @@ local RESTART_SECONDS = 10
 
 local streaming = false
 local lastStatus = nil
--- The settings the running rogctl was started with.
+-- The settings the running rogctl was started with, and its binary: refresh
+-- and stop go through the same one, so a wrapper's pid means the same there.
 local streamSettings = nil
+local streamBinary = nil
 -- Set while rogctl is being stopped to apply new settings.
 local restarting = false
 local exitedAt = 0
@@ -89,6 +91,7 @@ function startStream()
   -- nothing to signal.
   lastStatus = nil
   streamSettings = currentSettings()
+  streamBinary = binary
   if not noctalia.commandExists(binary) and not binary:find("/") then
     publishError(noctalia.tr("error.missing_binary", { binary = binary }))
     return
@@ -109,13 +112,14 @@ function startStream()
   end
 end
 
--- SIGUSR1 makes the running rogctl read the mouse now; it reports its pid in
--- each line since runStream doesn't.
+-- `rogctl refresh` makes the running rogctl read the mouse now. It reports its
+-- pid in each line since runStream doesn't; rogctl signals it only if it's a
+-- `rogctl watch`, unlike `kill`.
 local function refreshNow()
   local pid = lastStatus and lastStatus.pid
   -- While restarting, the pid is the rogctl being stopped.
   if streaming and not restarting and pid ~= nil then
-    noctalia.runAsync({ "kill", "-USR1", tostring(pid) })
+    noctalia.runAsync({ streamBinary, "refresh", tostring(pid) })
   end
 end
 
@@ -128,8 +132,8 @@ end)
 -- would leave two running.
 --
 -- Noctalia has no settings-changed event and can't stop a stream, so this also
--- polls the settings, and when they change stops rogctl itself (it reports its
--- pid); the exit marker then starts it again with the new ones.
+-- polls the settings, and when they change stops rogctl with `rogctl stop` and
+-- the pid it reports; the exit marker then starts it again with the new ones.
 function update()
   noctalia.setUpdateInterval(2000)
   if not streaming then
@@ -140,7 +144,13 @@ function update()
     local pid = lastStatus and lastStatus.pid
     if pid ~= nil then
       restarting = true
-      noctalia.runAsync({ "kill", tostring(pid) })
+      noctalia.runAsync({ streamBinary, "stop", tostring(pid) }, function(result)
+        -- Not stopped: keep the running rogctl, and try again next update.
+        if result.exitCode ~= 0 then
+          noctalia.log("rog-mouse-battery: rogctl stop failed: " .. tostring(result.stderr))
+          restarting = false
+        end
+      end)
     end
   end
 end

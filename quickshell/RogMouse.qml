@@ -46,11 +46,11 @@ Singleton {
     // Emitted once per drop to the threshold, when rogctl flags it.
     signal lowBattery
 
-    // Read the mouse now instead of waiting for the next interval: SIGUSR1
-    // makes the running rogctl read it right away.
+    // Read the mouse now instead of waiting for the next interval. `rogctl
+    // refresh` signals the pid only if it's a `rogctl watch`, unlike `kill`.
     function refresh() {
         if (watcher.running && status?.pid)
-            Quickshell.execDetached(["kill", "-USR1", String(status.pid)]);
+            Quickshell.execDetached([root.binary, "refresh", String(status.pid)]);
     }
 
     function _publish(line) {

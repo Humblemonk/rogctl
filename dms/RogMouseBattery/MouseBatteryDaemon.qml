@@ -101,13 +101,14 @@ PluginComponent {
         }
     }
 
-    // The widget asks for a fresh reading by setting "refresh". SIGUSR1 makes
-    // the running rogctl read the mouse right away.
+    // The widget asks for a fresh reading by setting "refresh". `rogctl
+    // refresh` makes the running rogctl read the mouse right away; it signals
+    // the pid only if it's a `rogctl watch`, unlike `kill`.
     Connections {
         target: PluginService
         function onGlobalVarChanged(changedId, varName) {
             if (changedId === root.pluginId && varName === "refresh" && watcher.running && !root.restarting && root.lastStatus?.pid)
-                Quickshell.execDetached(["kill", "-USR1", String(root.lastStatus.pid)]);
+                Quickshell.execDetached([root.binary, "refresh", String(root.lastStatus.pid)]);
         }
     }
 }

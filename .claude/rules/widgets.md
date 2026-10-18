@@ -27,9 +27,11 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
   drop, re-armed by charging or rising 5% above the threshold), reports its `pid`, and
   re-reads the mouse on SIGUSR1.
 - Widgets pass `--low-threshold`, restart `rogctl` when the binary, interval or threshold
-  setting changes, and send SIGUSR1 to refresh. Noctalia has no settings-changed event and
-  can't stop a stream, so its service polls the settings in `update()` and stops `rogctl` by
-  its `pid`; the exit marker restarts it. The Plasma widget polls one-shot `rogctl battery`,
+  setting changes, and refresh with `rogctl refresh PID`, through the binary the watch
+  started with. Never `kill` a `pid` from the status line: under a wrapper it can name
+  another process, and `refresh`/`stop` check it's a `rogctl watch`. Noctalia has no
+  settings-changed event and can't stop a stream, so its service polls the settings in
+  `update()` and stops `rogctl` with `rogctl stop PID`; the exit marker restarts it. The Plasma widget polls one-shot `rogctl battery`,
   so it keeps its own sleeping-level and notified-once state.
 
 ## Keep them alike

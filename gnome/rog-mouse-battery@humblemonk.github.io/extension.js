@@ -20,7 +20,6 @@ const RESTART_SECONDS = 10;
 // Restart rogctl for a changed setting once the settings stop changing for
 // this long: a spinner changes its setting on every step.
 const SETTLE_MS = 1000;
-const SIGUSR1 = 10;
 const SIGTERM = 15;
 
 // Status words as the kernel and desktops use them: discharging, charging,
@@ -111,6 +110,9 @@ const Indicator = GObject.registerClass(
 
     _startWatch() {
       this._pid = null;
+      // Refresh goes through the same binary, so a wrapper's pid means the
+      // same there.
+      this._watchBinary = this._binary;
       const argv = [
         this._binary,
         "watch",
@@ -240,15 +242,19 @@ const Indicator = GObject.registerClass(
       }
     }
 
-    // Read the mouse now instead of waiting for the next interval: SIGUSR1
-    // makes the running rogctl read it right away. Only once it printed its
-    // pid, since until then SIGUSR1 would kill it, and only to our own child:
-    // a pid printed under a wrapper (a container's, say) may name another
-    // process here. A wrapper script needs `exec rogctl` for this.
+    // Read the mouse now instead of waiting for the next interval, once this
+    // rogctl printed its pid (until then the signal would kill it). `rogctl
+    // refresh` signals the pid only if it's a `rogctl watch`, unlike `kill`.
     _refresh() {
-      const child = this._proc?.get_identifier();
-      if (this._pid && child && Number(child) === this._pid)
-        this._proc.send_signal(SIGUSR1);
+      if (!this._pid) return;
+      try {
+        Gio.Subprocess.new(
+          [this._watchBinary, "refresh", String(this._pid)],
+          Gio.SubprocessFlags.STDERR_SILENCE,
+        );
+      } catch (e) {
+        console.warn(`rog-mouse-battery: ${e.message}`);
+      }
     }
 
     _handleLine(line) {
