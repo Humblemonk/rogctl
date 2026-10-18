@@ -6,7 +6,7 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## 2.6.0 — Unreleased
+## 2.6.0 — 2026-10-18
 
 Lighting, and safer widgets.
 
