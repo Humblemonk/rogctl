@@ -557,23 +557,21 @@ impl App {
         let Some(current) = self.shown(control) else {
             return;
         };
-        let rates = match control {
-            Control::PowerSavingRate => f.power_saving_rates,
-            Control::Stage(_)
-            | Control::PollingRate
-            | Control::Debounce
-            | Control::AngleSnapping
-            | Control::AngleTuning
-            | Control::MotionSync
-            | Control::LiftOff
-            | Control::PowerOff
-            | Control::LowBatteryWarning
-            | Control::PowerSaving
-            | Control::LightingEffect
-            | Control::LightingColor
-            | Control::Brightness => f.polling_rates,
+        self.set_edit(
+            control,
+            step(f, rates(f, control), current, dir, big),
+            false,
+        );
+    }
+
+    /// Whether ← and → would change what `control` shows, for drawing only
+    /// the arrows that do something.
+    pub fn can_step(&self, control: Control) -> (bool, bool) {
+        let (Some(f), Some(current)) = (self.features(), self.shown(control)) else {
+            return (false, false);
         };
-        self.set_edit(control, step(f, rates, current, dir, big), false);
+        let moves = |dir| step(f, rates(f, control), current, dir, false) != current;
+        (moves(-1), moves(1))
     }
 
     fn type_digit(&mut self, c: char) {
@@ -729,6 +727,26 @@ impl App {
             Change::PowerSaving(p) => s.power_saving = Some(p),
             Change::Lighting(l) => s.lighting = Some(l),
         }
+    }
+}
+
+/// The polling rates `control` offers, if it's a rate.
+fn rates(f: &Features, control: Control) -> &'static [PollingRate] {
+    match control {
+        Control::PowerSavingRate => f.power_saving_rates,
+        Control::Stage(_)
+        | Control::PollingRate
+        | Control::Debounce
+        | Control::AngleSnapping
+        | Control::AngleTuning
+        | Control::MotionSync
+        | Control::LiftOff
+        | Control::PowerOff
+        | Control::LowBatteryWarning
+        | Control::PowerSaving
+        | Control::LightingEffect
+        | Control::LightingColor
+        | Control::Brightness => f.polling_rates,
     }
 }
 

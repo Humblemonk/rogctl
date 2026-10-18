@@ -366,7 +366,9 @@ fn draw_settings(
 fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
     let control = row.control;
     let focused = app.focused() == Some(control);
-    let label = format!("{:<LABEL_WIDTH$}", control.label());
+    // The label's last two columns hold the focused row's ◀, so every value
+    // starts in the same column.
+    let label = format!("{:<width$}", control.label(), width = LABEL_WIDTH - 2);
     let mut spans = match (focused, row.locked) {
         (true, _) => vec![
             Span::styled("▌ ", Style::new().fg(RED)),
@@ -384,6 +386,20 @@ fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
         .filter(|_| row.locked.is_none())
         .zip(shown)
         .filter(|(choices, value)| choices.contains(value));
+    // A focused text value gets ◀ and ▶ for the ways ←/→ can still go: grey,
+    // red once they've made an edit. Typed DPI digits get a cursor instead.
+    let typed = edit.is_some_and(|e| e.typed);
+    let (left, right) = if focused && on_scale.is_none() && !typed {
+        app.can_step(control)
+    } else {
+        (false, false)
+    };
+    let arrow = if edit.is_some() { ACCENT } else { MUTED };
+    spans.push(if left {
+        Span::styled("◀ ", arrow)
+    } else {
+        Span::raw("  ")
+    });
     let mut columns = Vec::new();
     if let Some((choices, value)) = on_scale {
         let mut x = width(&spans);
@@ -398,6 +414,12 @@ fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
         }
     } else {
         spans.extend(value_spans(row, focused, edit, app.value(control)));
+        if right {
+            spans.push(Span::styled(" ▶", arrow));
+        } else if matches!(shown, Some(Value::Dpi(_))) && !typed {
+            // Keeps the stages' swatches lined up with a focused stage's ▶.
+            spans.push(Span::raw("  "));
+        }
     }
 
     // A locked colour isn't the one lit, so it gets no swatch.
@@ -436,26 +458,24 @@ fn width(spans: &[Span]) -> u16 {
     u16::try_from(width).unwrap_or(u16::MAX)
 }
 
-/// A value drawn as text: pending edits between red arrows (or with a cursor
-/// while DPI digits are typed), switches that are on in red.
+/// A value drawn as text, without its arrows: pending edits underlined (with
+/// a cursor while DPI digits are typed), switches that are on in red.
 fn value_spans(
     row: Row,
     focused: bool,
     edit: Option<Edit>,
     value: Option<Value>,
 ) -> Vec<Span<'static>> {
-    match (edit, value) {
+    let (value, style) = match (edit, value) {
         (Some(Edit { value, typed, .. }), _) => {
-            let value = Span::styled(value.to_string(), BOLD.add_modifier(Modifier::UNDERLINED));
+            let edited = BOLD.add_modifier(Modifier::UNDERLINED);
             if typed {
-                vec![value, Span::styled("▏", ACCENT)]
-            } else {
-                vec![
-                    Span::styled("◀ ", ACCENT),
-                    value,
-                    Span::styled(" ▶", ACCENT),
-                ]
+                return vec![
+                    Span::styled(value.to_string(), edited),
+                    Span::styled("▏", ACCENT),
+                ];
             }
+            (value, edited)
         }
         (None, Some(value)) => {
             let style = match (row.locked, value) {
@@ -464,24 +484,26 @@ fn value_spans(
                 (None, _) if focused => BOLD,
                 (None, _) => Style::new().fg(TEXT),
             };
-            let text = match value {
-                // Padded so the stages' swatches and "● active" line up.
-                Value::Dpi(_) => format!("{:<DPI_WIDTH$}", value.to_string()),
-                Value::PollingRate(_)
-                | Value::Debounce(_)
-                | Value::Switch(_)
-                | Value::Degrees(_)
-                | Value::LiftOff(_)
-                | Value::PowerOff(_)
-                | Value::Percent(_)
-                | Value::Effect(_)
-                | Value::Color(_)
-                | Value::Brightness(_) => value.to_string(),
-            };
-            vec![Span::styled(text, style)]
+            (value, style)
         }
-        (None, None) => vec![Span::styled("unknown", MUTED)],
-    }
+        (None, None) => return vec![Span::styled("unknown", MUTED)],
+    };
+    let text = value.to_string();
+    // Padded so the stages' swatches and "● active" line up.
+    let pad = match value {
+        Value::Dpi(_) => DPI_WIDTH.saturating_sub(text.len()),
+        Value::PollingRate(_)
+        | Value::Debounce(_)
+        | Value::Switch(_)
+        | Value::Degrees(_)
+        | Value::LiftOff(_)
+        | Value::PowerOff(_)
+        | Value::Percent(_)
+        | Value::Effect(_)
+        | Value::Color(_)
+        | Value::Brightness(_) => 0,
+    };
+    vec![Span::styled(text, style), Span::raw(" ".repeat(pad))]
 }
 
 /// A row of choices drawn like GearLink's sliders: the track is red up to the
@@ -818,7 +840,10 @@ mod tests {
 
         app.handle_key(KeyCode::Right, KeyModifiers::NONE);
         let screen = render(&app, 80, 24);
-        assert!(screen.contains("◀ 450 ▶"), "{screen}");
+        assert!(
+            screen.contains("◀ 450   ▶ ■"),
+            "padded like the stages\n{screen}"
+        );
         assert!(screen.contains("Enter to apply"), "{screen}");
         let action = app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         let Some(Action::Apply { change, done }) = action else {
@@ -871,6 +896,55 @@ mod tests {
             "{screen}"
         );
         assert!(!screen.contains("Red ■"), "no swatch\n{screen}");
+    }
+
+    /// A focused text value shows ◀ and ▶ only for the ways ←/→ can still go,
+    /// grey until they make an edit, then red; other rows show none.
+    #[test]
+    fn arrows_show_only_where_the_value_can_go() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        let effect_row = |app: &App| {
+            let row = app
+                .rows()
+                .into_iter()
+                .find(|r| r.control == Control::LightingEffect);
+            row_line(app, row.unwrap()).0
+        };
+        let arrows = |line: &Line| {
+            line.spans
+                .iter()
+                .filter(|s| s.content.contains(['◀', '▶']))
+                .map(|s| (s.content.trim().to_owned(), s.style.fg))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(arrows(&effect_row(&app)), [], "not focused");
+
+        while app.focused() != Some(Control::LightingEffect) {
+            app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        }
+        assert_eq!(
+            arrows(&effect_row(&app)),
+            [("▶".to_owned(), Some(GREY))],
+            "Static is first"
+        );
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(
+            arrows(&effect_row(&app)),
+            [("◀".to_owned(), Some(RED)), ("▶".to_owned(), Some(RED))],
+            "an edit"
+        );
+        app.handle_key(KeyCode::Right, KeyModifiers::SHIFT);
+        assert_eq!(
+            arrows(&effect_row(&app)),
+            [("◀".to_owned(), Some(RED))],
+            "Battery level is last"
+        );
+        let screen = render(&app, 80, 24);
+        assert!(
+            screen.contains("Effect                ◀ Battery level  Enter to apply"),
+            "the value stays in its column\n{screen}"
+        );
     }
 
     /// The knob follows a pending edit; the track is red up to it; a locked
@@ -1442,7 +1516,7 @@ mod tests {
         let screen = render(&app, 80, 24);
         let row = screen.lines().find(|l| l.contains("Lift-off")).unwrap();
         assert!(
-            row.contains("◀ High ▶  Enter to apply; resets sensor calibration │"),
+            row.contains("◀ High ▶  Enter to apply; resets sensor calibration"),
             "{row}"
         );
     }

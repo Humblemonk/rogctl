@@ -57,6 +57,10 @@ several models looks and behaves the same on all of them.
   now is shown dimmed with 🔒 and the reason (`Row::locked`: motion sync at 8000 Hz, the
   power-saving rate while power saving is off, the lighting colour while the effect sets its
   own) and can't be focused. Never leave a row visible and focusable but inert.
+- **Arrows:** the focused row's text value has ◀ and ▶ only for the ways ←/→ can still go
+  (`App::can_step()`), grey before an edit and red during one; none on scales or while DPI
+  digits are typed. The ◀ sits in the label's last two columns and DPI values keep a slot
+  for the ▶, so values and the stages' swatches stay in their columns.
 - **Unknown values show:** a code rogctl can't decode reads "Unknown (0x..)" (`PowerOff`,
   `LiftOff::Unknown`), ←/→ still pick a valid value, and it's never sent back. Whether a row
   shows depends on the model, not the reply.
