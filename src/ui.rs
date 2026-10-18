@@ -7,10 +7,11 @@ use std::ops::Range;
 
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::{border, line};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Wrap};
 
-use crate::app::{App, Control, Edit, Link, Row, Target, Value};
+use crate::app::{App, Control, Edit, Link, Panel, Row, Target, Value};
 
 /// Settings stay readable on a wide terminal; a full polling-rate scale and
 /// its hint fit an 80-column one.
@@ -85,11 +86,7 @@ fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
         Link::Connected => Some(panels(app)),
         Link::Asleep | Link::Disconnected | Link::Error(_) => None,
     };
-    let needed: u16 = panels
-        .iter()
-        .flatten()
-        .map(|(_, rows)| panel_height(rows))
-        .sum();
+    let needed = panels.as_deref().map_or(0, panels_height);
     // The message gets the rows the header, panels and footer leave, at
     // least one and at most MESSAGE_ROWS, so a long one shortens before the
     // settings give way.
@@ -155,16 +152,27 @@ fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
     Some(hits)
 }
 
-/// rogctl's longest message takes two rows; three still leave the tallest
-/// model all its rows at 80x24.
+/// rogctl's longest message takes two rows, which the tallest model leaves
+/// at 80x24; a longer one gets a third row where there's room.
 const MESSAGE_ROWS: usize = 3;
 
 /// A bordered section with GearLink's thin grey lines and a white heading.
-fn panel(title: &str) -> Block<'static> {
-    Block::bordered()
+/// One `below` another shares the line between them, so its top corners
+/// join that line to the sides.
+fn panel(title: &str, below: bool) -> Block<'static> {
+    let block = Block::bordered()
         .border_type(BorderType::Plain)
         .border_style(Style::new().fg(LINE))
-        .title(Span::styled(format!(" {title} "), BOLD))
+        .title(Span::styled(format!(" {title} "), BOLD));
+    if below {
+        block.border_set(border::Set {
+            top_left: line::NORMAL.vertical_right,
+            top_right: line::NORMAL.vertical_left,
+            ..border::PLAIN
+        })
+    } else {
+        block
+    }
 }
 
 /// The mouse, its link and battery, and `[demo]`. A header too long for
@@ -279,40 +287,48 @@ fn footer_line(app: &App, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The settings' panels, top to bottom, each with its title and rows.
-fn panels(app: &App) -> [(&'static str, Vec<Row>); 2] {
-    let (battery, performance): (Vec<Row>, Vec<Row>) =
-        app.rows().into_iter().partition(|r| r.control.is_battery());
-    [("Performance", performance), ("Battery", battery)]
+/// The settings' panels that have rows, top to bottom, each with its title.
+fn panels(app: &App) -> Vec<(&'static str, Vec<Row>)> {
+    let rows = app.rows();
+    Panel::ALL
+        .into_iter()
+        .map(|panel| {
+            let rows: Vec<Row> = rows
+                .iter()
+                .copied()
+                .filter(|r| r.control.panel() == panel)
+                .collect();
+            (panel.title(), rows)
+        })
+        .filter(|(_, rows)| !rows.is_empty())
+        .collect()
 }
 
-/// A panel's rows and its border; none for a panel with no rows.
-fn panel_height(rows: &[Row]) -> u16 {
-    if rows.is_empty() {
-        0
-    } else {
-        rows.len() as u16 + 2
-    }
+/// The panels' rows, the line above each, and the bottom border.
+fn panels_height(panels: &[(&'static str, Vec<Row>)]) -> u16 {
+    let lines: usize = panels.iter().map(|(_, rows)| rows.len() + 1).sum();
+    u16::try_from(lines + usize::from(!panels.is_empty())).unwrap_or(u16::MAX)
 }
 
 fn draw_settings(
     frame: &mut Frame,
     app: &App,
-    panels: [(&'static str, Vec<Row>); 2],
+    panels: Vec<(&'static str, Vec<Row>)>,
     area: Rect,
     hits: &mut Hits,
 ) {
-    let [top, bottom, _] = Layout::vertical([
-        Constraint::Length(panel_height(&panels[0].1)),
-        Constraint::Length(panel_height(&panels[1].1)),
-        Constraint::Min(0),
-    ])
-    .areas(area);
-    for ((title, rows), area) in panels.into_iter().zip([top, bottom]) {
-        if rows.is_empty() {
-            continue;
+    let mut top = area.y;
+    for (i, (title, rows)) in panels.into_iter().enumerate() {
+        // Each panel's top border is drawn over the bottom one above it.
+        let height = u16::try_from(rows.len() + 2).unwrap_or(u16::MAX);
+        let area = Rect {
+            y: top,
+            height,
+            ..area
         }
-        let block = panel(title);
+        .intersection(area);
+        top = top.saturating_add(height - 1);
+        let block = panel(title, i > 0);
         let inner = block.inner(area);
         let mut lines = Vec::new();
         for (y, row) in (inner.y..inner.bottom()).zip(rows) {
@@ -384,6 +400,10 @@ fn row_line(app: &App, row: Row) -> (Line<'static>, Vec<(Range<u16>, Value)>) {
         spans.extend(value_spans(row, focused, edit, app.value(control)));
     }
 
+    // A locked colour isn't the one lit, so it gets no swatch.
+    if let (Some(Value::Color([r, g, b])), None) = (shown, row.locked) {
+        spans.push(Span::styled(" ■", Style::new().fg(Color::Rgb(r, g, b))));
+    }
     if let Control::Stage(i) = control {
         if let Some([r, g, b]) = app.settings.stages.get(i).and_then(|s| s.color) {
             spans.push(Span::styled(" ■", Style::new().fg(Color::Rgb(r, g, b))));
@@ -453,7 +473,10 @@ fn value_spans(
                 | Value::Degrees(_)
                 | Value::LiftOff(_)
                 | Value::PowerOff(_)
-                | Value::Percent(_) => value.to_string(),
+                | Value::Percent(_)
+                | Value::Effect(_)
+                | Value::Color(_)
+                | Value::Brightness(_) => value.to_string(),
             };
             vec![Span::styled(text, style)]
         }
@@ -503,10 +526,14 @@ fn tick(value: Value) -> String {
             .minutes()
             .map_or_else(|| value.to_string(), |m| format!("{m}m")),
         Value::Percent(0) => "Off".into(),
-        Value::Percent(pct) => pct.to_string(),
-        Value::Dpi(_) | Value::Switch(_) | Value::Degrees(_) | Value::LiftOff(_) => {
-            value.to_string()
-        }
+        // "0" rather than "Off": the full scale and its hint then fit.
+        Value::Percent(pct) | Value::Brightness(pct) => pct.to_string(),
+        Value::Dpi(_)
+        | Value::Switch(_)
+        | Value::Degrees(_)
+        | Value::LiftOff(_)
+        | Value::Effect(_)
+        | Value::Color(_) => value.to_string(),
     }
 }
 
@@ -514,12 +541,14 @@ fn unit(value: Value) -> Option<&'static str> {
     match value {
         Value::PollingRate(_) => Some("Hz"),
         Value::Debounce(_) => Some("ms"),
-        Value::Percent(_) => Some("%"),
+        Value::Percent(_) | Value::Brightness(_) => Some("%"),
         Value::Dpi(_)
         | Value::Switch(_)
         | Value::Degrees(_)
         | Value::LiftOff(_)
-        | Value::PowerOff(_) => None,
+        | Value::PowerOff(_)
+        | Value::Effect(_)
+        | Value::Color(_) => None,
     }
 }
 
@@ -682,7 +711,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         height,
     };
     // GearLink outlines what's selected in red; the help box is on top of all.
-    let block = panel("Keys").border_style(Style::new().fg(RED)).style(BASE);
+    let block = panel("Keys", false)
+        .border_style(Style::new().fg(RED))
+        .style(BASE);
     frame.render_widget(ratatui::widgets::Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
@@ -797,6 +828,49 @@ mod tests {
         app.ok(done);
         let screen = render(&app, 80, 24);
         assert!(screen.contains("DPI stage 1 set to 450"), "{screen}");
+    }
+
+    /// The lighting gets its own panel, joined to the one above, all within
+    /// 80x24; the colour has a swatch unless the effect sets its own.
+    #[test]
+    fn shows_harpe_ii_ace_lighting() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        let screen = render(&app, 80, 24);
+        for text in [
+            "├ Battery ─",
+            "├ Lighting ─",
+            "Effect                  Static",
+            "Colour                  Red ■",
+            "Brightness              0─10─20─30─40─●50─60─70─80─90─100 %",
+        ] {
+            assert!(screen.contains(text), "{text:?} missing:\n{screen}");
+        }
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(lines[20].starts_with('└'), "one bottom border\n{screen}");
+
+        while app.focused() != Some(Control::LightingEffect) {
+            app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        let screen = render(&app, 80, 24);
+        assert!(
+            screen.contains("◀ Colour cycle ▶  Enter to apply"),
+            "{screen}"
+        );
+        let Some(Action::Apply { change, .. }) = app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+        else {
+            panic!("no change");
+        };
+        app.simulate(&change);
+        let screen = render(&app, 80, 24);
+        let colour = screen.lines().find(|l| l.contains("Colour   "));
+        assert!(
+            colour.is_some_and(|l| in_order(l, "Red 🔒 the effect sets its own")),
+            "{screen}"
+        );
+        assert!(!screen.contains("Red ■"), "no swatch\n{screen}");
     }
 
     /// The knob follows a pending edit; the track is red up to it; a locked
@@ -1082,7 +1156,7 @@ mod tests {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let mut app = demo(model);
         app.error("x");
-        let panels: u16 = panels(&app).iter().map(|(_, r)| panel_height(r)).sum();
+        let panels = panels_height(&panels(&app));
         // The header, a one-row message and the footer.
         let needed = panels + 3;
         let draw_at = |app: &App, height| {
@@ -1114,8 +1188,9 @@ mod tests {
         );
     }
 
-    /// A message too long for three rows ends in "…" rather than being cut
-    /// without a sign; on a wide terminal it uses the whole width.
+    /// A message too long for its rows ends in "…" rather than being cut
+    /// without a sign: two rows under the tallest model at 80x24, three on a
+    /// taller terminal. On a wide terminal it uses the whole width.
     #[test]
     fn messages_wrap_across_the_terminal() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
@@ -1125,7 +1200,11 @@ mod tests {
         let lines: Vec<&str> = screen.lines().collect();
         assert!(lines[22].ends_with('…'), "{screen}");
         assert!(Span::raw(lines[22]).width() <= 80, "{screen}");
-        assert!(lines[20].starts_with(" ✗ word"), "three rows\n{screen}");
+        assert!(lines[21].starts_with(" ✗ word"), "two rows\n{screen}");
+        let screen = render(&app, 80, 25);
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(lines[23].ends_with('…'), "{screen}");
+        assert!(lines[21].starts_with(" ✗ word"), "three rows\n{screen}");
 
         app.error(
             "Power-saving rate set to 1000 Hz, but not saved on the mouse: \
@@ -1232,8 +1311,19 @@ mod tests {
                  this mouse doesn't have that setting",
             );
             fits(&app);
+            // An unusually long OS error takes a third row where the panels
+            // leave one, else ends in "…".
             app.error(format!("{} (os error 5)", "Input/output error ".repeat(9)));
-            fits(&app);
+            if h - panels_height(&panels(&app)) - 2 >= 3 {
+                fits(&app);
+            } else {
+                let screen = render(&app, w, h);
+                assert!(
+                    screen.contains(" ✗ Input/output error") && screen.contains('…'),
+                    "{}\n{screen}",
+                    model.name
+                );
+            }
             app.message = None;
 
             app.help = true;
@@ -1301,7 +1391,7 @@ mod tests {
             let buffer = draw_to_buffer(app, 80, 24);
             for cell in buffer.content() {
                 let symbol = cell.symbol();
-                if symbol.trim().is_empty() || "─│┌┐└┘■▌".contains(symbol) {
+                if symbol.trim().is_empty() || "─│┌┐└┘├┤■▌".contains(symbol) {
                     continue;
                 }
                 let ratio = contrast(cell.fg, cell.bg);

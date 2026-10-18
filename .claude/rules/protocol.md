@@ -24,15 +24,17 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   power-off byte (usually 6); byte 7 is the low-battery warning.
 - Battery `0`, an all-zero reply, or `FF AA` from a receiver means the mouse is asleep or out
   of range, not empty or broken.
-- Settings reads: `12 00` (active DPI stage in byte 12, counted from 1; stage count in byte 19
-  on `variable_stages` mice), `12 04 00` (DPI on non-X/Y mice, polling rate, debounce, angle
-  snapping and tuning), `12 04 02` (X/Y DPI), `12 04 03` (stage colours, RGB), `12 04 04`
-  (motion sync), `12 06` (lift-off), `12 15` (advanced power saving). DPI is stored as
-  `dpi / step - 1`, 16-bit little-endian. The polling rate is the low 3 bits of its byte; the
-  Harpe II Ace sets the high bits too (`0x63` at 1000 Hz), and masking them is correct.
+- Settings reads: `12 00` (active DPI stage in byte 12, counted from 1; stage count in byte
+  19 on `variable_stages` mice), `12 04 00` (DPI on non-X/Y mice, polling rate, debounce,
+  angle snapping and tuning), `12 04 02` (X/Y DPI), `12 04 03` (stage colours, RGB),
+  `12 04 04` (motion sync), `12 06` (lift-off), `12 15` (advanced power saving), `12 03 00`
+  (lighting: effect in byte 5, brightness in byte 6, colour in bytes 7-9). DPI is stored as
+  `dpi / step - 1`, 16-bit little-endian. The polling rate is the low 3 bits of its byte;
+  the Harpe II Ace sets the high bits too (`0x63` at 1000 Hz), and masking them is correct.
 - Changes: `51 31 <field>`, `51 35` lift-off (also resets sensor calibration), `51 37`
-  power-off and warning together, `51 43` advanced power saving; each followed by `50 03`,
-  which stores it on the mouse.
+  power-off and warning together, `51 43` advanced power saving,
+  `51 28 <zone> 00 <effect> <brightness> R G B` lighting; each followed by `50 03`, which
+  stores it on the mouse.
 
 ## Where models differ
 
@@ -45,8 +47,18 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
     command is `51 35 FF 00 FF <v> 01`. G-Helper's encoding is ignored by this mouse.
   - Advanced power saving: `12 15` byte 5 on/off, byte 6 a polling-rate code;
     `51 43 00 00 <on> <rate>` sets both. 125-2000 Hz (`Features::power_saving_rates`).
-- Not implemented: lighting, button bindings, onboard profiles, DPI stage count, zone mode
-  (`12 14`/`51 44`), acceleration/deceleration, the Omni "booster" polling-rate encoding.
+  - Lighting (`Features::lighting`): GearLink reads and sets zone `00`, where G-Helper writes
+    `01` for this mouse; the read's reply has 0 in byte 3 whatever zone is asked. Effects as
+    in G-Helper (Static `00`, Breathing `01`, Colour cycle `02`, Reactive `04`, Battery
+    `06`); GearLink has no Off effect but sets brightness 0, a percentage it moves in 10%
+    steps. Battery mode's green/blue/red aren't in the packet. GearLink remembers each
+    effect's colour and brightness itself and sends them on a switch; the mouse holds only
+    the current ones. `12 03 01` answers too (effect `02`, 50%, black); what that slot is
+    isn't known. Other mice's lighting (zones, a 0-4 brightness, remapped effect codes in
+    G-Helper) isn't enabled yet.
+- Not implemented: lighting on mice other than the Harpe II Ace, button bindings, onboard
+  profiles, DPI stage count, zone mode (`12 14`/`51 44`), acceleration/deceleration, the
+  Omni "booster" polling-rate encoding.
 
 ## Models
 

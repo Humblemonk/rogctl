@@ -10,7 +10,7 @@
 
 use crate::device::{Match, Model};
 use crate::protocol::{
-    AngleTuning, Battery, Dpi, Features, Layout, LiftOffFormat, PollingRate, WarningRange,
+    AngleTuning, Battery, Dpi, Effect, Features, Layout, LiftOffFormat, PollingRate, WarningRange,
 };
 
 /// ROG Omni receiver; the paired mouse is found by asking the receiver.
@@ -45,6 +45,7 @@ const BASE: Features = Features {
     power_off: None,
     low_battery_warning: None,
     power_saving_rates: &[],
+    lighting: &[],
 };
 const TUNING: AngleTuning = AngleTuning {
     min: -20,
@@ -116,6 +117,15 @@ const HARPE_II_ACE: Features = Features {
     ],
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
+    // Captured from ASUS GearLink. G-Helper also lists Off (0xF0), which
+    // GearLink doesn't offer: it sets the brightness to 0 instead.
+    lighting: &[
+        Effect::Static,
+        Effect::Breathing,
+        Effect::ColorCycle,
+        Effect::Reactive,
+        Effect::Battery,
+    ],
     ..BASE
 };
 const HARPE_II_EXTREME_EDITION_20: Features = Features {
@@ -124,6 +134,9 @@ const HARPE_II_EXTREME_EDITION_20: Features = Features {
         step: 1,
         ..HARPE_II_ACE.dpi
     },
+    // Lighting is only enabled on the Harpe II Ace so far, the one mouse it
+    // was tested on.
+    lighting: &[],
     ..HARPE_II_ACE
 };
 const HARPE_ACE_AIM_LAB: Features = Features {
@@ -617,6 +630,10 @@ mod tests {
                 assert!(f.power_off.is_some(), "{}", m.name);
                 assert_eq!(w.max % w.step, 0, "{}", m.name);
                 assert!(!w.quarters || w.step % 25 == 0, "{}", m.name);
+            }
+            for (i, effect) in f.lighting.iter().enumerate() {
+                assert!(!matches!(effect, Effect::Unknown(_)), "{}", m.name);
+                assert!(!f.lighting[..i].contains(effect), "{}", m.name);
             }
         }
     }
