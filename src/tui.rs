@@ -210,11 +210,11 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                     app.error(format!("No change made: the mouse didn't answer ({e})"));
                 }
                 Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
-                // The mouse may well have kept it (protocol.md), so don't
-                // say it's lost.
-                Err(ApplyError::NotSaved(QueryError::Rejected)) => {
-                    app.error(format!("{done}, but the mouse didn't confirm saving it"));
-                }
+                // A Harpe II Ace keeps such a change (protocol.md); another
+                // mouse may not.
+                Err(ApplyError::NotSaved(QueryError::Rejected)) => app.error(format!(
+                    "{done}, but the mouse didn't confirm saving it: it may not last a power cycle"
+                )),
                 Err(ApplyError::NotSaved(e)) => {
                     app.error(format!("{done}, but not saved on the mouse: {e}"));
                 }
@@ -333,12 +333,10 @@ impl Session {
         }
     }
 
-    /// Reads the battery again for the header, keeping the settings and any
-    /// pending edit.
-    /// The battery for the header, and the active DPI stage, which the
-    /// mouse's DPI button changes without telling rogctl. Leaves a pending
-    /// edit alone.
-    fn read_battery(&mut self, app: &mut App) {
+    /// Reads the battery for the header and the active DPI stage, which the
+    /// mouse's DPI button changes without telling rogctl, keeping the other
+    /// settings and any pending edit.
+    fn poll_mouse(&mut self, app: &mut App) {
         self.last_battery = Some(Instant::now());
         let Some(dev) = self.devices.get(self.current) else {
             return;
@@ -381,7 +379,7 @@ impl Session {
                 .last_battery
                 .is_none_or(|t| t.elapsed() >= BATTERY_POLL)
         {
-            self.read_battery(app);
+            self.poll_mouse(app);
         }
         if self
             .last_check

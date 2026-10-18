@@ -756,11 +756,10 @@ impl Copied {
         for file in self.bundle.files {
             let ours = [Some(checksum(file.contents)), recorded(file.path)];
             if self.bundle.is_users(file.path) && self.find(file.path, &ours)? == Found::Edited {
-                // The user's settings stay; the record keeps what rogctl
-                // wrote there, if it wrote them.
-                if let Some(sum) = recorded(file.path) {
-                    entries.push((file.path.to_owned(), sum));
-                }
+                // The user's settings stay. Recorded as this version's, they
+                // still read as edited, so nothing removes them, and they
+                // don't make the widget look out of date.
+                entries.push((file.path.to_owned(), checksum(file.contents)));
                 continue;
             }
             let path = self.dir.join(file.path);
@@ -811,18 +810,11 @@ impl Copied {
         let Some(text) = self.read_record_text()? else {
             return Ok(false);
         };
-        // The user's settings are never updated, so they don't count.
-        let theirs = |entries: Vec<Entry>| -> Vec<Entry> {
-            entries
-                .into_iter()
-                .filter(|(path, _)| !self.bundle.is_users(path))
-                .collect()
-        };
-        let mut record = theirs(parse_record(&text));
+        let mut record = parse_record(&text);
         if !record.iter().any(|(path, _)| self.dir.join(path).exists()) {
             return Ok(false);
         }
-        let mut current = theirs(self.bundle_entries());
+        let mut current = self.bundle_entries();
         record.sort();
         current.sort();
         // Records written before rogctl recorded its version count as older.
@@ -877,7 +869,7 @@ impl Copied {
         Err(format!(
             "{} in {} {is} different from what rogctl wrote. Pass --force to {verb} {them} \
              anyway",
-            edited.join(" and "),
+            and_list(&edited.iter().map(String::as_str).collect::<Vec<_>>()),
             self.dir.display()
         ))
     }
@@ -1270,23 +1262,21 @@ mod tests {
         );
         assert!(!widget.dir.join("RogMouse.qml").exists());
 
-        // A settings file rogctl didn't write is never recorded, so stays.
-        widget.install(false).unwrap();
-        assert!(
-            widget
-                .read_record()
-                .unwrap()
-                .unwrap()
-                .iter()
-                .all(|(p, _)| p != "RogMouseSettings.qml")
+        // A settings file rogctl didn't write is kept, and stays through
+        // removal too.
+        assert_eq!(
+            widget.install(false).unwrap(),
+            ["RogMouse.qml", "RogMouseWidget.qml"]
         );
+        assert_eq!(widget.is_outdated(), Ok(false));
         assert_eq!(widget.remove(false), Ok(true));
         assert!(settings.is_file());
     }
 
-    /// A settings file that changed between versions isn't an update to make.
+    /// A settings file that changed between versions is an update to make:
+    /// an unchanged copy gets it.
     #[test]
-    fn outdated_ignores_the_users_settings() {
+    fn outdated_counts_the_users_settings() {
         let temp = TempDir::new().unwrap();
         let widget = Copied {
             bundle: &QUICKSHELL,
@@ -1308,7 +1298,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         write(widget.record.clone(), &changed);
-        assert_eq!(widget.is_outdated(), Ok(false), "only the settings differ");
+        assert_eq!(widget.is_outdated(), Ok(true), "only the settings differ");
     }
 
     /// Only a record from another bundle counts, not the user's edits.

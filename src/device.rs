@@ -19,8 +19,6 @@ const MAX_PACKET: usize = 65;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 /// Reports the kernel buffers per open hidraw file (`HIDRAW_BUFFER_SIZE`).
 const HIDRAW_QUEUE: usize = 64;
-/// How long to wait before asking a mouse that rejected a save once more.
-const SAVE_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// A reply, normalized so byte 0 is the report ID.
 type Reply = [u8; MAX_PACKET + 1];
@@ -260,21 +258,46 @@ pub struct Connection {
 }
 
 impl Connection {
-    fn exchange(&mut self, request: &Request) -> Result<Reply, QueryError> {
-        let model = self.model;
+    fn send(&mut self, request: &Request) -> Result<(), QueryError> {
         drain(&mut self.file);
-
         let mut packet = [0u8; MAX_PACKET];
         let bytes = request.bytes();
         packet[..bytes.len()].copy_from_slice(bytes);
-        self.file.write_all(&packet[..model.packet_size])?;
+        self.file.write_all(&packet[..self.model.packet_size])?;
+        Ok(())
+    }
 
+    fn exchange(&mut self, request: &Request) -> Result<Reply, QueryError> {
+        self.send(request)?;
         let deadline = Instant::now() + REPLY_TIMEOUT;
-        let reply = read_packet(&mut self.file, model.report_id, deadline, |r| {
+        let reply = read_packet(&mut self.file, self.model.report_id, deadline, |r| {
             request.answered_by(r)
         })?;
         protocol::check_reply(&reply)?;
         Ok(reply)
+    }
+
+    /// Saves to the mouse's flash. An `FF AA` doesn't end the wait for the
+    /// save's echo: the Harpe II Ace can send one just before it (protocol.md),
+    /// and another process's request can draw one too. Only if no echo comes
+    /// does the rejection count.
+    fn save(&mut self) -> Result<(), QueryError> {
+        let save = protocol::save_request(self.model.report_id);
+        self.send(&save)?;
+        let deadline = Instant::now() + REPLY_TIMEOUT;
+        let mut refused = None;
+        loop {
+            match read_packet(&mut self.file, self.model.report_id, deadline, |r| {
+                save.answered_by(r)
+            }) {
+                Ok(reply) => match protocol::check_reply(&reply) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => refused = Some(e),
+                },
+                Err(QueryError::Timeout) => return Err(refused.unwrap_or(QueryError::Timeout)),
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     pub fn read_battery(&mut self) -> Result<Reading, QueryError> {
@@ -303,7 +326,8 @@ impl Connection {
     /// `None` on a mouse with one stage, or a reply that doesn't name one.
     pub fn read_active_stage(&mut self) -> Result<Option<usize>, QueryError> {
         let model = self.model;
-        if !protocol::settings_queries(&model.features).contains(&Query::Profile) {
+        // As `settings_queries()` decides whether to ask.
+        if model.features.dpi.stages < 2 {
             return Ok(None);
         }
         let reply = self.exchange(&Query::Profile.request(model.report_id))?;
@@ -319,14 +343,10 @@ impl Connection {
         let request = protocol::change_request(model.report_id, &model.features, change)
             .ok_or(ApplyError::NotChanged(QueryError::Unsupported))?;
         self.exchange(&request).map_err(ApplyError::NotChanged)?;
-        let save = protocol::save_request(model.report_id);
-        match self.exchange(&save) {
-            // A Harpe II Ace left idle can reject the save yet keep the
-            // change through a power cycle (protocol.md); ask once more.
-            Err(QueryError::Rejected) => {
-                std::thread::sleep(SAVE_RETRY_DELAY);
-                self.exchange(&save)
-            }
+        // A Harpe II Ace left idle can reject a save with no echo, yet keep
+        // the change (protocol.md); ask once more.
+        match self.save() {
+            Err(QueryError::Rejected) => self.save(),
             other => other,
         }
         .map_err(ApplyError::NotSaved)?;
@@ -339,8 +359,8 @@ impl Connection {
 pub enum ApplyError {
     /// The mouse didn't take the change.
     NotChanged(QueryError),
-    /// The mouse took the change, but the save failed. One it rejected (twice)
-    /// may still have stuck: the Harpe II Ace keeps such changes.
+    /// The mouse took the change, but the save failed, so it may be lost when
+    /// the mouse turns off. The Harpe II Ace keeps changes it rejects saving.
     NotSaved(QueryError),
 }
 
@@ -541,32 +561,106 @@ mod tests {
         assert_eq!(reply.unwrap()[..6], [0, 0x12, 0x07, 0, 0, 0x50]);
     }
 
-    /// A mouse that echoes the change but never answers the save: the change
-    /// went through, so the TUI mustn't say none was made.
-    #[test]
-    fn apply_reports_a_change_that_was_not_saved() {
+    /// What a fake mouse sends back for a packet it gets.
+    enum Answer {
+        Echo,
+        Rejected,
+    }
+
+    /// Applies `change` on a fake SpeedNova mouse that answers the n-th
+    /// packet it gets with `answers[n]`, then stays silent. Returns the result
+    /// and the packets the mouse got.
+    fn apply_to_fake(answers: Vec<Vec<Answer>>) -> (Result<(), ApplyError>, Vec<Vec<u8>>) {
         use std::os::unix::net::UnixDatagram;
 
         let (mouse, ours) = UnixDatagram::pair().unwrap();
         ours.set_nonblocking(true).unwrap();
+        mouse
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let model = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
         let mut conn = Connection {
             model,
             file: File::from(std::os::fd::OwnedFd::from(ours)),
         };
         let fake = std::thread::spawn(move || {
+            let mut got = Vec::new();
             let mut packet = [0u8; MAX_PACKET];
-            let n = mouse.recv(&mut packet).unwrap();
-            mouse.send(&packet[..n]).unwrap();
-            mouse.recv(&mut packet).unwrap();
-            mouse // kept open so the save times out rather than failing
+            for answer in answers {
+                let Ok(n) = mouse.recv(&mut packet) else {
+                    break;
+                };
+                got.push(packet[..n].to_vec());
+                for reply in answer {
+                    let reply = match reply {
+                        Answer::Echo => packet[..n].to_vec(),
+                        Answer::Rejected => {
+                            let mut r = vec![0u8; n];
+                            r[..3].copy_from_slice(&[0x03, 0xff, 0xaa]);
+                            r
+                        }
+                    };
+                    mouse.send(&reply).unwrap();
+                }
+            }
+            // Kept open until now, so a read times out rather than fails.
+            (mouse, got)
         });
         let result = conn.apply(&Change::MotionSync(true));
-        fake.join().unwrap();
+        let (_, got) = fake.join().unwrap();
+        (result, got)
+    }
+
+    const SAVE: &[u8] = &[0x03, 0x50, 0x03];
+
+    /// A mouse that echoes the change but never answers the save: the change
+    /// went through, so the TUI mustn't say none was made.
+    #[test]
+    fn apply_reports_a_change_that_was_not_saved() {
+        let (result, got) = apply_to_fake(vec![vec![Answer::Echo], vec![]]);
         assert!(
             matches!(result, Err(ApplyError::NotSaved(QueryError::Timeout))),
             "{result:?}"
         );
+        assert_eq!(got.len(), 2, "no second save for a timeout");
+    }
+
+    /// Captured from a Harpe II Ace left idle: `FF AA`, then the save's echo
+    /// 1 ms later. That's a save, sent once.
+    #[test]
+    fn apply_waits_past_a_rejection_for_the_echo() {
+        let (result, got) = apply_to_fake(vec![
+            vec![Answer::Echo],
+            vec![Answer::Rejected, Answer::Echo],
+        ]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(got.len(), 2);
+    }
+
+    /// A rejection with no echo is asked once more; rejected again, it's
+    /// reported.
+    #[test]
+    fn apply_asks_once_more_after_a_rejection() {
+        let (result, got) = apply_to_fake(vec![
+            vec![Answer::Echo],
+            vec![Answer::Rejected],
+            vec![Answer::Echo],
+        ]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(got.len(), 3);
+        assert!(got[1].starts_with(SAVE) && got[2].starts_with(SAVE));
+
+        let (result, got) = apply_to_fake(vec![
+            vec![Answer::Echo],
+            vec![Answer::Rejected],
+            vec![Answer::Rejected],
+            vec![],
+        ]);
+        assert!(
+            matches!(result, Err(ApplyError::NotSaved(QueryError::Rejected))),
+            "{result:?}"
+        );
+        assert_eq!(got.len(), 3, "asked once more, not again");
     }
 
     #[test]

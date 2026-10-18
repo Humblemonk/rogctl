@@ -31,9 +31,10 @@ paths:
   reads the battery (`12 07`) for the header and the active DPI stage (`12 00`), which the
   mouse's DPI button changes without telling rogctl, every 10 s, without dropping a pending
   edit; a mouse that went to sleep shows as asleep.
-- A save the mouse rejects (`FF AA` to `50 03`) is asked for once more after 200 ms
+- A save answered `FF AA` with no echo after it is asked for once more
   (`Connection::apply()`); rejected again, the message says the mouse didn't confirm saving
-  it, not that it's lost, since the Harpe II Ace keeps such changes (`protocol.md`).
+  it and that it may not last a power cycle, since the Harpe II Ace keeps such changes but
+  other mice may not (`protocol.md`).
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
   abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
   TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the
@@ -64,14 +65,15 @@ several models looks and behaves the same on all of them.
   model fits one screen.
 - **Size:** every screen of every model fits 80x24 (`ui::MIN_SIZE`, btop's minimum): all
   rows, a pending edit's hint, the header and a message, which wraps at spaces across the
-  terminal onto up to three rows, ending in "…" if it's longer (`wrap_words()`). The tallest
-  model (Harpe II) uses 20 of the 24 rows, 22 with a three-row message, and the widest row
-  with its hint 77 of a panel's 78 columns. Below 80x24, or if the panels don't fit what's
-  left, `draw()` shows only btop's "Terminal size too small" notice with the size needed and
+  terminal (breaking a word wider than it) onto up to three rows, fewer if the panels need
+  them, ending in "…" if it's longer (`wrap_words()`). The tallest model (Harpe II) uses 20
+  of the 24 rows, 22 with a three-row message, and the widest row with its hint 77 of a
+  panel's 78 columns. Below 80x24, or if the panels don't fit beside a one-row message,
+  `draw()` shows only btop's "Terminal size too small" notice with the size needed and
   returns `None`: keys only quit (`App::handle_key_too_small()`: q, Ctrl+C) and clicks are
-  ignored, so nothing changes out of sight. A key or click that comes before a resize is
-  handled after a redraw at the new size. Only the footer may drop keys at 80 columns; a
-  demo header too long for 80 drops "Battery:".
+  ignored, so nothing changes out of sight. Each event acts on the screen as last drawn, the
+  one the user saw; a click that comes with a resize is dropped. Only the footer may drop
+  keys at 80 columns; a demo header too long for 80 drops "Battery:".
   `every_screen_fits_the_min_size` checks every model, focus, edit, message and notice.
 - **Footer keys** are only the ones that do something on the screen shown: with no mouse
   connected, just `r`, `?`, `q` (and Tab with several mice); with help open, just Esc. When

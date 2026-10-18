@@ -20,6 +20,7 @@ const RESTART_SECONDS = 10;
 // Restart rogctl for a changed setting once the settings stop changing for
 // this long: a spinner changes its setting on every step.
 const SETTLE_MS = 1000;
+const SIGUSR1 = 10;
 const SIGTERM = 15;
 
 // Status words as the kernel and desktops use them: discharging, charging,
@@ -59,6 +60,7 @@ const Indicator = GObject.registerClass(
       this._proc = null;
       // The pid the running rogctl printed; null until its first line.
       this._pid = null;
+      this._reading = null;
       this._restartId = 0;
       this._settleId = 0;
       this._cancellable = new Gio.Cancellable();
@@ -132,12 +134,14 @@ const Indicator = GObject.registerClass(
         return;
       }
       this._proc = proc;
+      // Cancelled when this rogctl is stopped, so its lines stop counting.
+      this._reading = new Gio.Cancellable();
 
       const stream = new Gio.DataInputStream({
         base_stream: proc.get_stdout_pipe(),
         close_base_stream: true,
       });
-      this._readLine(stream, proc);
+      this._readLine(stream, this._reading);
 
       proc.wait_async(this._cancellable, (p, res) => {
         try {
@@ -163,20 +167,24 @@ const Indicator = GObject.registerClass(
       });
     }
 
-    _readLine(stream, proc) {
+    _readLine(stream, cancellable) {
       stream.read_line_async(
         GLib.PRIORITY_DEFAULT,
-        this._cancellable,
+        cancellable,
         (s, res) => {
           let line;
           try {
             [line] = s.read_line_finish_utf8(res);
           } catch {
-            return; // Cancelled or closed.
+            // Stopped or closed. Closing the pipe makes a rogctl that outlived
+            // its stop (under a wrapper script SIGTERM only reaches the
+            // script) exit at its next line.
+            s.close_async(GLib.PRIORITY_DEFAULT, null, null);
+            return;
           }
           if (line === null) return; // rogctl exited; wait_async handles that.
-          this._handleLine(line, proc);
-          this._readLine(s, proc);
+          this._handleLine(line);
+          this._readLine(s, cancellable);
         },
       );
     }
@@ -202,6 +210,8 @@ const Indicator = GObject.registerClass(
       const proc = this._proc;
       this._proc = null;
       this._pid = null;
+      this._reading?.cancel();
+      this._reading = null;
       proc?.send_signal(SIGTERM);
     }
 
@@ -231,22 +241,17 @@ const Indicator = GObject.registerClass(
     }
 
     // Read the mouse now instead of waiting for the next interval: SIGUSR1
-    // makes the running rogctl read it right away. Sent to the pid it printed,
-    // as the other widgets do, so a wrapper script works too, and only once
-    // it printed one: until then SIGUSR1 would kill it.
+    // makes the running rogctl read it right away. Only once it printed its
+    // pid, since until then SIGUSR1 would kill it, and only to our own child:
+    // a pid printed under a wrapper (a container's, say) may name another
+    // process here. A wrapper script needs `exec rogctl` for this.
     _refresh() {
-      if (!this._pid) return;
-      try {
-        Gio.Subprocess.new(
-          ["kill", "-USR1", String(this._pid)],
-          Gio.SubprocessFlags.NONE,
-        );
-      } catch (e) {
-        console.warn(`rog-mouse-battery: ${e.message}`);
-      }
+      const child = this._proc?.get_identifier();
+      if (this._pid && child && Number(child) === this._pid)
+        this._proc.send_signal(SIGUSR1);
     }
 
-    _handleLine(line, proc) {
+    _handleLine(line) {
       let s;
       try {
         s = JSON.parse(line);
@@ -255,7 +260,7 @@ const Indicator = GObject.registerClass(
         return;
       }
       this._status = s;
-      if (proc === this._proc && s.pid) this._pid = s.pid;
+      if (s.pid) this._pid = s.pid;
       if (s.notify_low) {
         // Solaar's format: the device name as the title, its battery line as the body.
         Main.notify(

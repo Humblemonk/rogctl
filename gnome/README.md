@@ -20,7 +20,8 @@ gnome-extensions enable rog-mouse-battery@humblemonk.github.io
 ## Use
 
 Its menu shows the details and has a Refresh item. The rogctl command, refresh interval and
-low-battery threshold are in the extension's settings in the Extensions app.
+low-battery threshold are in the extension's settings in the Extensions app. If the rogctl
+command is a wrapper script, end it with `exec rogctl "$@"`, or Refresh does nothing.
 
 ## Update or remove
 
