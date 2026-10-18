@@ -131,9 +131,11 @@ end)
 -- isn't enough: rogctl's sleep pauses across suspend, so restarting a quiet one
 -- would leave two running.
 --
--- Noctalia has no settings-changed event and can't stop a stream, so this also
--- polls the settings, and when they change stops rogctl with `rogctl stop` and
--- the pid it reports; the exit marker then starts it again with the new ones.
+-- Noctalia 5.3 restarts this service when a setting changes, which ends the
+-- stream. A plugin can't stop a stream itself, so for a Noctalia that doesn't,
+-- this also polls the settings, and when they change stops rogctl with `rogctl
+-- stop` and the pid it reports; the exit marker then starts it again with the
+-- new ones.
 function update()
   noctalia.setUpdateInterval(2000)
   if not streaming then
