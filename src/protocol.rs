@@ -120,6 +120,16 @@ pub enum Battery {
     Quarters { byte: usize },
 }
 
+impl Battery {
+    /// The smallest change in the level the mouse reports, in percent.
+    pub fn step(self) -> u8 {
+        match self {
+            Self::Percent => 1,
+            Self::Quarters { .. } => 25,
+        }
+    }
+}
+
 /// Which settings a mouse has, and where they sit in its replies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Features {
@@ -677,9 +687,13 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
             if f.power_off.is_none() && f.low_battery_warning.is_none() {
                 return None;
             }
+            // Clamped to 100%, not to `w.max`: a power-off change resends the
+            // warning read back, which must go back unchanged even if the
+            // mouse holds more than `w.max`. `App::step()` keeps a warning the
+            // user picks within `w.max`.
             let warning = match f.low_battery_warning {
                 Some(w) => {
-                    let pct = low_battery_warning.min(w.max);
+                    let pct = low_battery_warning.min(100);
                     if w.quarters { pct / 25 } else { pct }
                 }
                 None => 0,
@@ -1292,14 +1306,14 @@ mod tests {
             [3, 0x51, 0x31, 0x0b, 0, 0xec, 0xff],
             "clamped to -20"
         );
-        assert_eq!(
+        let warning = |low_battery_warning| {
             bytes(Change::Energy {
                 power_off: PowerOff::NEVER,
-                low_battery_warning: 90
-            }),
-            [3, 0x51, 0x37, 0, 0, 0xff, 0, 50],
-            "clamped to 50%"
-        );
+                low_battery_warning,
+            })[7]
+        };
+        assert_eq!(warning(90), 90, "above the 50% max: resent as read");
+        assert_eq!(warning(150), 100, "clamped to 100%");
 
         let none = |c: Change| change_request(3, f, &c);
         assert_eq!(none(Change::Debounce(Debounce::MIN)), None, "no debounce");

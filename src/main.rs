@@ -80,6 +80,10 @@ struct Status {
     /// The `watch` process, for sending it SIGUSR1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
+    /// The smallest change in `battery` the mouse reports: 25 for mice that
+    /// report quarters, else 1.
+    #[serde(skip)]
+    battery_step: u8,
 }
 
 // serde's skip_serializing_if passes a reference.
@@ -112,6 +116,7 @@ impl Status {
             low: false,
             notify_low: false,
             pid: None,
+            battery_step: 1,
         }
     }
 
@@ -120,6 +125,7 @@ impl Status {
             device: Some(dev.model.name),
             wireless: Some(dev.model.wireless),
             hidraw: Some(dev.hidraw.display().to_string()),
+            battery_step: dev.model.battery.step(),
             ..Self::empty(state)
         }
     }
@@ -265,8 +271,13 @@ fn charge_word(charging: bool, battery: Option<u8>) -> &'static str {
     }
 }
 
+/// A mouse that reports quarters is low at 25% whenever the threshold is below
+/// that: its next level, 0, reads as asleep, so it would never be low.
 fn is_low(s: &Status, threshold: u8) -> bool {
-    threshold > 0 && !s.charging && s.battery.is_some_and(|b| b <= threshold)
+    threshold > 0
+        && !s.charging
+        && s.battery
+            .is_some_and(|b| b <= threshold.max(s.battery_step))
 }
 
 /// Decides when the low-battery notification is due: once per drop to the
@@ -605,6 +616,31 @@ mod tests {
         assert_eq!(
             low_warnings(readings, 20),
             [(true, true), (false, false), (true, true)]
+        );
+    }
+
+    /// Quarters: 25% is the lowest level reported awake, so it's low at a
+    /// threshold below 25, and climbing back to 50% re-arms.
+    #[test]
+    fn quarters_are_low_at_their_lowest_level() {
+        let quarters = |battery| Status {
+            battery_step: 25,
+            ..connected("Mouse", battery)
+        };
+        let readings = [50, 25, 50, 25].map(quarters);
+        assert_eq!(
+            low_warnings(readings.clone(), 20),
+            [(false, false), (true, true), (false, false), (true, true)]
+        );
+        assert_eq!(
+            low_warnings(readings.clone(), 50),
+            [(true, true), (true, false), (true, false), (true, false)],
+            "a threshold above 25 is used as is"
+        );
+        assert_eq!(low_warnings(readings, 0), [(false, false); 4], "0 is off");
+        assert!(
+            !is_low(&connected("Mouse", 25), 20),
+            "percent mice as before"
         );
     }
 

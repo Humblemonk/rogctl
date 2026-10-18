@@ -23,6 +23,9 @@ PlasmoidItem {
 
     // The last status line: state, device, battery, charging, error, ...
     property var status: null
+    // The last status read while connected: its level shows once the mouse
+    // sleeps, even after an error in between.
+    property var lastConnected: null
     property bool lowNotified: false
 
     // Not `state`: Item already has one, for QML states.
@@ -95,10 +98,12 @@ PlasmoidItem {
         }
         // A one-shot read forgets the level once the mouse sleeps; keep showing
         // the last one, as `rogctl watch` does.
-        if (s.state === "asleep" && s.battery === undefined && status?.device === s.device) {
-            s.battery = status.battery;
-            s.battery_updated = status.battery_updated;
-            s.low = status.low;
+        if (s.state === "connected") {
+            lastConnected = s;
+        } else if (s.state === "asleep" && s.battery === undefined && lastConnected?.device === s.device) {
+            s.battery = lastConnected.battery;
+            s.battery_updated = lastConnected.battery_updated;
+            s.low = lastConnected.low;
         }
         status = s;
         checkLowBattery(s);

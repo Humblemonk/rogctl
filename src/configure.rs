@@ -26,16 +26,30 @@ struct Bundle {
     #[cfg_attr(not(test), allow(dead_code))]
     dir: &'static str,
     files: &'static [File],
+    /// Files among `files` that are the user's once written, their settings:
+    /// written only when missing, never counted as edited, and removed only
+    /// while unchanged.
+    users: &'static [&'static str],
+}
+
+impl Bundle {
+    fn is_users(&self, path: &str) -> bool {
+        self.users.contains(&path)
+    }
 }
 
 macro_rules! bundle {
     ($dir:literal, [$($path:literal),+ $(,)?]) => {
+        bundle!($dir, [$($path),+], users: [])
+    };
+    ($dir:literal, [$($path:literal),+ $(,)?], users: [$($user:literal),* $(,)?]) => {
         Bundle {
             dir: $dir,
             files: &[$(File {
                 path: $path,
                 contents: include_bytes!(concat!("../", $dir, "/", $path)),
             }),+],
+            users: &[$($user),*],
         }
     };
 }
@@ -51,7 +65,11 @@ static NOCTALIA: Bundle = bundle!(
     ]
 );
 static WAYBAR: Bundle = bundle!("waybar", ["config.json", "style.css"]);
-static QUICKSHELL: Bundle = bundle!("quickshell", ["RogMouse.qml", "RogMouseWidget.qml"]);
+static QUICKSHELL: Bundle = bundle!(
+    "quickshell",
+    ["RogMouse.qml", "RogMouseSettings.qml", "RogMouseWidget.qml"],
+    users: ["RogMouseSettings.qml"]
+);
 static DMS: Bundle = bundle!(
     "dms/RogMouseBattery",
     [
@@ -417,9 +435,9 @@ fn quickshell() -> Result<Copied> {
     let dir = config_home()?.join("quickshell");
     if !dir.join("shell.qml").is_file() {
         return Err(format!(
-            "there's no shell.qml in {}. If your config is elsewhere, copy RogMouse.qml and \
-             RogMouseWidget.qml from https://github.com/humblemonk/rogctl/tree/main/quickshell \
-             next to its shell.qml",
+            "there's no shell.qml in {}. If your config is elsewhere, copy RogMouse.qml, \
+             RogMouseSettings.qml and RogMouseWidget.qml from \
+             https://github.com/humblemonk/rogctl/tree/main/quickshell next to its shell.qml",
             dir.display()
         ));
     }
@@ -433,10 +451,22 @@ fn quickshell() -> Result<Copied> {
 
 fn install_quickshell(force: bool) -> Result<()> {
     let quickshell = quickshell()?;
-    quickshell.install(force)?;
+    quickshell.install(force).map_err(|e| {
+        // Before 2.6.0 the settings were at the top of RogMouse.qml, so an
+        // edited one most likely holds them.
+        if e.starts_with("RogMouse.qml ") {
+            format!(
+                "{e}. Its settings now go in RogMouseSettings.qml, which updates leave \
+                 alone: copy yours there after updating"
+            )
+        } else {
+            e
+        }
+    })?;
     say!(
         "Copied RogMouse.qml and RogMouseWidget.qml to {}\n\
-         Now put RogMouseWidget {{}} in your bar. Its settings are at the top of RogMouse.qml.",
+         Now put RogMouseWidget {{}} in your bar. Its settings are in RogMouseSettings.qml \
+         there, which updates leave alone.",
         quickshell.dir.display()
     );
     Ok(())
@@ -586,7 +616,7 @@ fn print_binary_hint(desktop: Desktop) {
             say!("If the widget says rogctl wasn't found, set its rogctl command setting to {exe}")
         }
         Desktop::Quickshell => {
-            say!("If it says rogctl wasn't found, set binary at the top of RogMouse.qml to {exe}")
+            say!("If it says rogctl wasn't found, set binary in RogMouseSettings.qml to {exe}")
         }
         Desktop::Waybar => say!("If Waybar can't find rogctl, put {exe} in the exec line."),
     }
@@ -680,7 +710,12 @@ impl Copied {
         let recorded = |path: &str| record.iter().find(|(p, _)| p == path).map(|&(_, sum)| sum);
 
         let mut edited = Vec::new();
-        for file in self.bundle.files {
+        for file in self
+            .bundle
+            .files
+            .iter()
+            .filter(|f| !self.bundle.is_users(f.path))
+        {
             let ours = [Some(checksum(file.contents)), recorded(file.path)];
             if self.find(file.path, &ours)? == Found::Edited {
                 edited.push(file.path.to_owned());
@@ -706,9 +741,23 @@ impl Copied {
             }
         }
 
-        write_files(&self.dir, self.bundle)?;
+        let mut written = Vec::new();
+        for file in self.bundle.files {
+            let path = self.dir.join(file.path);
+            if self.bundle.is_users(file.path) && exists(&path)? {
+                // The user's settings stay; the record keeps what rogctl
+                // wrote there, if it wrote them.
+                if let Some(sum) = recorded(file.path) {
+                    written.push((file.path.to_owned(), sum));
+                }
+                continue;
+            }
+            write_creating_dirs(&path, file.contents)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            written.push((file.path.to_owned(), checksum(file.contents)));
+        }
         self.delete(&obsolete)?;
-        self.write_record()
+        self.write_record(&written)
     }
 
     /// The files `remove` deletes: those rogctl wrote. Errs if the user changed
@@ -718,15 +767,24 @@ impl Copied {
         let entries = self.read_record()?.unwrap_or_else(|| self.bundle_entries());
         let mut ours = Vec::new();
         let mut edited = Vec::new();
+        let mut settings = Vec::new();
         for (path, sum) in entries {
             match self.find(&path, &[Some(sum)])? {
                 Found::Missing => {}
                 Found::Ours => ours.push(path),
+                // The user's settings stay, even with --force.
+                Found::Edited if self.bundle.is_users(&path) => settings.push(path),
                 Found::Edited => edited.push(path),
             }
         }
         if !force {
             self.refuse(&edited, "remove")?;
+        }
+        for path in settings {
+            say!(
+                "Left {}: it has your settings.",
+                self.dir.join(path).display()
+            );
         }
         ours.append(&mut edited);
         Ok(ours)
@@ -739,11 +797,18 @@ impl Copied {
         let Some(text) = self.read_record_text()? else {
             return Ok(false);
         };
-        let mut record = parse_record(&text);
+        // The user's settings are never updated, so they don't count.
+        let theirs = |entries: Vec<Entry>| -> Vec<Entry> {
+            entries
+                .into_iter()
+                .filter(|(path, _)| !self.bundle.is_users(path))
+                .collect()
+        };
+        let mut record = theirs(parse_record(&text));
         if !record.iter().any(|(path, _)| self.dir.join(path).exists()) {
             return Ok(false);
         }
-        let mut current = self.bundle_entries();
+        let mut current = theirs(self.bundle_entries());
         record.sort();
         current.sort();
         // Records written before rogctl recorded its version count as older.
@@ -834,13 +899,13 @@ impl Copied {
         }
     }
 
-    fn write_record(&self) -> Result<()> {
+    fn write_record(&self, written: &[Entry]) -> Result<()> {
         let mut text = format!(
             "# Files `rogctl configure` wrote to {}, with their checksums.\n",
             self.dir.display()
         );
-        for file in self.bundle.files {
-            text += &format!("{:016x} {}\n", checksum(file.contents), file.path);
+        for (path, sum) in written {
+            text += &format!("{sum:016x} {path}\n");
         }
         text += &format!("version {}\n", env!("CARGO_PKG_VERSION"));
         write_creating_dirs(&self.record, text)
@@ -1130,6 +1195,83 @@ mod tests {
         widget.install(false).unwrap();
         assert_eq!(widget.remove(false), Ok(true));
         assert!(widget.dir.is_dir());
+    }
+
+    /// Quickshell's settings file is the user's: written when missing, kept
+    /// through updates and --force, removed only while unchanged.
+    #[test]
+    fn keeps_the_users_settings() {
+        let temp = TempDir::new().unwrap();
+        let widget = Copied {
+            bundle: &QUICKSHELL,
+            ..copied(&temp, false)
+        };
+        let settings = widget.dir.join("RogMouseSettings.qml");
+        let default = QUICKSHELL
+            .files
+            .iter()
+            .find(|f| f.path == "RogMouseSettings.qml");
+        widget.install(false).unwrap();
+        assert_eq!(
+            fs::read(&settings).ok().as_deref(),
+            default.map(|f| f.contents)
+        );
+        assert_eq!(widget.remove(false), Ok(true));
+        assert!(!settings.exists(), "unchanged, so rogctl's to remove");
+
+        widget.install(false).unwrap();
+        write(settings.clone(), "edited");
+        widget.install(false).unwrap();
+        widget.install(true).unwrap();
+        assert_eq!(fs::read_to_string(&settings).unwrap(), "edited");
+        assert_eq!(widget.is_outdated(), Ok(false));
+        assert_eq!(widget.remove(true), Ok(true));
+        assert_eq!(
+            fs::read_to_string(&settings).unwrap(),
+            "edited",
+            "even with --force"
+        );
+        assert!(!widget.dir.join("RogMouse.qml").exists());
+
+        // A settings file rogctl didn't write is never recorded, so stays.
+        widget.install(false).unwrap();
+        assert!(
+            widget
+                .read_record()
+                .unwrap()
+                .unwrap()
+                .iter()
+                .all(|(p, _)| p != "RogMouseSettings.qml")
+        );
+        assert_eq!(widget.remove(false), Ok(true));
+        assert!(settings.is_file());
+    }
+
+    /// A settings file that changed between versions isn't an update to make.
+    #[test]
+    fn outdated_ignores_the_users_settings() {
+        let temp = TempDir::new().unwrap();
+        let widget = Copied {
+            bundle: &QUICKSHELL,
+            ..copied(&temp, false)
+        };
+        widget.install(false).unwrap();
+        let current = fs::read_to_string(&widget.record).unwrap();
+        let ours = format!("version {}", env!("CARGO_PKG_VERSION"));
+        let older = current.replace(&ours, "version 2.5.0");
+        let changed = older
+            .lines()
+            .map(|l| match l.split_once(' ') {
+                Some((sum, "RogMouseSettings.qml")) => {
+                    let sum = u64::from_str_radix(sum, 16).unwrap() ^ 1;
+                    format!("{sum:016x} RogMouseSettings.qml")
+                }
+                _ => l.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        write(widget.record.clone(), &changed);
+        assert_eq!(widget.is_outdated(), Ok(false), "only the settings differ");
     }
 
     /// Only a record from another bundle counts, not the user's edits.

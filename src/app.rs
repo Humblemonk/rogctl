@@ -709,13 +709,13 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
     }
 }
 
-/// Finds a model by name for `--demo`, ignoring case; the wireless entry if
-/// there are both.
 /// Ctrl+C quits from every screen, help and the too-small notice included.
 fn is_ctrl_c(code: KeyCode, mods: KeyModifiers) -> bool {
     mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c')
 }
 
+/// Finds a model by name for `--demo`, ignoring case; the wireless entry if
+/// there are both.
 pub fn find_model(name: &str) -> Option<&'static Model> {
     let named = || MODELS.iter().filter(|m| m.name.eq_ignore_ascii_case(name));
     named().find(|m| m.wireless).or_else(|| named().next())
@@ -1038,6 +1038,23 @@ mod tests {
                 low_battery_warning: 20
             }
         );
+
+        // A warning above the model's max (set by other software) goes back
+        // as it was; stepping it brings it within the max.
+        app.settings.low_battery_warning = Some(80);
+        focus(&mut app, Control::PowerOff);
+        press(&mut app, KeyCode::Left);
+        let Change::Energy {
+            low_battery_warning,
+            ..
+        } = applied(press(&mut app, KeyCode::Enter))
+        else {
+            panic!("not an energy change");
+        };
+        assert_eq!(low_battery_warning, 80);
+        focus(&mut app, Control::LowBatteryWarning);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Percent(50)));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 pragma Singleton
 
 // Mouse battery status from `rogctl watch --json`, for Quickshell configs.
-// Copy this file next to your shell.qml and read `RogMouse.battery` etc. from
-// any bar; a singleton runs one rogctl however many bars show it.
+// Copy this file and RogMouseSettings.qml next to your shell.qml and read
+// `RogMouse.battery` etc. from any bar; a singleton runs one rogctl however
+// many bars show it.
 
 import QtQuick
 import Quickshell
@@ -11,11 +12,10 @@ import Quickshell.Io
 Singleton {
     id: root
 
-    // Settings: edit these here.
-    property string binary: "rogctl"
-    property int interval: 60
-    // Notify at or below this level; 0 turns it off.
-    property int lowThreshold: 20
+    // Settings: edit them in RogMouseSettings.qml, which updates leave alone.
+    readonly property string binary: settings.binary
+    readonly property int interval: settings.interval
+    readonly property int lowThreshold: settings.lowThreshold
 
     // The last status line: state ("connected", "asleep", "disconnected" or
     // "error"), device, battery, charging, error, ... See docs/cli.md.
@@ -66,6 +66,10 @@ Singleton {
             lowBattery();
             Quickshell.execDetached(["notify-send", "--icon=input-mouse", device || "Mouse", `Battery: ${batteryText}`]);
         }
+    }
+
+    RogMouseSettings {
+        id: settings
     }
 
     Process {

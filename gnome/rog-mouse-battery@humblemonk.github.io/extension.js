@@ -40,7 +40,9 @@ function iconName(s) {
     return "dialog-warning-symbolic";
   if (s.charging && s.battery !== undefined) {
     if (s.battery === 100) return "battery-level-100-charged-symbolic";
-    return `battery-level-${Math.round(s.battery / 10) * 10}-charging-symbolic`;
+    // Rounded down, as GNOME Shell's power indicator does: Adwaita has no
+    // battery-level-100-charging icon, so 95-99% would show none.
+    return `battery-level-${Math.floor(s.battery / 10) * 10}-charging-symbolic`;
   }
   return "input-mouse-symbolic";
 }
@@ -195,9 +197,12 @@ const Indicator = GObject.registerClass(
     }
 
     // Read the mouse now instead of waiting for the next interval: SIGUSR1
-    // makes the running rogctl read it right away.
+    // makes the running rogctl read it right away. Only once this rogctl has
+    // printed its pid: until then SIGUSR1 would still kill it.
     _refresh() {
-      this._proc?.send_signal(SIGUSR1);
+      const pid = this._proc?.get_identifier();
+      if (pid && Number(pid) === this._status?.pid)
+        this._proc.send_signal(SIGUSR1);
     }
 
     _handleLine(line) {

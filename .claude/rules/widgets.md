@@ -83,8 +83,11 @@ when a change depends on their runtime behaviour.
   take effect after installing again (with the user's permission). Logs: `~/.cache/noctalia/noctalia.log`. Docs:
   <https://docs.noctalia.dev/noctalia/plugins/development/>.
 - **Waybar**: `waybar/config.json` runs `rogctl watch --format waybar`. Waybar hides a custom
-  module whose `text` is empty, which is how "disconnected" hides it.
-- **Quickshell**: no plugin system; users copy the two `.qml` files into their config.
+  module only when its formatted output is empty, and `"{icon} {text}"` never is, so
+  `config.json` sets `hide-empty-text`: rogctl's empty `text` for "disconnected" then hides it.
+- **Quickshell**: no plugin system; `configure` copies the three `.qml` files into the user's
+  config. `RogMouseSettings.qml` holds the settings and is the user's (`Bundle::users`):
+  written only when missing, never overwritten, removed only while unchanged.
   Reference: <https://quickshell.org/docs/>.
 - **DankMaterialShell**: plugin docs are in the DMS repository under
   `.agents/skills/dms-plugin-dev/` and `quickshell/PLUGINS/`

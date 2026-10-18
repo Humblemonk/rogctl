@@ -328,11 +328,10 @@ const STRIX_CARRY: Features = Features {
     power_off: Some(5),
     ..BASE
 };
-/// An Omni receiver whose mouse is unknown: battery only.
+/// An Omni receiver whose mouse is unknown: battery only, so `rogctl
+/// settings` offers nothing to send to a mouse it couldn't identify.
 const OMNI_UNKNOWN: Features = Features {
     dpi: Dpi { stages: 0, ..DPI },
-    power_off: POWER_OFF,
-    low_battery_warning: WARNING,
     ..BASE
 };
 

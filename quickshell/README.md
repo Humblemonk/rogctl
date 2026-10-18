@@ -9,17 +9,21 @@ and a Nerd Font for the example widget's icons.
 rogctl configure quickshell
 ```
 
-This copies `RogMouse.qml` and `RogMouseWidget.qml` next to `~/.config/quickshell/shell.qml`.
-It won't overwrite or remove copies you've changed unless you add `--force`; it can tell
-them from an older version's copies, which it updates. If your config is
-elsewhere, copy the two files next to its `shell.qml` yourself.
+This copies `RogMouse.qml`, `RogMouseSettings.qml` and `RogMouseWidget.qml` next to
+`~/.config/quickshell/shell.qml`. It won't overwrite or remove copies you've changed unless you
+add `--force`; it can tell them from an older version's copies, which it updates. It never
+overwrites `RogMouseSettings.qml`, even with `--force`. If your config is elsewhere, copy the
+three files next to its `shell.qml` yourself.
 
 Then put `RogMouseWidget {}` in your bar.
 
 ## Customize
 
-The settings (rogctl command, refresh interval, low-battery threshold) are at the top of
-`RogMouse.qml`. Low-battery notifications use `notify-send`.
+The settings (rogctl command, refresh interval, low-battery threshold) are in
+`RogMouseSettings.qml`, which updates leave alone. Low-battery notifications use `notify-send`.
+
+Before 2.6.0 the settings were at the top of `RogMouse.qml`. If you changed them there,
+updating needs `--force` once; then set them again in `RogMouseSettings.qml`.
 
 `RogMouseWidget.qml` is a small example to restyle. To build your own, read these from the
 `RogMouse` singleton, which runs one rogctl however many bars use it:
@@ -40,3 +44,5 @@ Take `RogMouseWidget {}` out of your bar, then:
 ```sh
 rogctl configure quickshell --remove
 ```
+
+It leaves `RogMouseSettings.qml` if you changed it; delete it yourself if you're done with it.

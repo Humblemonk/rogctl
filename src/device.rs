@@ -439,6 +439,10 @@ mod tests {
         let denied = io::Error::from(io::ErrorKind::PermissionDenied);
         let m = omni_model(Err(QueryError::Io(denied))).unwrap();
         assert!(std::ptr::eq(m, &OMNI_RECEIVER));
+        // Battery only: nothing to change on a mouse it couldn't identify.
+        let f = m.features;
+        assert_eq!(f.dpi.stages, 0);
+        assert_eq!((f.power_off, f.low_battery_warning), (None, None));
         // No answer or no supported mouse paired: nothing to report.
         assert!(omni_model(Err(QueryError::Timeout)).is_none());
         assert!(omni_model(Ok(vec![0x1234])).is_none());
