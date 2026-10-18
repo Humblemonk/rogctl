@@ -63,7 +63,9 @@ several models looks and behaves the same on all of them.
   for the ▶, so values and the stages' swatches stay in their columns.
 - **Unknown values show:** a code rogctl can't decode reads "Unknown (0x..)" (`PowerOff`,
   `LiftOff::Unknown`), ←/→ still pick a valid value, and it's never sent back. Whether a row
-  shows depends on the model, not the reply.
+  shows depends on the model, not the reply, with one exception: lighting, untested on most
+  mice that have it, is left out if its read fails (`Connection::read_settings()`), so the
+  other settings still show.
 - **Scales:** settings with a short fixed list (`App::choices()`: polling rates, debounce,
   power-off, warning, brightness) draw as a GearLink-style slider, red up to a ● on the
   value. ←/→ step through exactly that list (`arrows_walk_exactly_the_choices`). Two-way

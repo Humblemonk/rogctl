@@ -277,18 +277,17 @@ impl Connection {
         Ok(reply)
     }
 
-    /// Saves to the mouse's flash. An `FF AA` doesn't end the wait for the
-    /// save's echo: the Harpe II Ace can send one just before it (protocol.md),
+    /// Sends a change or a save. An `FF AA` doesn't end the wait for its
+    /// echo: the Harpe II Ace can send one just before a save's (protocol.md),
     /// and another process's request can draw one too. Only if no echo comes
     /// does the rejection count.
-    fn save(&mut self) -> Result<(), QueryError> {
-        let save = protocol::save_request(self.model.report_id);
-        self.send(&save)?;
+    fn write(&mut self, request: &Request) -> Result<(), QueryError> {
+        self.send(request)?;
         let deadline = Instant::now() + REPLY_TIMEOUT;
         let mut refused = None;
         loop {
             match read_packet(&mut self.file, self.model.report_id, deadline, |r| {
-                save.answered_by(r)
+                request.answered_by(r)
             }) {
                 Ok(reply) => match protocol::check_reply(&reply) {
                     Ok(()) => return Ok(()),
@@ -316,7 +315,18 @@ impl Connection {
             ..MouseSettings::default()
         };
         for query in protocol::settings_queries(&model.features) {
-            let reply = self.exchange(&query.request(model.report_id))?;
+            let reply = match self.exchange(&query.request(model.report_id)) {
+                Ok(reply) => reply,
+                // Lighting is untested on most mice that have it
+                // (protocol.md): one that won't read leaves its rows out,
+                // not the other settings. G-Helper carries on likewise.
+                Err(QueryError::Rejected | QueryError::Timeout | QueryError::Empty)
+                    if query == Query::Lighting =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             protocol::parse_settings(query, &model.features, &reply, &mut settings);
         }
         Ok(settings)
@@ -342,11 +352,12 @@ impl Connection {
         let model = self.model;
         let request = protocol::change_request(model.report_id, &model.features, change)
             .ok_or(ApplyError::NotChanged(QueryError::Unsupported))?;
-        self.exchange(&request).map_err(ApplyError::NotChanged)?;
+        self.write(&request).map_err(ApplyError::NotChanged)?;
         // A Harpe II Ace left idle can reject a save with no echo, yet keep
         // the change (protocol.md); ask once more.
-        match self.save() {
-            Err(QueryError::Rejected) => self.save(),
+        let save = protocol::save_request(model.report_id);
+        match self.write(&save) {
+            Err(QueryError::Rejected) => self.write(&save),
             other => other,
         }
         .map_err(ApplyError::NotSaved)?;
@@ -567,10 +578,13 @@ mod tests {
         Rejected,
     }
 
-    /// Applies `change` on a fake SpeedNova mouse that answers the n-th
-    /// packet it gets with `answers[n]`, then stays silent. Returns the result
+    /// Runs `act` against a fake SpeedNova mouse that answers the n-th packet
+    /// it gets with `answers[n]`, then stays silent. Returns what `act` did
     /// and the packets the mouse got.
-    fn apply_to_fake(answers: Vec<Vec<Answer>>) -> (Result<(), ApplyError>, Vec<Vec<u8>>) {
+    fn on_fake<T>(
+        answers: Vec<Vec<Answer>>,
+        act: impl FnOnce(&mut Connection) -> T,
+    ) -> (T, Vec<Vec<u8>>) {
         use std::os::unix::net::UnixDatagram;
 
         let (mouse, ours) = UnixDatagram::pair().unwrap();
@@ -606,9 +620,13 @@ mod tests {
             // Kept open until now, so a read times out rather than fails.
             (mouse, got)
         });
-        let result = conn.apply(&Change::MotionSync(true));
+        let result = act(&mut conn);
         let (_, got) = fake.join().unwrap();
         (result, got)
+    }
+
+    fn apply_to_fake(answers: Vec<Vec<Answer>>) -> (Result<(), ApplyError>, Vec<Vec<u8>>) {
+        on_fake(answers, |conn| conn.apply(&Change::MotionSync(true)))
     }
 
     const SAVE: &[u8] = &[0x03, 0x50, 0x03];
@@ -635,6 +653,42 @@ mod tests {
         ]);
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(got.len(), 2);
+    }
+
+    /// Another process on the node can draw an `FF AA` just before the
+    /// change's echo; the change was made, so it's saved and reported so.
+    #[test]
+    fn a_stray_rejection_before_the_change_echo_is_no_failure() {
+        let (result, got) = apply_to_fake(vec![
+            vec![Answer::Rejected, Answer::Echo],
+            vec![Answer::Echo],
+        ]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(got.len(), 2, "the change, then one save");
+        assert!(got[1].starts_with(SAVE));
+    }
+
+    /// A mouse that won't read its lighting still shows its other settings;
+    /// the lighting rows are left out.
+    #[test]
+    fn a_failed_lighting_read_keeps_the_other_settings() {
+        let model = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let queries = protocol::settings_queries(&model.features);
+        assert_eq!(queries.last(), Some(&Query::Lighting));
+        let mut answers: Vec<Vec<Answer>> = queries.iter().map(|_| vec![Answer::Echo]).collect();
+        answers.pop();
+        answers.push(vec![Answer::Rejected]);
+        let reading = Reading {
+            battery: 80,
+            charging: false,
+            power_off: None,
+            low_battery_warning: None,
+        };
+        let (settings, got) = on_fake(answers, |conn| conn.read_settings(&reading));
+        let settings = settings.unwrap();
+        assert_eq!(got.len(), queries.len());
+        assert!(settings.polling_rate.is_some());
+        assert_eq!(settings.lighting, None);
     }
 
     /// A rejection with no echo is asked once more; rejected again, it's

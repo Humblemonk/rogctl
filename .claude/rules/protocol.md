@@ -53,7 +53,9 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
     sets brightness 0, a percentage it moves in 10% steps. Battery mode's green/blue/red
     aren't in the packet. GearLink remembers each effect's colour and brightness itself and
     sends them on a switch; the mouse holds only the current ones. `12 03 01` answers too
-    (effect `02`, 50%, black); what that slot is isn't known.
+    (effect `02`, 50%, black); what that slot is isn't known. Zone `03` (all, as the other
+    mice get) works on it too: sent unsaved on the SpeedNova, it was echoed, lit the wheel
+    and read back from zone `00`.
 - Lighting on other mice is G-Helper's and untested (`LightingZone::All`): every mouse whose
   class has `HasRGB()` and the default `12 03`/`51 28` packets gets the same five effects,
   set on zone `03` (all zones at once) and read from zone `00`, as G-Helper's settings

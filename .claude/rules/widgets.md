@@ -33,7 +33,8 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
   5.3.0) restarts a plugin's service when one of its settings changes, which ends the
   stream. A plugin can't stop a stream itself, so for a Noctalia that doesn't, the service
   also polls the settings in `update()` and stops `rogctl` with `rogctl stop PID`; the exit
-  marker restarts it. The Plasma widget polls one-shot `rogctl battery`, so it keeps its
+  marker restarts it. A failed stop is logged once and not retried until the settings
+  change again. The Plasma widget polls one-shot `rogctl battery`, so it keeps its
   own sleeping-level and notified-once state.
 
 ## Keep them alike

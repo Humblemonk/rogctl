@@ -21,6 +21,9 @@ local streamSettings = nil
 local streamBinary = nil
 -- Set while rogctl is being stopped to apply new settings.
 local restarting = false
+-- Settings `rogctl stop` failed to apply (an older rogctl has no `stop`): not
+-- tried again until they change, so a failure is logged once, not every update.
+local stopFailedFor = nil
 local exitedAt = 0
 
 local function shellQuote(value)
@@ -92,6 +95,7 @@ function startStream()
   lastStatus = nil
   streamSettings = currentSettings()
   streamBinary = binary
+  stopFailedFor = nil
   if not noctalia.commandExists(binary) and not binary:find("/") then
     publishError(noctalia.tr("error.missing_binary", { binary = binary }))
     return
@@ -142,14 +146,16 @@ function update()
     if os.time() - exitedAt >= RESTART_SECONDS then
       startStream()
     end
-  elseif not restarting and currentSettings() ~= streamSettings then
+  elseif not restarting then
+    local settings = currentSettings()
     local pid = lastStatus and lastStatus.pid
-    if pid ~= nil then
+    if settings ~= streamSettings and settings ~= stopFailedFor and pid ~= nil then
       restarting = true
       noctalia.runAsync({ streamBinary, "stop", tostring(pid) }, function(result)
-        -- Not stopped: keep the running rogctl, and try again next update.
+        -- Not stopped: keep the running rogctl until the settings change again.
         if result.exitCode ~= 0 then
           noctalia.log("rog-mouse-battery: rogctl stop failed: " .. tostring(result.stderr))
+          stopFailedFor = settings
           restarting = false
         end
       end)

@@ -806,6 +806,11 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
             let Some(w) = f.low_battery_warning else {
                 return current;
             };
+            // Above the max (other software set it): → can't raise it, ←
+            // brings it within.
+            if pct > w.max {
+                return if up { current } else { Value::Percent(w.max) };
+            }
             let by = if big { w.max } else { w.step };
             let next = if up {
                 pct.saturating_add(by)
@@ -1195,7 +1200,10 @@ mod tests {
         };
         assert_eq!(low_battery_warning, 80);
         focus(&mut app, Control::LowBatteryWarning);
+        assert_eq!(app.can_step(Control::LowBatteryWarning), (true, false));
         press(&mut app, KeyCode::Right);
+        assert_eq!(app.edit, None, "→ doesn't lower it");
+        press(&mut app, KeyCode::Left);
         assert_eq!(app.edit.map(|e| e.value), Some(Value::Percent(50)));
     }
 
