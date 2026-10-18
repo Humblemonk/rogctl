@@ -62,6 +62,9 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
 
 5. **Optional: add a panel widget.** See [Panel widgets](#panel-widgets).
 
+Upgrading? [What changed in each release](docs/CHANGELOG.md) lists new features and fixes,
+and says when a release needs you to do something after upgrading.
+
 ## Changing settings
 
 ```sh
