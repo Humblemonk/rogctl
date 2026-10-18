@@ -487,7 +487,7 @@ fn remove_quickshell(force: bool) -> Result<()> {
         return not_installed(Desktop::Quickshell);
     }
     say!(
-        "Removed RogMouse.qml and RogMouseWidget.qml from {}\n\
+        "Removed the widget from {}\n\
          Take RogMouseWidget {{}} out of your bar too.",
         quickshell.dir.display()
     );

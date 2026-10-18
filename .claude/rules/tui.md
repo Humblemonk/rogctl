@@ -10,8 +10,8 @@ paths:
 ## Behaviour
 
 - Nothing is written until Enter, Space or a click on the focused row. ←/→ and typed digits
-  only change a pending `Edit`; Esc, moving focus or `r` drop it (Esc the status message
-  too). Every change is also saved to the mouse's flash, so never write on each key press.
+  only change a pending `Edit`; Esc, moving focus, `r` or Tab drop it (Esc the status
+  message too). Every change is also saved to the mouse's flash, so never write on each key press.
 - The mouse goes through the same paths: `ui::draw()` returns `Hits` (each selectable row,
   and each value on its scale; `None` when only the too-small notice was drawn),
   `App::handle_mouse()` maps a click on the focused row to
@@ -57,7 +57,8 @@ several models looks and behaves the same on all of them.
 - **Hide or lock:** a setting the mouse doesn't have is hidden. One it has but can't change
   now is shown dimmed with 🔒 and the reason (`Row::locked`: motion sync at 8000 Hz, the
   power-saving rate while power saving is off, the lighting colour while the effect sets its
-  own) and can't be focused. Never leave a row visible and focusable but inert.
+  own, the colour and brightness while the effect is one rogctl doesn't send) and can't be
+  focused. Never leave a row visible and focusable but inert.
 - **Arrows:** the focused row's text value has ◀ and ▶ only for the ways ←/→ can still go
   (`App::can_step()`), grey before an edit and red during one; none on scales or while DPI
   digits are typed. The ◀ sits in the label's last two columns and DPI values keep a slot

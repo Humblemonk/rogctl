@@ -18,7 +18,7 @@ use crate::app::{App, Control, Edit, Link, Panel, Row, Target, Value};
 /// its hint fit an 80-column one.
 const MAX_WIDTH: u16 = 80;
 const LABEL_WIDTH: usize = 24;
-/// The widest DPI value, 42000.
+/// The widest DPI values, five digits (42000, 65000).
 const DPI_WIDTH: usize = 5;
 
 /// The smallest terminal, as (width, height), that shows every setting of
@@ -677,7 +677,8 @@ fn tick(value: Value) -> String {
             .minutes()
             .map_or_else(|| value.to_string(), |m| format!("{m}m")),
         Value::Percent(0) => "Off".into(),
-        // "0" rather than "Off": the full scale and its hint then fit.
+        // Brightness 0 is "0" rather than "Off": the full scale and its hint
+        // then fit.
         Value::Percent(pct) | Value::Brightness(pct) => pct.to_string(),
         Value::Dpi(_)
         | Value::Switch(_)
@@ -846,7 +847,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         " Applied changes are stored on the mouse.",
         MUTED,
     ));
-    lines.push(Line::styled(" ? or Esc closes this.", MUTED));
+    lines.push(Line::styled(" Esc, ? or q closes this.", MUTED));
     // Wide enough for the longest line and the border.
     let width = lines
         .iter()

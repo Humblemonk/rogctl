@@ -85,8 +85,8 @@ when a change depends on their runtime behaviour.
 
 - **Noctalia**: `rogctl configure noctalia` copies the plugin to
   `~/.local/share/noctalia/plugins/rog-mouse-battery`; it's never a symlink, so edits only
-  take effect after installing again (with the user's permission). Logs: `~/.cache/noctalia/noctalia.log`. Docs:
-  <https://docs.noctalia.dev/noctalia/plugins/development/>.
+  take effect after installing again (with the user's permission). Logs:
+  `~/.cache/noctalia/noctalia.log`. Docs: <https://docs.noctalia.dev/noctalia/plugins/development/>.
 - **Waybar**: `waybar/config.json` runs `rogctl watch --format waybar`. Waybar hides a custom
   module only when its formatted output is empty, and `"{icon} {text}"` never is, so
   `config.json` sets `hide-empty-text`: rogctl's empty `text` for "disconnected" then hides it.

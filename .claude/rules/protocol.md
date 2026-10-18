@@ -22,8 +22,8 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 - Battery (`12 07`): byte 10 = charging; the level is byte 5 as a percentage, or a 0-4 level
   ×25 in byte 5 or 7 on older mice (`Battery::Quarters`). `Features::power_off` names the
   power-off byte (usually 6); byte 7 is the low-battery warning.
-- Battery `0`, an all-zero reply, or `FF AA` from a receiver means the mouse is asleep or out
-  of range, not empty or broken.
+- Battery `0` while not charging, an all-zero reply, no reply, or `FF AA` from a receiver
+  means the mouse is asleep or out of range, not empty or broken.
 - Settings reads: `12 00` (active DPI stage in byte 12, counted from 1; stage count in byte
   19 on `variable_stages` mice), `12 04 00` (DPI on non-X/Y mice, polling rate, debounce,
   angle snapping and tuning), `12 04 02` (X/Y DPI), `12 04 03` (stage colours, RGB),
@@ -39,8 +39,9 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 ## Where models differ
 
 - `Layout::Legacy` (Gladius II Wireless, Strix Carry) moves the main-page fields and
-  renumbers their `51 31` fields. `LiftOffFormat::Legacy` and quarter-step warnings cover the
-  Keris Wireless family. The Strix Carry keeps power-off in battery byte 5 and its active
+  renumbers their `51 31` fields. `LiftOffFormat::Legacy` covers the Keris Wireless family
+  and Strix Impact II Wireless, which store the warning in quarters (1 = 25%) as the Chakram
+  and Pugio II do. The Strix Carry keeps power-off in battery byte 5 and its active
   stage in `12 00` byte 11.
 - Captured from ASUS GearLink on a Harpe II Ace, not in G-Helper or different from it:
   - Lift-off (`LiftOffFormat::HarpeII`): High is `02` in both directions, and the set
