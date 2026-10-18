@@ -28,8 +28,12 @@ paths:
   changes. It then shows what was just plugged in (the cable, so the header says wired) if
   it answers, else the mouse it was showing. It looks for a mouse every 2 s while none is
   found, and retries a sleeping one, or one that failed, every 10 s. While connected it
-  reads the battery (`12 07` only) every 10 s for the header, without dropping a pending
+  reads the battery (`12 07`) for the header and the active DPI stage (`12 00`), which the
+  mouse's DPI button changes without telling rogctl, every 10 s, without dropping a pending
   edit; a mouse that went to sleep shows as asleep.
+- A save the mouse rejects (`FF AA` to `50 03`) is asked for once more after 200 ms
+  (`Connection::apply()`); rejected again, the message says the mouse didn't confirm saving
+  it, not that it's lost, since the Harpe II Ace keeps such changes (`protocol.md`).
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
   abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
   TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the

@@ -71,6 +71,14 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   mouse's mode button is set to wired; then the receiver answers `FF AA` (so, asleep) and the
   cable's replies match the receiver's byte for byte after the report ID
   (`reads_harpe_ii_ace_over_its_cable`).
+- The Harpe II Ace on the SpeedNova answers the first save (`50 03`) after it sat unused or
+  was just turned on with `FF AA`, for active-stage and polling-rate changes alike, and
+  sometimes sends the save's echo 1 ms later; the change survives a power cycle either way
+  (captured read-only, with only rogctl and its widget on the node). G-Helper logs such
+  errors and carries on. `Connection::apply()` asks once more after 200 ms, which the
+  mouse then echoes, and reports the save as unconfirmed only if that's rejected too. Its
+  DPI button changes the active stage without any input report on this node, so the TUI
+  polls `12 00`.
 - Everything else is transcribed and untested; say so when a change depends on it. G-Helper
   was wrong about the Harpe II lift-off, so its values for similar mice may be too.
 - Put parsing in pure functions and test it with captured byte arrays. A real SpeedNova

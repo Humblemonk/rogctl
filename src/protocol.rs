@@ -916,6 +916,22 @@ mod tests {
         assert_eq!(s.lift_off, Some(LiftOff::High));
     }
 
+    /// Captured read-only from a Harpe II Ace on the SpeedNova receiver, as
+    /// the TUI's 10 s poll reads the active stage (first 16 bytes logged): the
+    /// stage in byte 12 is 3, counted from 1, after a power cycle that kept it.
+    #[test]
+    fn reads_harpe_ii_ace_active_stage() {
+        let f = features("ROG Harpe II Ace", true);
+        let r = reply(&[
+            0x03, 0x12, 0x00, 0x00, 0x00, 0x10, 0x00, 0x09, 0x00, 0x05, 0x07, 0x00, 0x03, 0xff,
+            0xff, 0x17,
+        ]);
+        let mut s = MouseSettings::default();
+        parse_settings(Query::Profile, f, &r, &mut s);
+        assert_eq!(s.active_stage, Some(2));
+        assert_eq!(s.stages.len(), 4);
+    }
+
     /// Captured from a Harpe II Ace on its cable in wired mode (`0b05:1c69`),
     /// read-only while `rogctl settings` read it. The node has report ID 0, which
     /// hidraw leaves out, so each capture starts at byte 1 here, where

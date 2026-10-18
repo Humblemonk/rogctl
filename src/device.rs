@@ -19,6 +19,8 @@ const MAX_PACKET: usize = 65;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 /// Reports the kernel buffers per open hidraw file (`HIDRAW_BUFFER_SIZE`).
 const HIDRAW_QUEUE: usize = 64;
+/// How long to wait before asking a mouse that rejected a save once more.
+const SAVE_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// A reply, normalized so byte 0 is the report ID.
 type Reply = [u8; MAX_PACKET + 1];
@@ -297,6 +299,19 @@ impl Connection {
         Ok(settings)
     }
 
+    /// The active DPI stage alone, which the mouse's DPI button changes.
+    /// `None` on a mouse with one stage, or a reply that doesn't name one.
+    pub fn read_active_stage(&mut self) -> Result<Option<usize>, QueryError> {
+        let model = self.model;
+        if !protocol::settings_queries(&model.features).contains(&Query::Profile) {
+            return Ok(None);
+        }
+        let reply = self.exchange(&Query::Profile.request(model.report_id))?;
+        let mut settings = MouseSettings::default();
+        protocol::parse_settings(Query::Profile, &model.features, &reply, &mut settings);
+        Ok(settings.active_stage)
+    }
+
     /// Changes one setting and saves it on the mouse. The only code that
     /// writes settings; only `tui::apply_action` calls it.
     pub fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
@@ -304,8 +319,17 @@ impl Connection {
         let request = protocol::change_request(model.report_id, &model.features, change)
             .ok_or(ApplyError::NotChanged(QueryError::Unsupported))?;
         self.exchange(&request).map_err(ApplyError::NotChanged)?;
-        self.exchange(&protocol::save_request(model.report_id))
-            .map_err(ApplyError::NotSaved)?;
+        let save = protocol::save_request(model.report_id);
+        match self.exchange(&save) {
+            // A Harpe II Ace left idle can reject the save yet keep the
+            // change through a power cycle (protocol.md); ask once more.
+            Err(QueryError::Rejected) => {
+                std::thread::sleep(SAVE_RETRY_DELAY);
+                self.exchange(&save)
+            }
+            other => other,
+        }
+        .map_err(ApplyError::NotSaved)?;
         Ok(())
     }
 }
@@ -315,8 +339,8 @@ impl Connection {
 pub enum ApplyError {
     /// The mouse didn't take the change.
     NotChanged(QueryError),
-    /// The mouse took the change but didn't save it, so it's lost when the
-    /// mouse turns off.
+    /// The mouse took the change, but the save failed. One it rejected (twice)
+    /// may still have stuck: the Harpe II Ace keeps such changes.
     NotSaved(QueryError),
 }
 

@@ -210,6 +210,11 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                     app.error(format!("No change made: the mouse didn't answer ({e})"));
                 }
                 Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
+                // The mouse may well have kept it (protocol.md), so don't
+                // say it's lost.
+                Err(ApplyError::NotSaved(QueryError::Rejected)) => {
+                    app.error(format!("{done}, but the mouse didn't confirm saving it"));
+                }
                 Err(ApplyError::NotSaved(e)) => {
                     app.error(format!("{done}, but not saved on the mouse: {e}"));
                 }
@@ -330,13 +335,34 @@ impl Session {
 
     /// Reads the battery again for the header, keeping the settings and any
     /// pending edit.
+    /// The battery for the header, and the active DPI stage, which the
+    /// mouse's DPI button changes without telling rogctl. Leaves a pending
+    /// edit alone.
     fn read_battery(&mut self, app: &mut App) {
         self.last_battery = Some(Instant::now());
         let Some(dev) = self.devices.get(self.current) else {
             return;
         };
-        match dev.read_battery() {
-            Ok(reading) if !reading.is_asleep() => app.reading = Some(reading),
+        let read = dev
+            .connect()
+            .map_err(QueryError::from)
+            .and_then(|mut conn| {
+                let reading = conn.read_battery()?;
+                // A missed stage read leaves the stage shown; the next retries.
+                let stage = if reading.is_asleep() {
+                    None
+                } else {
+                    conn.read_active_stage().ok().flatten()
+                };
+                Ok((reading, stage))
+            });
+        match read {
+            Ok((reading, stage)) if !reading.is_asleep() => {
+                app.reading = Some(reading);
+                if let Some(stage) = stage.filter(|&s| s < app.settings.stages.len()) {
+                    app.settings.active_stage = Some(stage);
+                }
+            }
             Ok(_) => self.show_outcome(app, Ok(Outcome::Asleep)),
             Err(e) if e.means_asleep(dev.model.wireless) => self.show_outcome(app, Err(e)),
             // A missed read isn't worth losing the screen over; the next retries.
@@ -345,9 +371,10 @@ impl Session {
     }
 
     /// Keeps the battery current and notices a mouse being unplugged, plugged
-    /// in or waking up. Besides the battery, only looks at sysfs, except to
-    /// read the mice again when that changes, or when the mouse was missing,
-    /// asleep or failed. That shows whichever mouse answers, even after Tab.
+    /// in or waking up. Besides the battery and active stage, only looks at
+    /// sysfs, except to read the mice again when that changes, or when the
+    /// mouse was missing, asleep or failed. That shows whichever mouse
+    /// answers, even after Tab.
     fn tick(&mut self, app: &mut App) {
         if app.link == Link::Connected
             && self
