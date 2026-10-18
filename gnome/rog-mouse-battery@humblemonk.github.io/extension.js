@@ -170,25 +170,21 @@ const Indicator = GObject.registerClass(
     }
 
     _readLine(stream, cancellable) {
-      stream.read_line_async(
-        GLib.PRIORITY_DEFAULT,
-        cancellable,
-        (s, res) => {
-          let line;
-          try {
-            [line] = s.read_line_finish_utf8(res);
-          } catch {
-            // Stopped or closed. Closing the pipe makes a rogctl that outlived
-            // its stop (under a wrapper script SIGTERM only reaches the
-            // script) exit at its next line.
-            s.close_async(GLib.PRIORITY_DEFAULT, null, null);
-            return;
-          }
-          if (line === null) return; // rogctl exited; wait_async handles that.
-          this._handleLine(line);
-          this._readLine(s, cancellable);
-        },
-      );
+      stream.read_line_async(GLib.PRIORITY_DEFAULT, cancellable, (s, res) => {
+        let line;
+        try {
+          [line] = s.read_line_finish_utf8(res);
+        } catch {
+          // Stopped or closed. Closing the pipe makes a rogctl that outlived
+          // its stop (under a wrapper script SIGTERM only reaches the
+          // script) exit at its next line.
+          s.close_async(GLib.PRIORITY_DEFAULT, null, null);
+          return;
+        }
+        if (line === null) return; // rogctl exited; wait_async handles that.
+        this._handleLine(line);
+        this._readLine(s, cancellable);
+      });
     }
 
     _scheduleRestart() {
