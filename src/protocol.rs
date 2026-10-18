@@ -46,9 +46,8 @@ const CONFIG_MOTION_SYNC: u8 = 0x12;
 /// Byte 2 of `PROFILE`: write the changed settings to the mouse's memory.
 const SAVE: u8 = 0x03;
 
-/// The lighting zone read and set. GearLink sets the Harpe II Ace's only zone,
-/// its scroll wheel, as 0; G-Helper writes 1 there, which wasn't tried.
-const LIGHTING_ZONE: u8 = 0x00;
+/// The lighting zone read: the first, which G-Helper also reads for "all".
+const LIGHTING_READ_ZONE: u8 = 0x00;
 /// Lighting brightness is a percentage.
 pub const BRIGHTNESS_MAX: u8 = 100;
 
@@ -156,9 +155,8 @@ pub struct Features {
     /// Rates advanced power saving offers, slowest first. Empty: no such mode.
     /// Not in G-Helper; captured from ASUS GearLink on a Harpe II Ace.
     pub power_saving_rates: &'static [PollingRate],
-    /// Lighting effects the mouse offers, in GearLink's order. Empty: no
-    /// lighting rogctl can set.
-    pub lighting: &'static [Effect],
+    /// Where lighting changes go. None: no lighting rogctl can set.
+    pub lighting: Option<LightingZone>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +322,25 @@ pub enum LiftOff {
     Unknown(u8),
 }
 
+/// The zone a lighting change is sent to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightingZone {
+    /// Zone 0, as GearLink sets a Harpe II Ace's only one.
+    First,
+    /// Every zone at once (`All`), as G-Helper's settings window sets them
+    /// unless one is picked. Single-zone mice get it from G-Helper too.
+    All,
+}
+
+impl LightingZone {
+    fn code(self) -> u8 {
+        match self {
+            Self::First => 0x00,
+            Self::All => 0x03,
+        }
+    }
+}
+
 /// A lighting effect. Codes from G-Helper's `LightingMode`, the same as ASUS
 /// GearLink sends to a Harpe II Ace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,40 +352,56 @@ pub enum Effect {
     Reactive,
     /// Shows the battery level in the mouse's own colours.
     Battery,
+    /// Rainbow, Comet and Off come from other software. They're shown but
+    /// not offered: Rainbow and Comet also have a speed and direction
+    /// rogctl doesn't send.
+    Rainbow,
+    Comet,
+    Off,
     /// A code rogctl doesn't know. Shown, never sent.
     Unknown(u8),
 }
 
 impl Effect {
+    /// The effects rogctl sets, in GearLink's order. G-Helper offers all of
+    /// them on every mouse with lighting in `MODELS`.
+    pub const OFFERED: [Self; 5] = [
+        Self::Static,
+        Self::Breathing,
+        Self::ColorCycle,
+        Self::Reactive,
+        Self::Battery,
+    ];
+
     fn code(self) -> u8 {
         match self {
             Self::Static => 0x00,
             Self::Breathing => 0x01,
             Self::ColorCycle => 0x02,
+            Self::Rainbow => 0x03,
             Self::Reactive => 0x04,
+            Self::Comet => 0x05,
             Self::Battery => 0x06,
+            Self::Off => 0xf0,
             Self::Unknown(code) => code,
         }
     }
 
     fn from_code(code: u8) -> Self {
-        [
-            Self::Static,
-            Self::Breathing,
-            Self::ColorCycle,
-            Self::Reactive,
-            Self::Battery,
-        ]
-        .into_iter()
-        .find(|e| e.code() == code)
-        .unwrap_or(Self::Unknown(code))
+        Self::OFFERED
+            .into_iter()
+            .chain([Self::Rainbow, Self::Comet, Self::Off])
+            .find(|e| e.code() == code)
+            .unwrap_or(Self::Unknown(code))
     }
 
     /// Whether it lights in the colour set; the others pick their own.
     pub fn uses_color(self) -> bool {
         match self {
-            Self::Static | Self::Breathing | Self::Reactive => true,
-            Self::ColorCycle | Self::Battery | Self::Unknown(_) => false,
+            Self::Static | Self::Breathing | Self::Reactive | Self::Comet => true,
+            Self::ColorCycle | Self::Battery | Self::Rainbow | Self::Off | Self::Unknown(_) => {
+                false
+            }
         }
     }
 }
@@ -501,7 +534,7 @@ impl Query {
             Self::LiftOff => Request::new(&[report_id, GET, GET_LIFT_OFF], 3),
             Self::PowerSaving => Request::new(&[report_id, GET, GET_POWER_SAVING], 3),
             // The reply's byte 3 is 0 whatever zone is asked for.
-            Self::Lighting => Request::new(&[report_id, GET, GET_LIGHTING, LIGHTING_ZONE], 3),
+            Self::Lighting => Request::new(&[report_id, GET, GET_LIGHTING, LIGHTING_READ_ZONE], 3),
         }
     }
 }
@@ -535,7 +568,7 @@ pub fn settings_queries(f: &Features) -> Vec<Query> {
     if !f.power_saving_rates.is_empty() {
         queries.push(Query::PowerSaving);
     }
-    if !f.lighting.is_empty() {
+    if f.lighting.is_some() {
         queries.push(Query::Lighting);
     }
     queries
@@ -630,7 +663,7 @@ pub fn parse_settings(query: Query, f: &Features, reply: &[u8], s: &mut MouseSet
             }
         }
         Query::Lighting => {
-            if !f.lighting.is_empty() {
+            if f.lighting.is_some() {
                 s.lighting = Some(Lighting {
                     effect: Effect::from_code(byte(reply, 5)),
                     brightness: byte(reply, 6),
@@ -819,13 +852,14 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
             effect,
             brightness,
             color: [r, g, b],
-        }) => f.lighting.contains(&effect).then(|| {
-            Request::new(
+        }) => {
+            let zone = f.lighting.filter(|_| Effect::OFFERED.contains(&effect))?;
+            Some(Request::new(
                 &[
                     report_id,
                     SET,
                     SET_LIGHTING,
-                    LIGHTING_ZONE,
+                    zone.code(),
                     0x00,
                     effect.code(),
                     brightness.min(BRIGHTNESS_MAX),
@@ -834,8 +868,8 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
                     b,
                 ],
                 3,
-            )
-        }),
+            ))
+        }
     }
 }
 
@@ -1376,24 +1410,58 @@ mod tests {
         assert_eq!(bytes(Effect::Static, 150, red)[6], 100, "clamped");
 
         let unknown = Change::Lighting(Lighting {
-            effect: Effect::Unknown(0x03),
+            effect: Effect::Unknown(0x07),
             brightness: 50,
             color: red,
         });
         assert_eq!(change_request(0x03, f, &unknown), None, "never sent");
         let mut s = MouseSettings::default();
-        let rainbow = reply(&[0x03, 0x12, 0x03, 0x00, 0x00, 0x03, 0x32]);
-        parse_settings(Query::Lighting, f, &rainbow, &mut s);
-        assert_eq!(s.lighting.map(|l| l.effect), Some(Effect::Unknown(0x03)));
+        let unknown = reply(&[0x03, 0x12, 0x03, 0x00, 0x00, 0x07, 0x32]);
+        parse_settings(Query::Lighting, f, &unknown, &mut s);
+        assert_eq!(s.lighting.map(|l| l.effect), Some(Effect::Unknown(0x07)));
 
-        let f = features("ROG Chakram X", true);
+        let f = features("ROG Chakram", true);
         let change = Change::Lighting(Lighting {
             effect: Effect::Static,
             brightness: 50,
             color: red,
         });
-        assert_eq!(change_request(0, f, &change), None, "not on this mouse yet");
+        assert_eq!(change_request(0, f, &change), None, "not on this mouse");
         assert!(!settings_queries(f).contains(&Query::Lighting));
+    }
+
+    /// Other mice get every zone at once, as G-Helper's settings window sets
+    /// them; effects other software set show by name and aren't sent back.
+    #[test]
+    fn lighting_sets_all_zones_like_g_helper() {
+        let f = features("ROG Chakram X", true);
+        let change = Change::Lighting(Lighting {
+            effect: Effect::Breathing,
+            brightness: 100,
+            color: [0, 0, 0xff],
+        });
+        assert_eq!(
+            change_request(0, f, &change).unwrap().bytes(),
+            [0x00, 0x51, 0x28, 0x03, 0x00, 0x01, 0x64, 0x00, 0x00, 0xff]
+        );
+        assert_eq!(
+            Query::Lighting.request(0).bytes(),
+            [0x00, 0x12, 0x03, 0x00],
+            "read from the first zone"
+        );
+
+        for (code, effect) in [
+            (0x03, Effect::Rainbow),
+            (0x05, Effect::Comet),
+            (0xf0, Effect::Off),
+        ] {
+            let mut s = MouseSettings::default();
+            let read = reply(&[0x00, 0x12, 0x03, 0x00, 0x00, code, 0x32]);
+            parse_settings(Query::Lighting, f, &read, &mut s);
+            assert_eq!(s.lighting.map(|l| l.effect), Some(effect));
+            let back = Change::Lighting(s.lighting.unwrap());
+            assert_eq!(change_request(0, f, &back), None, "{effect:?}");
+        }
     }
 
     /// Other mice keep G-Helper's encoding: High = 1, no trailing byte.

@@ -10,7 +10,8 @@
 
 use crate::device::{Match, Model};
 use crate::protocol::{
-    AngleTuning, Battery, Dpi, Effect, Features, Layout, LiftOffFormat, PollingRate, WarningRange,
+    AngleTuning, Battery, Dpi, Features, Layout, LiftOffFormat, LightingZone, PollingRate,
+    WarningRange,
 };
 
 /// ROG Omni receiver; the paired mouse is found by asking the receiver.
@@ -45,7 +46,7 @@ const BASE: Features = Features {
     power_off: None,
     low_battery_warning: None,
     power_saving_rates: &[],
-    lighting: &[],
+    lighting: None,
 };
 const TUNING: AngleTuning = AngleTuning {
     min: -20,
@@ -117,15 +118,8 @@ const HARPE_II_ACE: Features = Features {
     ],
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
-    // Captured from ASUS GearLink. G-Helper also lists Off (0xF0), which
-    // GearLink doesn't offer: it sets the brightness to 0 instead.
-    lighting: &[
-        Effect::Static,
-        Effect::Breathing,
-        Effect::ColorCycle,
-        Effect::Reactive,
-        Effect::Battery,
-    ],
+    // Zone 0, as ASUS GearLink sets it on this mouse.
+    lighting: Some(LightingZone::First),
     ..BASE
 };
 const HARPE_II_EXTREME_EDITION_20: Features = Features {
@@ -134,9 +128,6 @@ const HARPE_II_EXTREME_EDITION_20: Features = Features {
         step: 1,
         ..HARPE_II_ACE.dpi
     },
-    // Lighting is only enabled on the Harpe II Ace so far, the one mouse it
-    // was tested on.
-    lighting: &[],
     ..HARPE_II_ACE
 };
 const HARPE_ACE_AIM_LAB: Features = Features {
@@ -156,6 +147,7 @@ const HARPE_ACE_AIM_LAB: Features = Features {
     lift_off: Some(LiftOffFormat::Standard),
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
+    lighting: Some(LightingZone::All),
     ..BASE
 };
 const HARPE_ACE_EXTREME: Features = Features {
@@ -176,6 +168,7 @@ const KERIS_II_ACE: Features = Features {
     lift_off: Some(LiftOffFormat::Standard),
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
+    lighting: Some(LightingZone::All),
     ..BASE
 };
 const KERIS_II_ORIGIN: Features = Features {
@@ -207,6 +200,7 @@ const AIMPOINT: Features = Features {
     lift_off: Some(LiftOffFormat::Standard),
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
+    lighting: Some(LightingZone::All),
     ..BASE
 };
 const CHAKRAM_X: Features = Features {
@@ -235,6 +229,7 @@ const SPATHA_X: Features = Features {
     lift_off: Some(LiftOffFormat::Standard),
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
+    lighting: Some(LightingZone::All),
     ..BASE
 };
 const GLADIUS_III_WIRELESS: Features = Features {
@@ -245,6 +240,7 @@ const GLADIUS_III_WIRELESS: Features = Features {
     lift_off: Some(LiftOffFormat::Standard),
     power_off: POWER_OFF,
     low_battery_warning: WARNING,
+    lighting: Some(LightingZone::All),
     ..BASE
 };
 const TUF_M4_WIRELESS: Features = Features {
@@ -260,7 +256,6 @@ const TUF_M4_WIRELESS: Features = Features {
     low_battery_warning: WARNING,
     ..BASE
 };
-/// `TXGamingMini` and `TUFGamingMiniMiku`.
 const TX_GAMING_MINI: Features = Features {
     dpi: Dpi {
         step: 50,
@@ -268,6 +263,11 @@ const TX_GAMING_MINI: Features = Features {
         ..TUF_M4_WIRELESS.dpi
     },
     ..TUF_M4_WIRELESS
+};
+/// The only one of G-Helper's `TUFM4Wirelss` family with lighting.
+const TUF_GAMING_MINI_MIKU: Features = Features {
+    lighting: Some(LightingZone::All),
+    ..TX_GAMING_MINI
 };
 const MD200: Features = Features {
     dpi: Dpi {
@@ -536,14 +536,14 @@ pub const MODELS: &[Model] = &[
         0x1c57,
         0,
         true,
-        TX_GAMING_MINI,
+        TUF_GAMING_MINI_MIKU,
     ),
     usb(
         "TUF GAMING Mini Miku Edition",
         0x1c56,
         0,
         false,
-        TX_GAMING_MINI,
+        TUF_GAMING_MINI_MIKU,
     ),
 ];
 
@@ -602,6 +602,50 @@ mod tests {
         }
     }
 
+    /// Lighting follows G-Helper's `HasRGB()`, left out where it uses its
+    /// own packets or a 0-4 brightness (Chakram, Pugio II, Keris Wireless,
+    /// Strix Impact II Wireless, Gladius II Wireless). Only the Harpe II Ace
+    /// was tested, with zone 0 as GearLink sends it.
+    #[test]
+    fn lighting_is_where_g_helper_has_it() {
+        let mut lit: Vec<(&str, Option<LightingZone>)> = MODELS
+            .iter()
+            .filter(|m| m.features.lighting.is_some())
+            .map(|m| (m.name, m.features.lighting))
+            .collect();
+        lit.dedup();
+        let all = Some(LightingZone::All);
+        assert_eq!(
+            lit,
+            [
+                ("Harpe II Extreme Edition 20", Some(LightingZone::First)),
+                ("ROG Harpe II Ace", Some(LightingZone::First)),
+                ("Harpe Ace Mini", all),
+                ("ROG Harpe Ace Aim Lab Edition", all),
+                ("ROG Harpe Ace Extreme", all),
+                ("ROG Keris II Ace", all),
+                ("ROG Keris II Origin", all),
+                ("ROG Keris II Origin KJP", all),
+                ("ROG Keris Wireless Aimpoint", all),
+                ("ROG Gladius III Aimpoint", all),
+                ("Strix Impact III Wireless", all),
+                ("ROG Chakram X", all),
+                ("ROG Gladius III Aimpoint", all),
+                ("ROG Gladius III Eva 2", all),
+                ("ROG Gladius III Wireless", all),
+                ("ROG Harpe Ace Aim Lab Edition", all),
+                ("ROG Harpe Ace Extreme", all),
+                ("Harpe Ace Mini", all),
+                ("ROG Keris II Ace", all),
+                ("ROG Keris II Origin", all),
+                ("ROG Keris II Origin KJP", all),
+                ("ROG Keris Wireless Aimpoint", all),
+                ("ROG Spatha X", all),
+                ("TUF GAMING Mini Miku Edition", all),
+            ]
+        );
+    }
+
     /// Ranges the TUI steps through must be consistent, or it could offer a
     /// value the mouse can't store.
     #[test]
@@ -630,10 +674,6 @@ mod tests {
                 assert!(f.power_off.is_some(), "{}", m.name);
                 assert_eq!(w.max % w.step, 0, "{}", m.name);
                 assert!(!w.quarters || w.step % 25 == 0, "{}", m.name);
-            }
-            for (i, effect) in f.lighting.iter().enumerate() {
-                assert!(!matches!(effect, Effect::Unknown(_)), "{}", m.name);
-                assert!(!f.lighting[..i].contains(effect), "{}", m.name);
             }
         }
     }

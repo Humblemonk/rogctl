@@ -144,6 +144,9 @@ impl fmt::Display for Value {
                 Effect::ColorCycle => write!(f, "Colour cycle"),
                 Effect::Reactive => write!(f, "Reactive"),
                 Effect::Battery => write!(f, "Battery level"),
+                Effect::Rainbow => write!(f, "Rainbow"),
+                Effect::Comet => write!(f, "Comet"),
+                Effect::Off => write!(f, "Off"),
                 Effect::Unknown(code) => write!(f, "Unknown ({code:#04x})"),
             },
             Self::Color(rgb @ [r, g, b]) => match COLORS.iter().find(|&&(_, c)| c == rgb) {
@@ -281,11 +284,11 @@ impl App {
     }
 
     /// Why the lighting's colour or brightness can't be changed right now:
-    /// an effect rogctl can't send back, or one that picks its own colours
+    /// an effect rogctl doesn't send, or one that picks its own colours
     /// (GearLink hides the colour then).
     fn lighting_lock(&self, control: Control) -> Option<&'static str> {
         let effect = self.settings.lighting?.effect;
-        if let Effect::Unknown(_) = effect {
+        if !Effect::OFFERED.contains(&effect) {
             Some("pick an effect first")
         } else {
             (control == Control::LightingColor && !effect.uses_color())
@@ -811,7 +814,7 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
             };
             Value::Percent((next / w.step * w.step).min(w.max))
         }
-        Value::Effect(effect) => Value::Effect(walk(f.lighting, effect, up, big)),
+        Value::Effect(effect) => Value::Effect(walk(&Effect::OFFERED, effect, up, big)),
         Value::Color(color) => Value::Color(walk(&COLORS.map(|(_, c)| c), color, up, big)),
         Value::Brightness(pct) => {
             let by = if big { BRIGHTNESS_MAX } else { BRIGHTNESS_STEP };
@@ -899,8 +902,8 @@ pub fn demo_state(f: &Features) -> (Reading, MouseSettings) {
             .filter(|r| r.hz() <= 1000)
             .max()
             .map(|rate| PowerSaving { on: false, rate }),
-        lighting: f.lighting.first().map(|&effect| Lighting {
-            effect,
+        lighting: f.lighting.map(|_| Lighting {
+            effect: Effect::Static,
             brightness: 50,
             color: COLORS[0].1,
         }),
@@ -1408,7 +1411,7 @@ mod tests {
         }
 
         app.settings.lighting = Some(Lighting {
-            effect: Effect::Unknown(0x03),
+            effect: Effect::Unknown(0x07),
             brightness: 50,
             color: [0x12, 0x34, 0x56],
         });
@@ -1425,7 +1428,7 @@ mod tests {
             app.value(Control::LightingEffect)
                 .map(|v| v.to_string())
                 .as_deref(),
-            Some("Unknown (0x03)")
+            Some("Unknown (0x07)")
         );
         assert_eq!(press(&mut app, KeyCode::Enter), None, "nothing to send yet");
         press(&mut app, KeyCode::Left);

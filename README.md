@@ -70,8 +70,9 @@ rogctl settings
 
 This shows the mouse's settings and lets you change them: DPI stages, polling rate, button
 debounce, angle snapping, motion sync, lift-off distance, auto power-off, low-battery
-warning, on ROG Harpe II models advanced power saving, and on the ROG Harpe II Ace the
-lighting (effect, colour and brightness). It only shows the settings your mouse has.
+warning, on ROG Harpe II models advanced power saving, and lighting (effect, colour and
+brightness; all zones together on mice with several). It only shows the settings your mouse
+has.
 
 | Key | Does |
 | --- | --- |

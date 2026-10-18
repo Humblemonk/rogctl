@@ -47,18 +47,25 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
     command is `51 35 FF 00 FF <v> 01`. G-Helper's encoding is ignored by this mouse.
   - Advanced power saving: `12 15` byte 5 on/off, byte 6 a polling-rate code;
     `51 43 00 00 <on> <rate>` sets both. 125-2000 Hz (`Features::power_saving_rates`).
-  - Lighting (`Features::lighting`): GearLink reads and sets zone `00`, where G-Helper writes
-    `01` for this mouse; the read's reply has 0 in byte 3 whatever zone is asked. Effects as
-    in G-Helper (Static `00`, Breathing `01`, Colour cycle `02`, Reactive `04`, Battery
-    `06`); GearLink has no Off effect but sets brightness 0, a percentage it moves in 10%
-    steps. Battery mode's green/blue/red aren't in the packet. GearLink remembers each
-    effect's colour and brightness itself and sends them on a switch; the mouse holds only
-    the current ones. `12 03 01` answers too (effect `02`, 50%, black); what that slot is
-    isn't known. Other mice's lighting (zones, a 0-4 brightness, remapped effect codes in
-    G-Helper) isn't enabled yet.
-- Not implemented: lighting on mice other than the Harpe II Ace, button bindings, onboard
-  profiles, DPI stage count, zone mode (`12 14`/`51 44`), acceleration/deceleration, the
-  Omni "booster" polling-rate encoding.
+  - Lighting (`LightingZone::First`): GearLink reads and sets zone `00`; the read's reply
+    has 0 in byte 3 whatever zone is asked. Effects as in G-Helper (Static `00`, Breathing
+    `01`, Colour cycle `02`, Reactive `04`, Battery `06`); GearLink has no Off effect but
+    sets brightness 0, a percentage it moves in 10% steps. Battery mode's green/blue/red
+    aren't in the packet. GearLink remembers each effect's colour and brightness itself and
+    sends them on a switch; the mouse holds only the current ones. `12 03 01` answers too
+    (effect `02`, 50%, black); what that slot is isn't known.
+- Lighting on other mice is G-Helper's and untested (`LightingZone::All`): every mouse whose
+  class has `HasRGB()` and the default `12 03`/`51 28` packets gets the same five effects,
+  set on zone `03` (all zones at once) and read from zone `00`, as G-Helper's settings
+  window does; it sends a single zone (`00` logo, `01` wheel, `02` underglow) only when one
+  is picked or a profile imported. Rainbow (`03`), Comet (`05`) and Off (`F0`) are shown
+  but not offered, as they carry a speed, direction or random colour rogctl doesn't send.
+  The Chakram, Pugio II, Keris Wireless family, Strix Impact II Wireless and Gladius II
+  Wireless override those packets, the brightness range (0-4) or the effect codes, and get
+  no lighting.
+- Not implemented: lighting on the mice above with their own encodings, single lighting
+  zones, Rainbow and Comet, button bindings, onboard profiles, DPI stage count, zone mode
+  (`12 14`/`51 44`), acceleration/deceleration, the Omni "booster" polling-rate encoding.
 
 ## Models
 
