@@ -17,6 +17,9 @@ import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 
 // Start rogctl again this long after it exits, e.g. if it wasn't on PATH yet.
 const RESTART_SECONDS = 10;
+// Restart rogctl for a changed setting once the settings stop changing for
+// this long: a spinner changes its setting on every step.
+const SETTLE_MS = 1000;
 const SIGUSR1 = 10;
 const SIGTERM = 15;
 
@@ -56,6 +59,7 @@ const Indicator = GObject.registerClass(
       this._status = null;
       this._proc = null;
       this._restartId = 0;
+      this._settleId = 0;
       this._cancellable = new Gio.Cancellable();
 
       this._box = new St.BoxLayout({ style_class: "panel-status-menu-box" });
@@ -79,10 +83,16 @@ const Indicator = GObject.registerClass(
       );
 
       this._settingsIds = [
-        this._settings.connect("changed::binary", () => this._restart()),
-        this._settings.connect("changed::interval", () => this._restart()),
+        this._settings.connect("changed::binary", () =>
+          this._restartWhenSettled(),
+        ),
+        this._settings.connect("changed::interval", () =>
+          this._restartWhenSettled(),
+        ),
         this._settings.connect("changed::show-percent", () => this._render()),
-        this._settings.connect("changed::low-threshold", () => this._restart()),
+        this._settings.connect("changed::low-threshold", () =>
+          this._restartWhenSettled(),
+        ),
         this._settings.connect("changed::hide-when-disconnected", () =>
           this._render(),
         ),
@@ -196,6 +206,26 @@ const Indicator = GObject.registerClass(
       this._startWatch();
     }
 
+    _restartWhenSettled() {
+      this._cancelSettle();
+      this._settleId = GLib.timeout_add(
+        GLib.PRIORITY_DEFAULT,
+        SETTLE_MS,
+        () => {
+          this._settleId = 0;
+          this._restart();
+          return GLib.SOURCE_REMOVE;
+        },
+      );
+    }
+
+    _cancelSettle() {
+      if (this._settleId) {
+        GLib.source_remove(this._settleId);
+        this._settleId = 0;
+      }
+    }
+
     // Read the mouse now instead of waiting for the next interval: SIGUSR1
     // makes the running rogctl read it right away. Only once this rogctl has
     // printed its pid: until then SIGUSR1 would still kill it.
@@ -270,6 +300,7 @@ const Indicator = GObject.registerClass(
 
     destroy() {
       this._cancellable.cancel();
+      this._cancelSettle();
       this._stopWatch();
       for (const id of this._settingsIds) this._settings.disconnect(id);
       this._settingsIds = [];
