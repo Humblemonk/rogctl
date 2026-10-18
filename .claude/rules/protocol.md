@@ -66,8 +66,9 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 - Hardware-verified: one mouse, a Harpe II Ace. On the SpeedNova receiver (`0b05:1ad0`):
   battery and settings reads, and the user's own tests of every change in
   `rogctl settings`. On its cable in wired mode (`0b05:1c69` interface 0, report ID 0,
-  64-byte packets): found and read in `rogctl settings` (battery and settings); changes over
-  the cable are untested. With the receiver plugged in, the cable only charges until the
+  64-byte packets): found and read in `rogctl settings` (battery and settings), and
+  active-stage and polling-rate changes, each echoed and saved without `FF AA`, kept through
+  a replug. With the receiver plugged in, the cable only charges until the
   mouse's mode button is set to wired; then the receiver answers `FF AA` (so, asleep) and the
   cable's replies match the receiver's byte for byte after the report ID
   (`reads_harpe_ii_ace_over_its_cable`).
