@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::{Command, ExecutableCommand};
+use ratatui::layout::Size;
 
 use crate::ASLEEP_RETRY;
 use crate::app::{self, Action, App, Link};
@@ -118,27 +119,28 @@ fn event_loop(
     session: &mut Session,
 ) -> io::Result<()> {
     loop {
-        let mut hits = ui::Hits::default();
-        let mut fits = true;
-        terminal.draw(|frame| {
-            fits = ui::fits(frame.area());
-            hits = ui::draw(frame, app);
-        })?;
+        let (size, mut hits) = draw(terminal, app)?;
         if event::poll(TICK)? {
-            let action = match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
-                    app.handle_key_too_small(key.code, key.modifiers);
-                    None
-                }
+            let event = event::read()?;
+            // A key or click sent while the terminal is resized can come
+            // before the resize: draw again, so it acts on the screen at the
+            // terminal's new size rather than on hits that are gone.
+            if matches!(event, Event::Key(_) | Event::Mouse(_)) && terminal.size()? != size {
+                (_, hits) = draw(terminal, app)?;
+            }
+            let action = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match hits {
+                    Some(_) => app.handle_key(key.code, key.modifiers),
+                    None => {
+                        app.handle_key_too_small(key.code, key.modifiers);
+                        None
+                    }
+                },
                 // Nothing on the too-small notice is clickable, and a click
                 // would still change focus or a pending edit.
-                Event::Mouse(_) if !fits => None,
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.handle_key(key.code, key.modifiers)
-                }
-                Event::Mouse(mouse) => {
+                Event::Mouse(mouse) => hits.and_then(|hits| {
                     app.handle_mouse(mouse.kind, hits.target_at(mouse.column, mouse.row))
-                }
+                }),
                 // Key releases, focus changes, pastes; a resize redraws anyway.
                 _ => None,
             };
@@ -153,6 +155,14 @@ fn event_loop(
             session.tick(app);
         }
     }
+}
+
+/// Draws the screen: the terminal size it was drawn at, and `ui::draw()`'s
+/// hits (`None` while the terminal is too small).
+fn draw(terminal: &mut DefaultTerminal, app: &App) -> io::Result<(Size, Option<ui::Hits>)> {
+    let mut hits = None;
+    let frame = terminal.draw(|frame| hits = ui::draw(frame, app))?;
+    Ok((frame.area.as_size(), hits))
 }
 
 /// Carries out what a key asked for. The only caller of

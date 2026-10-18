@@ -64,29 +64,26 @@ impl Hits {
     }
 }
 
-/// Whether `area` is at least `MIN_SIZE`. Smaller, `draw()` shows only a
-/// notice, and keys only quit.
-pub fn fits(area: Rect) -> bool {
-    area.width >= MIN_SIZE.0 && area.height >= MIN_SIZE.1
+/// Draws the screen and returns where its rows and scale values are, or
+/// `None` when the terminal is too small and only a notice is drawn: then keys
+/// only quit and clicks are ignored, so nothing changes out of sight.
+pub fn draw(frame: &mut Frame, app: &App) -> Option<Hits> {
+    frame.render_widget(Block::new().style(BASE), frame.area());
+    let (min_width, min_height) = MIN_SIZE;
+    if frame.area().width < min_width || frame.area().height < min_height {
+        draw_too_small(frame, MIN_SIZE);
+        return None;
+    }
+    draw_screen(frame, app)
 }
 
-/// Draws the screen and returns where its rows and scale values are.
-pub fn draw(frame: &mut Frame, app: &App) -> Hits {
-    let mut hits = Hits::default();
-    frame.render_widget(Block::new().style(BASE), frame.area());
-    if !fits(frame.area()) {
-        draw_too_small(frame);
-        return hits;
-    }
+/// `draw()` on a terminal of at least `MIN_SIZE`.
+fn draw_screen(frame: &mut Frame, app: &App) -> Option<Hits> {
     let area = frame.area();
     let frame_width = area.width;
-    let area = Rect {
-        width: area.width.min(MAX_WIDTH),
-        ..area
-    };
     // Red is for errors; ✓ and ✗ tell them apart without colour too. A long
-    // error ("…, but not saved on the mouse: …") wraps rather than lose its
-    // end, each line indented by one column.
+    // error ("…, but not saved on the mouse: …") wraps across the terminal's
+    // width, each line indented by one column.
     let message_lines: Vec<Line> = app.message.as_ref().map_or_else(Vec::new, |m| {
         let (mark, style) = if m.error {
             ("✗", ACCENT)
@@ -94,14 +91,16 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
             ("✓", BOLD)
         };
         let text = format!("{mark} {}", m.text);
-        wrap_words(&text, usize::from(area.width).saturating_sub(1))
+        wrap_words(&text, usize::from(frame_width) - 1, MESSAGE_ROWS)
             .into_iter()
             .map(|line| Line::styled(format!(" {line}"), style))
             .collect()
     });
-    // rogctl's longest message takes two rows; three still leave the tallest
-    // model all its rows at 80x24.
-    let message_rows = message_lines.len().clamp(1, 3) as u16;
+    let message_rows = message_lines.len().max(1) as u16;
+    let area = Rect {
+        width: area.width.min(MAX_WIDTH),
+        ..area
+    };
     let [header, body, message, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -109,13 +108,25 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
         Constraint::Length(1),
     ])
     .areas(area);
+    // Cut-off panels could hide the focused row, and a change to it. MIN_SIZE
+    // fits every model (`every_screen_fits_the_min_size`); this catches what
+    // that test doesn't.
+    let needed: u16 = match app.link {
+        Link::Connected => panels(app).iter().map(|(_, rows)| panel_height(rows)).sum(),
+        Link::Asleep | Link::Disconnected | Link::Error(_) => 0,
+    };
+    if needed > body.height {
+        draw_too_small(frame, (MIN_SIZE.0, area.height - body.height + needed));
+        return None;
+    }
 
-    // The header and footer can outgrow MAX_WIDTH (a long name, Tab, the
-    // version); they may use the terminal's whole width.
+    // The header, message and footer can outgrow MAX_WIDTH (a long name or
+    // message, Tab, the version); they may use the terminal's whole width.
     let full_width = |r: Rect| Rect {
         width: frame_width,
         ..r
     };
+    let mut hits = Hits::default();
     frame.render_widget(
         Paragraph::new(header_line(app, frame_width)),
         full_width(header),
@@ -124,7 +135,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
         Link::Connected => draw_settings(frame, app, body, &mut hits),
         Link::Asleep | Link::Disconnected | Link::Error(_) => draw_link_notice(frame, app, body),
     }
-    frame.render_widget(Paragraph::new(message_lines), message);
+    frame.render_widget(Paragraph::new(message_lines), full_width(message));
     frame.render_widget(
         Paragraph::new(footer_line(app, frame_width)),
         full_width(footer),
@@ -132,8 +143,12 @@ pub fn draw(frame: &mut Frame, app: &App) -> Hits {
     if app.help {
         draw_help(frame, area);
     }
-    hits
+    Some(hits)
 }
+
+/// rogctl's longest message takes two rows; three still leave the tallest
+/// model all its rows at 80x24.
+const MESSAGE_ROWS: usize = 3;
 
 /// A bordered section with GearLink's thin grey lines and a white heading.
 fn panel(title: &str) -> Block<'static> {
@@ -255,26 +270,31 @@ fn footer_line(app: &App, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
+/// The settings' panels, top to bottom, each with its title and rows.
+fn panels(app: &App) -> [(&'static str, Vec<Row>); 2] {
     let (battery, performance): (Vec<Row>, Vec<Row>) =
         app.rows().into_iter().partition(|r| r.control.is_battery());
-    let height = |rows: &[Row]| {
-        if rows.is_empty() {
-            0
-        } else {
-            rows.len() as u16 + 2
-        }
-    };
+    [("Performance", performance), ("Battery", battery)]
+}
+
+/// A panel's rows and its border; none for a panel with no rows.
+fn panel_height(rows: &[Row]) -> u16 {
+    if rows.is_empty() {
+        0
+    } else {
+        rows.len() as u16 + 2
+    }
+}
+
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect, hits: &mut Hits) {
+    let panels = panels(app);
     let [top, bottom, _] = Layout::vertical([
-        Constraint::Length(height(&performance)),
-        Constraint::Length(height(&battery)),
+        Constraint::Length(panel_height(&panels[0].1)),
+        Constraint::Length(panel_height(&panels[1].1)),
         Constraint::Min(0),
     ])
     .areas(area);
-    for (title, rows, area) in [
-        ("Performance", performance, top),
-        ("Battery", battery, bottom),
-    ] {
+    for ((title, rows), area) in panels.into_iter().zip([top, bottom]) {
         if rows.is_empty() {
             continue;
         }
@@ -523,8 +543,9 @@ fn draw_link_notice(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// `text` broken at spaces into lines at most `width` columns wide; a word
-/// wider than that gets a line of its own.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
+/// wider than that gets a line of its own. Past `max_lines` the text is cut,
+/// and the last line ends in "…" to show it.
+fn wrap_words(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         match lines.last_mut() {
@@ -535,14 +556,20 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
             Some(_) | None => lines.push(word.to_owned()),
         }
     }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            while Span::raw(&*last).width() + 1 > width && last.pop().is_some() {}
+            last.push('…');
+        }
+    }
     lines
 }
 
 /// btop's notice in place of everything: the terminal's size, each side red
 /// while it is too small, and the size rogctl needs.
-fn draw_too_small(frame: &mut Frame) {
+fn draw_too_small(frame: &mut Frame, (min_width, min_height): (u16, u16)) {
     let area = frame.area();
-    let (min_width, min_height) = MIN_SIZE;
     let side = |have: u16, need: u16| {
         Span::styled(have.to_string(), if have < need { ACCENT } else { BOLD })
     };
@@ -653,7 +680,11 @@ mod tests {
 
     /// The screen as text, one line per row, trailing spaces trimmed.
     fn render(app: &App, width: u16, height: u16) -> String {
-        let buffer = draw_to_buffer(app, width, height);
+        screen_text(&draw_to_buffer(app, width, height))
+    }
+
+    fn screen_text(buffer: &Buffer) -> String {
+        let Rect { width, height, .. } = buffer.area;
         (0..height)
             .map(|y| {
                 (0..width)
@@ -880,8 +911,9 @@ mod tests {
         for model in MODELS {
             let app = demo(model);
             let mut terminal = Terminal::new(TestBackend::new(MIN_SIZE.0, MIN_SIZE.1)).unwrap();
-            let mut hits = Hits::default();
+            let mut hits = None;
             terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
+            let hits = hits.unwrap();
             let buffer = terminal.backend().buffer();
             for row in app.rows() {
                 let control = row.control;
@@ -908,11 +940,11 @@ mod tests {
                     }
                 }
             }
-            for (w, h) in [(1, 1), (20, 5), (80, 24)] {
+            for (w, h) in [(80, 24), (120, 40)] {
                 let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-                let mut hits = Hits::default();
+                let mut hits = None;
                 terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
-                for (area, target) in &hits.0 {
+                for (area, target) in &hits.unwrap().0 {
                     assert!(area.right() <= w && area.bottom() <= h, "{target:?}");
                 }
             }
@@ -934,48 +966,40 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// A narrow footer drops the version, then the least needed keys; `?`
-    /// and `q` stay. At 80 columns only Tab, with several mice, costs a key.
+    /// At 80 columns, the narrowest the footer is drawn, every key fits but
+    /// with Tab, which costs Esc; `?` and `q` stay.
     #[test]
     fn narrow_footer_keeps_help_and_quit() {
         let model = app::find_model(app::DEMO_MODEL).unwrap();
         let mut app = demo(model);
-        let footer = |app: &App, width| text(&footer_line(app, width));
-        let keys = " ↑↓ select  ←→ change  Enter apply  Esc cancel  r reload  ? help  q quit";
-        assert_eq!(
-            footer(&app, 72),
-            keys,
-            "the version goes, every key fits exactly"
+        let width = MIN_SIZE.0;
+        let footer = |app: &App| text(&footer_line(app, width));
+        assert!(
+            footer(&app).starts_with(
+                " ↑↓ select  ←→ change  Enter apply  Esc cancel  r reload  ? help  q quit"
+            ),
+            "{:?}",
+            footer(&app)
         );
         app.devices = 2;
         assert_eq!(
-            footer(&app, MIN_SIZE.0),
+            footer(&app),
             " ↑↓ select  ←→ change  Enter apply  r reload  Tab next mouse  ? help  q quit"
         );
-        for width in [20, 40, 60, 79] {
-            let footer = footer(&app, width);
-            assert!(footer.ends_with("? help  q quit"), "{width}: {footer:?}");
-        }
-        assert_eq!(
-            footer(&app, 60),
-            " ←→ change  Enter apply  Tab next mouse  ? help  q quit"
-        );
-        assert_eq!(footer(&app, 40), " Tab next mouse  ? help  q quit");
         app.help = true;
         let version = concat!("v", env!("CARGO_PKG_VERSION"));
         assert_eq!(
-            footer(&app, 100),
+            footer(&app),
             format!(" Esc close help  {version}"),
             "only Esc works"
         );
 
         let mut app = App::new(false);
-        assert_eq!(footer(&app, 24), " r retry  ? help  q quit");
         app.devices = 2;
-        assert_eq!(
-            footer(&app, 39),
-            " r retry  ? help  q quit",
-            "retry outlasts Tab"
+        assert!(
+            footer(&app).starts_with(" r retry  Tab next mouse  ? help  q quit"),
+            "{:?}",
+            footer(&app)
         );
     }
 
@@ -1003,8 +1027,10 @@ mod tests {
             .enumerate()
             .find(|(_, l)| l.contains("Width = 79"))
             .unwrap();
+        // The column, not the byte offset: they differ past a non-ASCII
+        // character.
         let at = |number: &str| {
-            let x = line.find(number).unwrap();
+            let x = Span::raw(&line[..line.find(number).unwrap()]).width();
             buffer[(x as u16, y as u16)].fg
         };
         assert_eq!(at("79"), RED, "too narrow");
@@ -1012,10 +1038,68 @@ mod tests {
 
         for (w, h) in [(79, 24), (80, 23), (1, 1)] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-            let mut hits = Hits::default();
+            let mut hits = Some(Hits::default());
             terminal.draw(|frame| hits = draw(frame, &app)).unwrap();
-            assert!(hits.0.is_empty(), "{w}x{h}");
+            assert!(hits.is_none(), "{w}x{h}");
         }
+    }
+
+    /// Panels taller than the space left for them aren't drawn cut off, which
+    /// could hide the focused row: the notice says how many rows they need.
+    /// No model is that tall at `MIN_SIZE`, so this draws below it.
+    #[test]
+    fn panels_that_do_not_fit_show_the_size_needed() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        app.error("x");
+        let panels: u16 = panels(&app).iter().map(|(_, r)| panel_height(r)).sum();
+        // The header, a one-row message and the footer.
+        let needed = panels + 3;
+        let draw_at = |height| {
+            let mut terminal = Terminal::new(TestBackend::new(MIN_SIZE.0, height)).unwrap();
+            let mut hits = None;
+            terminal
+                .draw(|frame| hits = draw_screen(frame, &app))
+                .unwrap();
+            (hits, screen_text(terminal.backend().buffer()))
+        };
+        let (hits, screen) = draw_at(needed - 1);
+        assert!(hits.is_none(), "{screen}");
+        let size = format!("Width = 80 Height = {needed}");
+        assert!(screen.contains(&size), "{size:?}\n{screen}");
+        assert!(!screen.contains("DPI"), "{screen}");
+        let (hits, screen) = draw_at(needed);
+        assert!(hits.is_some(), "{screen}");
+    }
+
+    /// A message too long for three rows ends in "…" rather than being cut
+    /// without a sign; on a wide terminal it uses the whole width.
+    #[test]
+    fn messages_wrap_across_the_terminal() {
+        let model = app::find_model(app::DEMO_MODEL).unwrap();
+        let mut app = demo(model);
+        app.error("word ".repeat(100));
+        let screen = render(&app, 80, 24);
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(lines[22].ends_with('…'), "{screen}");
+        assert!(Span::raw(lines[22]).width() <= 80, "{screen}");
+        assert!(lines[20].starts_with(" ✗ word"), "three rows\n{screen}");
+
+        app.error(
+            "Power-saving rate set to 1000 Hz, but not saved on the mouse: \
+             this mouse doesn't have that setting",
+        );
+        let screen = render(&app, 120, 24);
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(lines[22].ends_with("that setting"), "one row\n{screen}");
+    }
+
+    #[test]
+    fn wrap_words_marks_a_cut() {
+        assert_eq!(wrap_words("aa bb cc", 5, 2), ["aa bb", "cc"]);
+        assert_eq!(wrap_words("aa bb cc dd", 5, 1), ["aa b…"]);
+        assert_eq!(wrap_words("aa bb cc dd", 6, 1), ["aa bb…"]);
+        assert!(wrap_words("", 5, 1).is_empty());
     }
 
     /// Whether every word of `text` is in `line`, in order.
@@ -1053,8 +1137,10 @@ mod tests {
                 );
             }
             if let Some(m) = &app.message {
-                // The rows between the panels and the footer.
-                let below = lines[..lines.len() - 1].join(" ");
+                // The rows between the panels and the footer, so the
+                // panels' own text can't stand in for a cut message.
+                let panels_end = lines.iter().rposition(|l| l.starts_with('└'));
+                let below = lines[panels_end.unwrap() + 1..lines.len() - 1].join(" ");
                 assert!(
                     in_order(&below, &m.text),
                     "{name:?}: {:?} is cut\n{screen}",

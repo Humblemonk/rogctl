@@ -349,7 +349,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
-        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+        if is_ctrl_c(code, mods) {
             self.quit = true;
             return None;
         }
@@ -399,8 +399,7 @@ impl App {
     /// (q, Ctrl+C): nothing may change what can't be seen, so a pending edit
     /// waits, unapplied, for the terminal to grow.
     pub fn handle_key_too_small(&mut self, code: KeyCode, mods: KeyModifiers) {
-        self.quit = code == KeyCode::Char('q')
-            || (mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c'));
+        self.quit |= code == KeyCode::Char('q') || is_ctrl_c(code, mods);
     }
 
     /// Only Enter's path writes. A click selects a row, then applies like
@@ -712,6 +711,11 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
 
 /// Finds a model by name for `--demo`, ignoring case; the wireless entry if
 /// there are both.
+/// Ctrl+C quits from every screen, help and the too-small notice included.
+fn is_ctrl_c(code: KeyCode, mods: KeyModifiers) -> bool {
+    mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c')
+}
+
 pub fn find_model(name: &str) -> Option<&'static Model> {
     let named = || MODELS.iter().filter(|m| m.name.eq_ignore_ascii_case(name));
     named().find(|m| m.wireless).or_else(|| named().next())

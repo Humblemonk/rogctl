@@ -13,7 +13,8 @@ paths:
   only change a pending `Edit`; Esc, moving focus or `r` drop it (Esc the status message
   too). Every change is also saved to the mouse's flash, so never write on each key press.
 - The mouse goes through the same paths: `ui::draw()` returns `Hits` (each selectable row,
-  and each value on its scale), `App::handle_mouse()` maps a click on the focused row to
+  and each value on its scale; `None` when only the too-small notice was drawn),
+  `App::handle_mouse()` maps a click on the focused row to
   `confirm()` (Enter) and everything else to focus or a pending `Edit`: a first click
   selects, the wheel steps like ←/→, a scale value sets the edit. Locked rows get no hit.
   Only clicks and the wheel are captured (`EnableClickCapture`), so pointer moves don't
@@ -58,18 +59,20 @@ several models looks and behaves the same on all of them.
   tuning, locked rows and values outside the list stay text. No sidebar or pages: every
   model fits one screen.
 - **Size:** every screen of every model fits 80x24 (`ui::MIN_SIZE`, btop's minimum): all
-  rows, a pending edit's hint, the header and a message, which wraps at spaces onto up to
-  three rows (`wrap_words()`). The tallest model (Harpe II) uses 20 of the 24 rows, 22 with a
-  three-row message, and the widest row with its hint 77 of a panel's 78 columns. Below
-  80x24 `draw()` shows only btop's "Terminal size too small" notice, keys only quit
-  (`App::handle_key_too_small()`: q, Ctrl+C) and clicks are ignored, so nothing changes out
-  of sight. Only the footer may drop keys at 80 columns; a demo header too long for 80 drops
-  "Battery:".
+  rows, a pending edit's hint, the header and a message, which wraps at spaces across the
+  terminal onto up to three rows, ending in "…" if it's longer (`wrap_words()`). The tallest
+  model (Harpe II) uses 20 of the 24 rows, 22 with a three-row message, and the widest row
+  with its hint 77 of a panel's 78 columns. Below 80x24, or if the panels don't fit what's
+  left, `draw()` shows only btop's "Terminal size too small" notice with the size needed and
+  returns `None`: keys only quit (`App::handle_key_too_small()`: q, Ctrl+C) and clicks are
+  ignored, so nothing changes out of sight. A key or click that comes before a resize is
+  handled after a redraw at the new size. Only the footer may drop keys at 80 columns; a
+  demo header too long for 80 drops "Battery:".
   `every_screen_fits_the_min_size` checks every model, focus, edit, message and notice.
 - **Footer keys** are only the ones that do something on the screen shown: with no mouse
-  connected, just `r`, `?`, `q` (and Tab with several mice); with help open, just Esc. A
-  terminal too narrow for them drops the version, then the least needed keys
-  (`footer_line()`); outside help, `?` and `q` are never dropped.
+  connected, just `r`, `?`, `q` (and Tab with several mice); with help open, just Esc. When
+  they don't fit, the version goes first, then the least needed keys (`footer_line()`); at
+  80 columns that's only Esc, when Tab shows. Outside help, `?` and `q` are never dropped.
 - **Colours** follow GearLink's ROG theme: near-black, white text, grey detail, one red
   accent (the header's `///`, focus band, active stage, pending edit, switches that are on,
   errors, the header's battery at or below the mouse's low-battery warning). Nothing else is
