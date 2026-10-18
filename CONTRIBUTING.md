@@ -5,7 +5,7 @@ the project does and how to install it, see [README.md](README.md).
 
 ## Setup
 
-You need a Rust toolchain (stable, edition 2024). For widget work you need the desktop the
+You need a Rust toolchain, 1.88 or newer. For widget work you need the desktop the
 widget is for: Noctalia 5.1 or newer, Waybar, Quickshell, DankMaterialShell 1.5 or newer,
 KDE Plasma 6, or GNOME 45 or newer.
 
@@ -19,9 +19,9 @@ To talk to a mouse without root, install the udev rule once (see
 [Getting started](README.md#getting-started), step 3), then run from the checkout:
 
 ```sh
-cargo run -- list        # which devices were found, and on which /dev/hidraw node
-cargo run -- --json      # read the battery once
-cargo run -- settings       # read the settings (nothing is changed until you press Enter)
+cargo run -- list             # which devices were found, and on which /dev/hidraw node
+cargo run -- --json           # read the battery once
+cargo run -- settings         # read the settings (nothing is changed until you press Enter)
 cargo run -- settings --demo  # the settings screen without a mouse
 ```
 
@@ -50,8 +50,8 @@ A constructor such as
 base(0x0B05, 0x1A1A, "mi_00", true)
 ```
 
-maps to `usb("Name", 0x1a1a, 0, true)`: product ID, interface (from `mi_00`) and whether
-that product ID is a receiver. Use `usb64` if the class overrides `USBPacketSize()` to 64,
+maps to `usb("Name", 0x1a1a, 0, true, FEATURES)`: product ID, interface (from `mi_00`) and
+whether that product ID is a receiver. Use `usb64` if the class overrides `USBPacketSize()` to 64,
 and `usb_quarters` if `ParseBattery` multiplies by 25. A mouse on the Omni receiver
 (`0x1ACE`) goes in with `omni()` and the product IDs from `MouseFromOmniPid` in
 `PeripheralsProvider.cs`. Add the product ID to `udev/70-rogctl.rules` and the mouse to the
@@ -137,5 +137,5 @@ Include:
   software shows
 - `lsusb | grep -i asus`
 - your mouse model and whether it's on the receiver or a cable
-- for widget problems, your Noctalia version (`noctalia --version`) and any lines mentioning
-  `rog-mouse-battery` in `~/.cache/noctalia/noctalia.log`
+- for widget problems, which desktop and its version; for Noctalia, `noctalia --version` and
+  any lines mentioning `rog-mouse-battery` in `~/.cache/noctalia/noctalia.log`

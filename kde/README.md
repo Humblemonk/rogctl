@@ -9,14 +9,14 @@ Shows your mouse's battery level in a Plasma 6 panel. Needs
 rogctl configure kde
 ```
 
-This installs it with `kpackagetool6`.
-
-Then add **ASUS Mouse Battery** to a panel from Add Widgets.
+This installs it with `kpackagetool6`. Then add **ASUS Mouse Battery** to a panel from Add
+Widgets.
 
 ## Use
 
 Click the widget for details; middle-click it to read the mouse right away. The rogctl
-command, refresh interval and low-battery threshold are in its settings.
+command, refresh interval, low-battery threshold, percentage and hiding while no mouse is
+connected are in its settings.
 
 ## Update or remove
 

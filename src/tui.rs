@@ -22,8 +22,9 @@ use crate::ui::{self, ColorMode};
 const TICK: Duration = Duration::from_millis(250);
 /// How often to look for an unplugged or replugged mouse.
 const PRESENCE_CHECK: Duration = Duration::from_secs(2);
-/// How often to read the battery for the header while the mouse is connected,
-/// so a cable being plugged in shows as charging.
+/// How often to read the battery for the header, and the active DPI stage,
+/// while the mouse is connected, so a cable being plugged in shows as charging
+/// and a press of the mouse's DPI button shows too.
 const BATTERY_POLL: Duration = Duration::from_secs(10);
 
 /// `demo`: `Some` runs without a mouse, as the named model or the default.
@@ -169,7 +170,7 @@ fn draw(
     Ok((frame.area.as_size(), hits))
 }
 
-/// Carries out what a key asked for. The only caller of
+/// Carries out what a key or click asked for. The only caller of
 /// `Connection::apply`, so the only code that changes the mouse.
 fn apply_action(app: &mut App, session: &mut Session, action: Action) {
     match action {

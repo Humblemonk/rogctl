@@ -19,8 +19,9 @@ type = "humblemonk/rog-mouse-battery:battery"
 
 ## Use
 
-Click the widget to read the mouse right away. The refresh interval, low-battery threshold,
-icon and rogctl command are in the plugin and widget settings.
+Click the widget to read the mouse right away. The rogctl command, refresh interval and
+low-battery threshold are in the plugin's settings; the icon, percentage and hiding while no
+mouse is connected are in the widget's.
 
 ## Update or remove
 

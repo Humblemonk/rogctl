@@ -81,7 +81,7 @@ struct Status {
     /// Set by `watch` on the one line where a low-battery notification is due.
     #[serde(skip_serializing_if = "is_false")]
     notify_low: bool,
-    /// The `watch` process, for sending it SIGUSR1.
+    /// The `watch` process, for `rogctl refresh` and `rogctl stop`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
     /// The smallest change in `battery` the mouse reports: 25 for mice that

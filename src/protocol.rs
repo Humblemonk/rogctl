@@ -809,7 +809,7 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
             }
             // Clamped to 100%, not to `w.max`: a power-off change resends the
             // warning read back, which must go back unchanged even if the
-            // mouse holds more than `w.max`. `App::step()` keeps a warning the
+            // mouse holds more than `w.max`. `app::step()` keeps a warning the
             // user picks within `w.max`.
             let warning = match f.low_battery_warning {
                 Some(w) => {
@@ -897,7 +897,8 @@ mod tests {
         buf
     }
 
-    /// Puts `values` at `at` in an otherwise empty reply to `query`.
+    /// An otherwise empty reply to `query`, with each of `fields`' bytes at
+    /// its offset.
     fn reply_with(query: Query, report_id: u8, fields: &[(usize, &[u8])]) -> [u8; 66] {
         let mut buf = reply(Query::request(query, report_id).bytes());
         for (at, values) in fields {
@@ -992,7 +993,7 @@ mod tests {
     }
 
     /// A Harpe II Ace reads its settings from the profile, X/Y DPI, colour,
-    /// main config, motion sync and lift-off pages.
+    /// main config, motion sync, lift-off, power-saving and lighting pages.
     #[test]
     fn reads_every_harpe_ii_ace_setting() {
         let f = features("ROG Harpe II Ace", true);

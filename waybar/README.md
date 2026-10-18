@@ -21,8 +21,8 @@ line. If Waybar can't find rogctl, put its full path there, such as
 ## Styling
 
 The module has one CSS class for its state, `connected`, `asleep`, `error` or `disconnected`,
-plus `charging` and `low`. `format-icons` uses the same names. It hides itself while no mouse
-is plugged in.
+plus `charging` and `low`. `format-icons` is keyed by the state, or `charging` while the
+mouse charges. The module hides itself while no mouse is plugged in.
 
 Waybar can't send notifications, so this module only turns red when the battery is low.
 

@@ -22,7 +22,7 @@ each widget is a thin frontend over its JSON output. Prefer the simple, obvious 
 | `src/device.rs` | Discovery (sysfs, Omni pairing) and hidraw I/O: `Connection` sends a request, waits for its reply |
 | `src/protocol.rs` | Every byte sent or parsed: requests, reply parsers, `Features` (what a model has) |
 | `src/models.rs` | `MODELS`: supported mice and their `Features`, transcribed from G-Helper |
-| `src/main.rs` | CLI (`battery`, `watch`, `list`, `settings`, `configure`), JSON status output |
+| `src/main.rs` | CLI (`battery`, `watch`, `list`, `refresh`, `stop`, `settings`, `configure`), JSON status output |
 | `src/waybar.rs` | `--format waybar`: the status as Waybar custom-module JSON |
 | `src/configure.rs` | `rogctl configure`: installs or removes a widget from copies built into the binary |
 | `src/app.rs` | TUI state and key handling (`Control`, `Value`, `Action`); no I/O |

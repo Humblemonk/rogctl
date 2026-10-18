@@ -28,7 +28,7 @@ shows the demo as another model from the [Supported mice](../README.md#supported
 | `--format FORMAT` | `text` (the default), `json` or `waybar` |
 | `--json` | Same as `--format json` |
 | `--low-threshold PCT` | Level at or below which the battery counts as low (default 20, 0 turns it off) |
-| `--interval SECS` | `watch` only: seconds between reads while the mouse is awake (default 60) |
+| `--interval SECS` | `watch` only: seconds between reads while the mouse is awake, 1 to 86400 (default 60) |
 
 ## Installing widgets
 
@@ -39,7 +39,7 @@ widget. `--remove` removes the widget.
 
 | Desktop | Install | Remove |
 | --- | --- | --- |
-| `noctalia` | Copies the plugin to `$XDG_DATA_HOME/noctalia/plugins/rog-mouse-battery`, then enables it with `noctalia msg` | Disables it, then deletes its files |
+| `noctalia` | Copies the plugin to `$XDG_DATA_HOME/noctalia/plugins/rog-mouse-battery`, then enables it with `noctalia msg` (and reloads Noctalia's config on an update) | Disables it, then deletes its files |
 | `waybar` | Prints the module, its CSS and the steps; doesn't edit the Waybar config | Prints the steps |
 | `quickshell` | Copies three files next to `$XDG_CONFIG_HOME/quickshell/shell.qml` | Deletes them, keeping `RogMouseSettings.qml` if you changed it |
 | `dms` | Copies the plugin to `$XDG_CONFIG_HOME/DankMaterialShell/plugins/RogMouseBattery`, then rescans with `dms ipc` | Deletes its files, then rescans |
@@ -79,6 +79,8 @@ count; for KDE and GNOME, by the installed files and the version in their `metad
 | 2 | No device |
 | 3 | Mouse asleep or out of range |
 
+`rogctl list` exits with 0 when it finds a mouse and 2 when it finds none.
+
 ## JSON status
 
 Each status is one line of JSON, for example:
@@ -107,7 +109,8 @@ Fields that don't apply are left out rather than set to `null`.
 
 The mouse stops answering while it sleeps. `watch` then keeps reporting the last level read,
 with `"state":"asleep"`, and reads it every 10 seconds whatever `--interval` is (or every
-`--interval` if that's shorter), so a mouse that wakes shows up within 10 seconds.
+`--interval` if that's shorter), so a mouse that wakes shows up within 10 seconds. After an
+error it tries again in 5 seconds, then waits twice as long each time, up to `--interval`.
 
 `notify_low` is set once when the battery drops to the threshold. It's set again only after
 the mouse has charged or risen 5% above the threshold, so a notification on it won't repeat.
