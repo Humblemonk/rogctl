@@ -14,8 +14,23 @@ export default class RogMouseBatteryPreferences extends ExtensionPreferences {
     const group = new Adw.PreferencesGroup();
     page.add(group);
 
-    const binary = new Adw.EntryRow({ title: _("rogctl command") });
-    settings.bind("binary", binary, "text", Gio.SettingsBindFlags.DEFAULT);
+    // Saved on Apply, not bound: each change restarts rogctl, so a binding
+    // would run every partial command as it's typed.
+    const binary = new Adw.EntryRow({
+      title: _("rogctl command"),
+      text: settings.get_string("binary"),
+      show_apply_button: true,
+    });
+    const saveBinary = () => {
+      if (binary.text !== settings.get_string("binary"))
+        settings.set_string("binary", binary.text);
+    };
+    binary.connect("apply", saveBinary);
+    // Closing the window also saves a command typed but not applied.
+    window.connect("close-request", () => {
+      saveBinary();
+      return false;
+    });
     group.add(binary);
 
     const interval = new Adw.SpinRow({

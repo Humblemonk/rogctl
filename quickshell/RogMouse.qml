@@ -1,8 +1,9 @@
 pragma Singleton
 
 // Mouse battery status from `rogctl watch --json`, for Quickshell configs.
-// Copy this file next to your shell.qml and read `RogMouse.battery` etc. from
-// any bar; a singleton runs one rogctl however many bars show it.
+// Copy this file and RogMouseSettings.qml next to your shell.qml and read
+// `RogMouse.battery` etc. from any bar; a singleton runs one rogctl however
+// many bars show it.
 
 import QtQuick
 import Quickshell
@@ -11,11 +12,10 @@ import Quickshell.Io
 Singleton {
     id: root
 
-    // Settings: edit these here.
-    property string binary: "rogctl"
-    property int interval: 60
-    // Notify at or below this level; 0 turns it off.
-    property int lowThreshold: 20
+    // Settings: edit them in RogMouseSettings.qml; updates keep your changes.
+    readonly property string binary: settings.binary
+    readonly property int interval: settings.interval
+    readonly property int lowThreshold: settings.lowThreshold
 
     // The last status line: state ("connected", "asleep", "disconnected" or
     // "error"), device, battery, charging, error, ... See docs/cli.md.
@@ -46,11 +46,15 @@ Singleton {
     // Emitted once per drop to the threshold, when rogctl flags it.
     signal lowBattery
 
-    // Read the mouse now instead of waiting for the next interval: SIGUSR1
-    // makes the running rogctl read it right away.
+    // The binary the running rogctl started with: refresh goes through the
+    // same one, so a wrapper's pid means the same there.
+    property string _watchBinary: ""
+
+    // Read the mouse now instead of waiting for the next interval. `rogctl
+    // refresh` signals the pid only if it's a `rogctl watch`, unlike `kill`.
     function refresh() {
         if (watcher.running && status?.pid)
-            Quickshell.execDetached(["kill", "-USR1", String(status.pid)]);
+            Quickshell.execDetached([root._watchBinary, "refresh", String(status.pid)]);
     }
 
     function _publish(line) {
@@ -68,6 +72,10 @@ Singleton {
         }
     }
 
+    RogMouseSettings {
+        id: settings
+    }
+
     Process {
         id: watcher
         command: [root.binary, "watch", "--json", "--interval", String(root.interval), "--low-threshold", String(root.lowThreshold)]
@@ -83,7 +91,9 @@ Singleton {
             };
         }
         onRunningChanged: {
-            if (!running)
+            if (running)
+                root._watchBinary = command[0];
+            else
                 restartTimer.start();
         }
     }

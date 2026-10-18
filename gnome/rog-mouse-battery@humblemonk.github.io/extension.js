@@ -17,7 +17,9 @@ import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 
 // Start rogctl again this long after it exits, e.g. if it wasn't on PATH yet.
 const RESTART_SECONDS = 10;
-const SIGUSR1 = 10;
+// Restart rogctl for a changed setting once the settings stop changing for
+// this long: a spinner changes its setting on every step.
+const SETTLE_MS = 1000;
 const SIGTERM = 15;
 
 // Status words as the kernel and desktops use them: discharging, charging,
@@ -40,7 +42,9 @@ function iconName(s) {
     return "dialog-warning-symbolic";
   if (s.charging && s.battery !== undefined) {
     if (s.battery === 100) return "battery-level-100-charged-symbolic";
-    return `battery-level-${Math.round(s.battery / 10) * 10}-charging-symbolic`;
+    // Rounded down, as GNOME Shell's power indicator does: Adwaita has no
+    // battery-level-100-charging icon, so 95-99% would show none.
+    return `battery-level-${Math.floor(s.battery / 10) * 10}-charging-symbolic`;
   }
   return "input-mouse-symbolic";
 }
@@ -53,7 +57,11 @@ const Indicator = GObject.registerClass(
       this._settings = extension.getSettings();
       this._status = null;
       this._proc = null;
+      // The pid the running rogctl printed; null until its first line.
+      this._pid = null;
+      this._reading = null;
       this._restartId = 0;
+      this._settleId = 0;
       this._cancellable = new Gio.Cancellable();
 
       this._box = new St.BoxLayout({ style_class: "panel-status-menu-box" });
@@ -77,10 +85,16 @@ const Indicator = GObject.registerClass(
       );
 
       this._settingsIds = [
-        this._settings.connect("changed::binary", () => this._restart()),
-        this._settings.connect("changed::interval", () => this._restart()),
+        this._settings.connect("changed::binary", () =>
+          this._restartWhenSettled(),
+        ),
+        this._settings.connect("changed::interval", () =>
+          this._restartWhenSettled(),
+        ),
         this._settings.connect("changed::show-percent", () => this._render()),
-        this._settings.connect("changed::low-threshold", () => this._restart()),
+        this._settings.connect("changed::low-threshold", () =>
+          this._restartWhenSettled(),
+        ),
         this._settings.connect("changed::hide-when-disconnected", () =>
           this._render(),
         ),
@@ -95,6 +109,10 @@ const Indicator = GObject.registerClass(
     }
 
     _startWatch() {
+      this._pid = null;
+      // Refresh goes through the same binary, so a wrapper's pid means the
+      // same there.
+      this._watchBinary = this._binary;
       const argv = [
         this._binary,
         "watch",
@@ -118,12 +136,14 @@ const Indicator = GObject.registerClass(
         return;
       }
       this._proc = proc;
+      // Cancelled when this rogctl is stopped, so its lines stop counting.
+      this._reading = new Gio.Cancellable();
 
       const stream = new Gio.DataInputStream({
         base_stream: proc.get_stdout_pipe(),
         close_base_stream: true,
       });
-      this._readLine(stream);
+      this._readLine(stream, this._reading);
 
       proc.wait_async(this._cancellable, (p, res) => {
         try {
@@ -133,6 +153,7 @@ const Indicator = GObject.registerClass(
         }
         if (this._proc !== p) return; // Stopped by _restart(), which starts the next one.
         this._proc = null;
+        this._pid = null;
         this._publishError(
           p.get_if_exited()
             ? _("%s exited with status %d").format(
@@ -148,22 +169,22 @@ const Indicator = GObject.registerClass(
       });
     }
 
-    _readLine(stream) {
-      stream.read_line_async(
-        GLib.PRIORITY_DEFAULT,
-        this._cancellable,
-        (s, res) => {
-          let line;
-          try {
-            [line] = s.read_line_finish_utf8(res);
-          } catch {
-            return; // Cancelled or closed.
-          }
-          if (line === null) return; // rogctl exited; wait_async handles that.
-          this._handleLine(line);
-          this._readLine(s);
-        },
-      );
+    _readLine(stream, cancellable) {
+      stream.read_line_async(GLib.PRIORITY_DEFAULT, cancellable, (s, res) => {
+        let line;
+        try {
+          [line] = s.read_line_finish_utf8(res);
+        } catch {
+          // Stopped or closed. Closing the pipe makes a rogctl that outlived
+          // its stop (under a wrapper script SIGTERM only reaches the
+          // script) exit at its next line.
+          s.close_async(GLib.PRIORITY_DEFAULT, null, null);
+          return;
+        }
+        if (line === null) return; // rogctl exited; wait_async handles that.
+        this._handleLine(line);
+        this._readLine(s, cancellable);
+      });
     }
 
     _scheduleRestart() {
@@ -186,6 +207,9 @@ const Indicator = GObject.registerClass(
       }
       const proc = this._proc;
       this._proc = null;
+      this._pid = null;
+      this._reading?.cancel();
+      this._reading = null;
       proc?.send_signal(SIGTERM);
     }
 
@@ -194,10 +218,39 @@ const Indicator = GObject.registerClass(
       this._startWatch();
     }
 
-    // Read the mouse now instead of waiting for the next interval: SIGUSR1
-    // makes the running rogctl read it right away.
+    _restartWhenSettled() {
+      this._cancelSettle();
+      this._settleId = GLib.timeout_add(
+        GLib.PRIORITY_DEFAULT,
+        SETTLE_MS,
+        () => {
+          this._settleId = 0;
+          this._restart();
+          return GLib.SOURCE_REMOVE;
+        },
+      );
+    }
+
+    _cancelSettle() {
+      if (this._settleId) {
+        GLib.source_remove(this._settleId);
+        this._settleId = 0;
+      }
+    }
+
+    // Read the mouse now instead of waiting for the next interval, once this
+    // rogctl printed its pid (until then the signal would kill it). `rogctl
+    // refresh` signals the pid only if it's a `rogctl watch`, unlike `kill`.
     _refresh() {
-      this._proc?.send_signal(SIGUSR1);
+      if (!this._pid) return;
+      try {
+        Gio.Subprocess.new(
+          [this._watchBinary, "refresh", String(this._pid)],
+          Gio.SubprocessFlags.STDERR_SILENCE,
+        );
+      } catch (e) {
+        console.warn(`rog-mouse-battery: ${e.message}`);
+      }
     }
 
     _handleLine(line) {
@@ -209,6 +262,7 @@ const Indicator = GObject.registerClass(
         return;
       }
       this._status = s;
+      if (s.pid) this._pid = s.pid;
       if (s.notify_low) {
         // Solaar's format: the device name as the title, its battery line as the body.
         Main.notify(
@@ -265,6 +319,7 @@ const Indicator = GObject.registerClass(
 
     destroy() {
       this._cancellable.cancel();
+      this._cancelSettle();
       this._stopWatch();
       for (const id of this._settingsIds) this._settings.disconnect(id);
       this._settingsIds = [];

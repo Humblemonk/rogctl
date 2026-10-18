@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::{Command, ExecutableCommand};
+use ratatui::layout::Size;
 
 use crate::ASLEEP_RETRY;
 use crate::app::{self, Action, App, Link};
 use crate::device::{self, ApplyError, Device, QueryError};
 use crate::models::MODELS;
 use crate::protocol::{MouseSettings, Reading};
-use crate::ui;
+use crate::ui::{self, ColorMode};
 
 /// How long to wait for a key before checking on the mouse.
 const TICK: Duration = Duration::from_millis(250);
@@ -117,28 +118,29 @@ fn event_loop(
     app: &mut App,
     session: &mut Session,
 ) -> io::Result<()> {
+    let colors = ColorMode::detect();
     loop {
-        let mut hits = ui::Hits::default();
-        let mut fits = true;
-        terminal.draw(|frame| {
-            fits = ui::fits(frame.area());
-            hits = ui::draw(frame, app);
-        })?;
+        let (size, hits) = draw(terminal, app, colors)?;
         if event::poll(TICK)? {
-            let action = match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
-                    app.handle_key_too_small(key.code, key.modifiers);
-                    None
-                }
+            let event = event::read()?;
+            // Every event acts on the screen as drawn, the one the user saw,
+            // even if a resize comes next. A click's position is only good
+            // on that screen, so it's dropped once the terminal was resized.
+            let resized = matches!(event, Event::Mouse(_)) && terminal.size()? != size;
+            let action = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match hits {
+                    Some(_) => app.handle_key(key.code, key.modifiers),
+                    None => {
+                        app.handle_key_too_small(key.code, key.modifiers);
+                        None
+                    }
+                },
                 // Nothing on the too-small notice is clickable, and a click
                 // would still change focus or a pending edit.
-                Event::Mouse(_) if !fits => None,
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.handle_key(key.code, key.modifiers)
-                }
-                Event::Mouse(mouse) => {
+                Event::Mouse(_) if resized => None,
+                Event::Mouse(mouse) => hits.and_then(|hits| {
                     app.handle_mouse(mouse.kind, hits.target_at(mouse.column, mouse.row))
-                }
+                }),
                 // Key releases, focus changes, pastes; a resize redraws anyway.
                 _ => None,
             };
@@ -153,6 +155,18 @@ fn event_loop(
             session.tick(app);
         }
     }
+}
+
+/// Draws the screen: the terminal size it was drawn at, and `ui::draw()`'s
+/// hits (`None` while the terminal is too small).
+fn draw(
+    terminal: &mut DefaultTerminal,
+    app: &App,
+    colors: ColorMode,
+) -> io::Result<(Size, Option<ui::Hits>)> {
+    let mut hits = None;
+    let frame = terminal.draw(|frame| hits = ui::draw(frame, app, colors))?;
+    Ok((frame.area.as_size(), hits))
 }
 
 /// Carries out what a key asked for. The only caller of
@@ -201,6 +215,17 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                     app.error(format!("No change made: the mouse didn't answer ({e})"));
                 }
                 Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
+                // The read-back found the mouse asleep: that, not the save,
+                // is what the user can act on.
+                Err(ApplyError::NotSaved(_)) if app.link == Link::Asleep => app.error(format!(
+                    "{done}, but the mouse went to sleep or out of range before confirming \
+                     the save"
+                )),
+                // A Harpe II Ace keeps such a change (protocol.md); another
+                // mouse may not.
+                Err(ApplyError::NotSaved(QueryError::Rejected)) => app.error(format!(
+                    "{done}, but the mouse didn't confirm saving it: it may not last a power cycle"
+                )),
                 Err(ApplyError::NotSaved(e)) => {
                     app.error(format!("{done}, but not saved on the mouse: {e}"));
                 }
@@ -319,15 +344,34 @@ impl Session {
         }
     }
 
-    /// Reads the battery again for the header, keeping the settings and any
-    /// pending edit.
-    fn read_battery(&mut self, app: &mut App) {
+    /// Reads the battery for the header and the active DPI stage, which the
+    /// mouse's DPI button changes without telling rogctl, keeping the other
+    /// settings and any pending edit.
+    fn poll_mouse(&mut self, app: &mut App) {
         self.last_battery = Some(Instant::now());
         let Some(dev) = self.devices.get(self.current) else {
             return;
         };
-        match dev.read_battery() {
-            Ok(reading) if !reading.is_asleep() => app.reading = Some(reading),
+        let read = dev
+            .connect()
+            .map_err(QueryError::from)
+            .and_then(|mut conn| {
+                let reading = conn.read_battery()?;
+                // A missed stage read leaves the stage shown; the next retries.
+                let stage = if reading.is_asleep() {
+                    None
+                } else {
+                    conn.read_active_stage().ok().flatten()
+                };
+                Ok((reading, stage))
+            });
+        match read {
+            Ok((reading, stage)) if !reading.is_asleep() => {
+                app.reading = Some(reading);
+                if let Some(stage) = stage.filter(|&s| s < app.settings.stages.len()) {
+                    app.settings.active_stage = Some(stage);
+                }
+            }
             Ok(_) => self.show_outcome(app, Ok(Outcome::Asleep)),
             Err(e) if e.means_asleep(dev.model.wireless) => self.show_outcome(app, Err(e)),
             // A missed read isn't worth losing the screen over; the next retries.
@@ -336,16 +380,17 @@ impl Session {
     }
 
     /// Keeps the battery current and notices a mouse being unplugged, plugged
-    /// in or waking up. Besides the battery, only looks at sysfs, except to
-    /// read the mice again when that changes, or when the mouse was missing,
-    /// asleep or failed. That shows whichever mouse answers, even after Tab.
+    /// in or waking up. Besides the battery and active stage, only looks at
+    /// sysfs, except to read the mice again when that changes, or when the
+    /// mouse was missing, asleep or failed. That shows whichever mouse
+    /// answers, even after Tab.
     fn tick(&mut self, app: &mut App) {
         if app.link == Link::Connected
             && self
                 .last_battery
                 .is_none_or(|t| t.elapsed() >= BATTERY_POLL)
         {
-            self.read_battery(app);
+            self.poll_mouse(app);
         }
         if self
             .last_check

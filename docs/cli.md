@@ -11,6 +11,8 @@ rogctl --json                 # one JSON status line
 rogctl watch --json           # a status line every 60 s (--interval SECS)
 rogctl watch --format waybar  # the same, as Waybar custom-module JSON
 rogctl list                   # detected devices and their /dev/hidraw nodes
+rogctl refresh PID            # make that `rogctl watch` read the mouse now
+rogctl stop PID               # stop that `rogctl watch`
 rogctl settings               # view and change the mouse's settings
 rogctl settings --demo        # the settings screen without a mouse
 rogctl configure DESKTOP      # install a panel widget (--remove removes it)
@@ -39,7 +41,7 @@ widget. `--remove` removes the widget.
 | --- | --- | --- |
 | `noctalia` | Copies the plugin to `$XDG_DATA_HOME/noctalia/plugins/rog-mouse-battery`, then enables it with `noctalia msg` | Disables it, then deletes its files |
 | `waybar` | Prints the module, its CSS and the steps; doesn't edit the Waybar config | Prints the steps |
-| `quickshell` | Copies two files next to `$XDG_CONFIG_HOME/quickshell/shell.qml` | Deletes them |
+| `quickshell` | Copies three files next to `$XDG_CONFIG_HOME/quickshell/shell.qml` | Deletes them, keeping `RogMouseSettings.qml` if you changed it |
 | `dms` | Copies the plugin to `$XDG_CONFIG_HOME/DankMaterialShell/plugins/RogMouseBattery`, then rescans with `dms ipc` | Deletes its files, then rescans |
 | `kde` | `kpackagetool6 --install`, or `--upgrade` if installed | `kpackagetool6 --remove` |
 | `gnome` | `gnome-extensions pack` and `install` | `gnome-extensions uninstall` |
@@ -94,7 +96,7 @@ Fields that don't apply are left out rather than set to `null`.
 | `wireless` | `true` through a receiver, `false` on a cable |
 | `battery` | Level in percent |
 | `charging` | Whether it's charging |
-| `low` | At or below `--low-threshold` and not charging |
+| `low` | At or below `--low-threshold` and not charging. Mice that report the level in quarters count as low at 25% when the threshold is lower |
 | `low_battery_warning` | The mouse's own low-battery warning level, in percent |
 | `power_off_minutes` | The mouse's auto power-off time |
 | `hidraw` | The `/dev/hidraw` node it was read through |
@@ -110,8 +112,11 @@ with `"state":"asleep"`, and reads it every 10 seconds whatever `--interval` is 
 `notify_low` is set once when the battery drops to the threshold. It's set again only after
 the mouse has charged or risen 5% above the threshold, so a notification on it won't repeat.
 
-To read the mouse right away instead of waiting for the next interval, send `watch` the
-`SIGUSR1` signal: `kill -USR1 PID`, with the `pid` from its output.
+To read the mouse right away instead of waiting for the next interval, run
+`rogctl refresh PID` with the `pid` from its output; `rogctl stop PID` stops it. Both signal
+the process only if it's a `rogctl watch` (`refresh` sends `SIGUSR1`, `stop` `SIGTERM`) and
+exit 1 otherwise. Run them through the same command as `watch`: under a wrapper, such as a
+container's, the `pid` is only right there. `kill -USR1 PID` works too where the `pid` is.
 
 ## Waybar format
 

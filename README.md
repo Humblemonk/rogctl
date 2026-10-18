@@ -62,6 +62,9 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
 
 5. **Optional: add a panel widget.** See [Panel widgets](#panel-widgets).
 
+Upgrading? [What changed in each release](docs/CHANGELOG.md) lists new features and fixes,
+and says when a release needs you to do something after upgrading.
+
 ## Changing settings
 
 ```sh
@@ -69,8 +72,10 @@ rogctl settings
 ```
 
 This shows the mouse's settings and lets you change them: DPI stages, polling rate, button
-debounce, angle snapping, motion sync, lift-off distance, auto power-off, low-battery warning
-and, on ROG Harpe II models, advanced power saving. It only shows the settings your mouse has.
+debounce, angle snapping, motion sync, lift-off distance, auto power-off, low-battery
+warning, on ROG Harpe II models advanced power saving, and lighting (effect, colour and
+brightness; all zones together on mice with several). It only shows the settings your mouse
+has.
 
 | Key | Does |
 | --- | --- |
@@ -128,8 +133,9 @@ If a widget says rogctl wasn't found, your desktop's `PATH` probably doesn't inc
   receiver or cable, or log out and back in.
 - **`asleep or out of range`**: the mouse is off, asleep or too far from the receiver. Move it
   to wake it and try again.
-- **Odd colours in `rogctl settings`**: it needs a terminal with 24-bit colour, which most
-  current ones have.
+- **Dull colours in `rogctl settings`**: without `COLORTERM=truecolor` in its environment
+  (often missing over SSH), rogctl uses the 256 standard colours. If your terminal has 24-bit
+  colour, set `COLORTERM=truecolor`. `NO_COLOR` turns colour off.
 
 Something else wrong, or a setting that reads or changes wrong?
 [Report it](CONTRIBUTING.md#reporting-a-problem).

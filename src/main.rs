@@ -30,6 +30,8 @@ Usage:
   rogctl watch [--interval SECS] [OPTIONS]
                                          Print the status every SECS seconds (default 60)
   rogctl list                            List detected devices and their hidraw nodes
+  rogctl refresh PID                     Make the `rogctl watch` with this PID read now
+  rogctl stop PID                        Stop the `rogctl watch` with this PID
   rogctl settings [--demo [MODEL]]       View and change the mouse's settings (DPI,
                                          polling rate, ...). --demo runs without a
                                          mouse, as MODEL (default ROG Harpe II Ace)
@@ -45,7 +47,9 @@ Options:
                          (default 20, 0 turns it off)
 
 Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 mouse asleep.
-`watch` reads the mouse right away when sent SIGUSR1 (`kill -USR1 PID`).
+`watch` reads the mouse right away when sent SIGUSR1, which `refresh` sends.
+`refresh` and `stop` signal only a `rogctl watch`; widgets use them with the
+`pid` from its output.
 ";
 
 /// What the bar sees. `battery` stays at the last known level while the mouse
@@ -80,6 +84,10 @@ struct Status {
     /// The `watch` process, for sending it SIGUSR1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
+    /// The smallest change in `battery` the mouse reports: 25 for mice that
+    /// report quarters, else 1.
+    #[serde(skip)]
+    battery_step: u8,
 }
 
 // serde's skip_serializing_if passes a reference.
@@ -112,6 +120,7 @@ impl Status {
             low: false,
             notify_low: false,
             pid: None,
+            battery_step: 1,
         }
     }
 
@@ -120,6 +129,7 @@ impl Status {
             device: Some(dev.model.name),
             wireless: Some(dev.model.wireless),
             hidraw: Some(dev.hidraw.display().to_string()),
+            battery_step: dev.model.battery.step(),
             ..Self::empty(state)
         }
     }
@@ -254,6 +264,12 @@ fn carry_over(status: &mut Status, last_known: &mut Option<Status>) {
     }
 }
 
+/// Whether `NO_COLOR` asks for no colour (<https://no-color.org>): set and
+/// not empty.
+fn no_color() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+}
+
 /// The word for a mouse that's awake, as every widget and the TUI show it:
 /// "Battery: 79% (discharging)". The kernel's and desktops' words, not
 /// Solaar's "recharging".
@@ -265,8 +281,13 @@ fn charge_word(charging: bool, battery: Option<u8>) -> &'static str {
     }
 }
 
+/// A mouse that reports quarters is low at 25% whenever the threshold is below
+/// that: its next level, 0, reads as asleep, so it would never be low.
 fn is_low(s: &Status, threshold: u8) -> bool {
-    threshold > 0 && !s.charging && s.battery.is_some_and(|b| b <= threshold)
+    threshold > 0
+        && !s.charging
+        && s.battery
+            .is_some_and(|b| b <= threshold.max(s.battery_step))
 }
 
 /// Decides when the low-battery notification is due: once per drop to the
@@ -386,6 +407,39 @@ fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
     }
 }
 
+/// Sends `signal` to `pid` only if it's a `rogctl watch`. Widgets refresh and
+/// stop their watcher this way rather than with `kill`: the pid comes from its
+/// output, and under a wrapper (a container's, say) it may name another
+/// process to them, while this, run through the same wrapper, sees the right
+/// one.
+fn cmd_signal(pid: Option<&str>, signal: libc::c_int) -> ExitCode {
+    let Some(pid) = pid
+        .and_then(|p| p.parse::<libc::pid_t>().ok())
+        .filter(|&p| p > 0)
+    else {
+        eprintln!("needs the process ID of a `rogctl watch`");
+        return ExitCode::FAILURE;
+    };
+    let proc = |file: &str| std::fs::read(format!("/proc/{pid}/{file}")).unwrap_or_default();
+    let own_name = std::fs::read("/proc/self/comm").unwrap_or_default();
+    if !is_watch(&proc("comm"), &own_name, &proc("cmdline")) {
+        eprintln!("{pid} isn't a `rogctl watch`; not signalled");
+        return ExitCode::FAILURE;
+    }
+    // SAFETY: kill() takes plain integers and has no memory effects.
+    if unsafe { libc::kill(pid, signal) } != 0 {
+        eprintln!("couldn't signal {pid}: {}", io::Error::last_os_error());
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// Whether a process with this `/proc` `comm` and `cmdline` is a `rogctl
+/// watch`: named like this binary, with `watch` as its first argument.
+fn is_watch(comm: &[u8], own_comm: &[u8], cmdline: &[u8]) -> bool {
+    !comm.is_empty() && comm == own_comm && cmdline.split(|&b| b == 0).nth(1) == Some(b"watch")
+}
+
 fn cmd_list() -> ExitCode {
     let devices = device::discover();
     let mut out = io::stdout().lock();
@@ -429,6 +483,7 @@ fn main() -> ExitCode {
     // `Some(None)`: --demo without a model name.
     let mut demo: Option<Option<String>> = None;
     let mut desktop: Option<String> = None;
+    let mut pid: Option<String> = None;
     let mut remove = false;
     let mut force = false;
     while let Some(arg) = args.next() {
@@ -471,6 +526,9 @@ fn main() -> ExitCode {
             other if command == "configure" && desktop.is_none() && !other.starts_with('-') => {
                 desktop = Some(other.to_owned());
             }
+            other if matches!(command.as_str(), "refresh" | "stop") && pid.is_none() => {
+                pid = Some(other.to_owned());
+            }
             other => {
                 eprintln!("unknown argument: {other}\n\n{USAGE}");
                 return ExitCode::FAILURE;
@@ -494,6 +552,8 @@ fn main() -> ExitCode {
         "battery" => cmd_battery(output),
         "watch" => cmd_watch(interval, output),
         "list" => cmd_list(),
+        "refresh" => cmd_signal(pid.as_deref(), libc::SIGUSR1),
+        "stop" => cmd_signal(pid.as_deref(), libc::SIGTERM),
         "configure" => configure::run(desktop.as_deref(), remove, force),
         "help" => {
             print!("{USAGE}");
@@ -509,6 +569,31 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signals_only_a_rogctl_watch() {
+        let watch = b"rogctl\0watch\0--json\0--interval\x0060\0";
+        assert!(is_watch(b"rogctl\n", b"rogctl\n", watch));
+        assert!(
+            is_watch(b"rogctl\n", b"rogctl\n", b"/usr/bin/rogctl\0watch\0"),
+            "any path"
+        );
+        assert!(!is_watch(b"rogctl\n", b"rogctl\n", b"rogctl\0settings\0"));
+        assert!(!is_watch(b"rogctl\n", b"rogctl\n", b"rogctl\0"));
+        assert!(!is_watch(b"firefox\n", b"rogctl\n", b"firefox\0watch\0"));
+        assert!(!is_watch(b"", b"", watch), "gone, or /proc unreadable");
+    }
+
+    #[test]
+    fn signal_refuses_what_isnt_a_watch() {
+        assert_eq!(cmd_signal(None, libc::SIGUSR1), ExitCode::FAILURE);
+        assert_eq!(cmd_signal(Some("0"), libc::SIGUSR1), ExitCode::FAILURE);
+        assert_eq!(cmd_signal(Some("-1"), libc::SIGUSR1), ExitCode::FAILURE);
+        assert_eq!(cmd_signal(Some("x"), libc::SIGUSR1), ExitCode::FAILURE);
+        // This test binary is no `rogctl watch`, so it isn't signalled.
+        let own = std::process::id().to_string();
+        assert_eq!(cmd_signal(Some(&own), libc::SIGTERM), ExitCode::FAILURE);
+    }
 
     fn connected(device: &'static str, battery: u8) -> Status {
         Status {
@@ -605,6 +690,31 @@ mod tests {
         assert_eq!(
             low_warnings(readings, 20),
             [(true, true), (false, false), (true, true)]
+        );
+    }
+
+    /// Quarters: 25% is the lowest level reported awake, so it's low at a
+    /// threshold below 25, and climbing back to 50% re-arms.
+    #[test]
+    fn quarters_are_low_at_their_lowest_level() {
+        let quarters = |battery| Status {
+            battery_step: 25,
+            ..connected("Mouse", battery)
+        };
+        let readings = [50, 25, 50, 25].map(quarters);
+        assert_eq!(
+            low_warnings(readings.clone(), 20),
+            [(false, false), (true, true), (false, false), (true, true)]
+        );
+        assert_eq!(
+            low_warnings(readings.clone(), 50),
+            [(true, true), (true, false), (true, false), (true, false)],
+            "a threshold above 25 is used as is"
+        );
+        assert_eq!(low_warnings(readings, 0), [(false, false); 4], "0 is off");
+        assert!(
+            !is_low(&connected("Mouse", 25), 20),
+            "percent mice as before"
         );
     }
 

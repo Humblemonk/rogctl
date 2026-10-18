@@ -27,10 +27,15 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
   drop, re-armed by charging or rising 5% above the threshold), reports its `pid`, and
   re-reads the mouse on SIGUSR1.
 - Widgets pass `--low-threshold`, restart `rogctl` when the binary, interval or threshold
-  setting changes, and send SIGUSR1 to refresh. Noctalia has no settings-changed event and
-  can't stop a stream, so its service polls the settings in `update()` and stops `rogctl` by
-  its `pid`; the exit marker restarts it. The Plasma widget polls one-shot `rogctl battery`,
-  so it keeps its own sleeping-level and notified-once state.
+  setting changes, and refresh with `rogctl refresh PID`, through the binary the watch
+  started with. Never `kill` a `pid` from the status line: under a wrapper it can name
+  another process, and `refresh`/`stop` check it's a `rogctl watch`. Noctalia (seen on
+  5.3.0) restarts a plugin's service when one of its settings changes, which ends the
+  stream. A plugin can't stop a stream itself, so for a Noctalia that doesn't, the service
+  also polls the settings in `update()` and stops `rogctl` with `rogctl stop PID`; the exit
+  marker restarts it. A failed stop is logged once and not retried until the settings
+  change again. The Plasma widget polls one-shot `rogctl battery`, so it keeps its
+  own sleeping-level and notified-once state.
 
 ## Keep them alike
 
@@ -83,8 +88,11 @@ when a change depends on their runtime behaviour.
   take effect after installing again (with the user's permission). Logs: `~/.cache/noctalia/noctalia.log`. Docs:
   <https://docs.noctalia.dev/noctalia/plugins/development/>.
 - **Waybar**: `waybar/config.json` runs `rogctl watch --format waybar`. Waybar hides a custom
-  module whose `text` is empty, which is how "disconnected" hides it.
-- **Quickshell**: no plugin system; users copy the two `.qml` files into their config.
+  module only when its formatted output is empty, and `"{icon} {text}"` never is, so
+  `config.json` sets `hide-empty-text`: rogctl's empty `text` for "disconnected" then hides it.
+- **Quickshell**: no plugin system; `configure` copies the three `.qml` files into the user's
+  config. `RogMouseSettings.qml` holds the settings (`Bundle::users`): updated and removed
+  only while unchanged, and once edited never overwritten, even with `--force`.
   Reference: <https://quickshell.org/docs/>.
 - **DankMaterialShell**: plugin docs are in the DMS repository under
   `.agents/skills/dms-plugin-dev/` and `quickshell/PLUGINS/`

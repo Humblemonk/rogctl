@@ -9,9 +9,23 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKi
 use crate::device::Model;
 use crate::models::MODELS;
 use crate::protocol::{
-    self, Change, Debounce, DpiStage, Features, LiftOff, MouseSettings, PollingRate, PowerOff,
-    PowerSaving, Reading,
+    self, BRIGHTNESS_MAX, Change, Debounce, DpiStage, Effect, Features, LiftOff, Lighting,
+    MouseSettings, PollingRate, PowerOff, PowerSaving, Reading,
 };
+
+/// GearLink's standard colours, offered for the lighting.
+const COLORS: [(&str, [u8; 3]); 7] = [
+    ("Red", [0xff, 0x00, 0x00]),
+    ("Orange", [0xff, 0x80, 0x00]),
+    ("Yellow", [0xff, 0xff, 0x00]),
+    ("Green", [0x00, 0xff, 0x00]),
+    ("Cyan", [0x00, 0xff, 0xff]),
+    ("Blue", [0x00, 0x00, 0xff]),
+    ("Magenta", [0xff, 0x00, 0xff]),
+];
+
+/// GearLink's brightness slider moves in 10% steps.
+const BRIGHTNESS_STEP: u8 = 10;
 
 /// A row of the settings screen, in focus order. Models leave out the rows
 /// they don't have, and never reorder them.
@@ -29,6 +43,29 @@ pub enum Control {
     LowBatteryWarning,
     PowerSaving,
     PowerSavingRate,
+    LightingEffect,
+    LightingColor,
+    Brightness,
+}
+
+/// The panels rows are grouped in, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    Performance,
+    Battery,
+    Lighting,
+}
+
+impl Panel {
+    pub const ALL: [Self; 3] = [Self::Performance, Self::Battery, Self::Lighting];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Performance => "Performance",
+            Self::Battery => "Battery",
+            Self::Lighting => "Lighting",
+        }
+    }
 }
 
 impl Control {
@@ -45,23 +82,26 @@ impl Control {
             Self::LowBatteryWarning => "Low-battery warning".into(),
             Self::PowerSaving => "Advanced power saving".into(),
             Self::PowerSavingRate => "Power-saving rate".into(),
+            Self::LightingEffect => "Effect".into(),
+            Self::LightingColor => "Colour".into(),
+            Self::Brightness => "Brightness".into(),
         }
     }
 
-    /// Shown under "Battery" rather than "Performance".
-    pub fn is_battery(self) -> bool {
+    pub fn panel(self) -> Panel {
         match self {
-            Self::PowerOff
-            | Self::LowBatteryWarning
-            | Self::PowerSaving
-            | Self::PowerSavingRate => true,
             Self::Stage(_)
             | Self::PollingRate
             | Self::Debounce
             | Self::AngleSnapping
             | Self::AngleTuning
             | Self::MotionSync
-            | Self::LiftOff => false,
+            | Self::LiftOff => Panel::Performance,
+            Self::PowerOff
+            | Self::LowBatteryWarning
+            | Self::PowerSaving
+            | Self::PowerSavingRate => Panel::Battery,
+            Self::LightingEffect | Self::LightingColor | Self::Brightness => Panel::Lighting,
         }
     }
 }
@@ -77,6 +117,9 @@ pub enum Value {
     LiftOff(LiftOff),
     PowerOff(PowerOff),
     Percent(u8),
+    Effect(Effect),
+    Color([u8; 3]),
+    Brightness(u8),
 }
 
 impl fmt::Display for Value {
@@ -93,8 +136,23 @@ impl fmt::Display for Value {
             Self::LiftOff(LiftOff::High) => write!(f, "High"),
             Self::LiftOff(LiftOff::Unknown(code)) => write!(f, "Unknown ({code:#04x})"),
             Self::PowerOff(p) => write!(f, "{p}"),
-            Self::Percent(0) => write!(f, "Off"),
-            Self::Percent(pct) => write!(f, "{pct}%"),
+            Self::Percent(0) | Self::Brightness(0) => write!(f, "Off"),
+            Self::Percent(pct) | Self::Brightness(pct) => write!(f, "{pct}%"),
+            Self::Effect(effect) => match effect {
+                Effect::Static => write!(f, "Static"),
+                Effect::Breathing => write!(f, "Breathing"),
+                Effect::ColorCycle => write!(f, "Colour cycle"),
+                Effect::Reactive => write!(f, "Reactive"),
+                Effect::Battery => write!(f, "Battery level"),
+                Effect::Rainbow => write!(f, "Rainbow"),
+                Effect::Comet => write!(f, "Comet"),
+                Effect::Off => write!(f, "Off"),
+                Effect::Unknown(code) => write!(f, "Unknown ({code:#04x})"),
+            },
+            Self::Color(rgb @ [r, g, b]) => match COLORS.iter().find(|&&(_, c)| c == rgb) {
+                Some((name, _)) => write!(f, "{name}"),
+                None => write!(f, "#{r:02x}{g:02x}{b:02x}"),
+            },
         }
     }
 }
@@ -225,6 +283,19 @@ impl App {
         (self.settings.polling_rate == Some(PollingRate::HZ_8000)).then_some("not at 8000 Hz")
     }
 
+    /// Why the lighting's colour or brightness can't be changed right now:
+    /// an effect rogctl doesn't send, or one that picks its own colours
+    /// (GearLink hides the colour then).
+    fn lighting_lock(&self, control: Control) -> Option<&'static str> {
+        let effect = self.settings.lighting?.effect;
+        if !Effect::OFFERED.contains(&effect) {
+            Some("pick an effect first")
+        } else {
+            (control == Control::LightingColor && !effect.uses_color())
+                .then_some("the effect sets its own")
+        }
+    }
+
     pub fn rows(&self) -> Vec<Row> {
         if self.link != Link::Connected {
             return Vec::new();
@@ -248,6 +319,9 @@ impl App {
             (s.low_battery_warning.is_some(), Control::LowBatteryWarning),
             (s.power_saving.is_some(), Control::PowerSaving),
             (s.power_saving.is_some(), Control::PowerSavingRate),
+            (s.lighting.is_some(), Control::LightingEffect),
+            (s.lighting.is_some(), Control::LightingColor),
+            (s.lighting.is_some(), Control::Brightness),
         ];
         for (present, control) in optional {
             if present {
@@ -260,6 +334,7 @@ impl App {
                             .power_saving
                             .is_some_and(|p| !p.on)
                             .then_some("only while power saving is on"),
+                        Control::LightingColor | Control::Brightness => self.lighting_lock(control),
                         Control::Stage(_)
                         | Control::PollingRate
                         | Control::Debounce
@@ -268,7 +343,8 @@ impl App {
                         | Control::LiftOff
                         | Control::PowerOff
                         | Control::LowBatteryWarning
-                        | Control::PowerSaving => None,
+                        | Control::PowerSaving
+                        | Control::LightingEffect => None,
                     },
                 });
             }
@@ -312,12 +388,18 @@ impl App {
                     .map(Value::Percent)
                     .collect()
             }
+            Control::Brightness => (0..=BRIGHTNESS_MAX)
+                .step_by(usize::from(BRIGHTNESS_STEP))
+                .map(Value::Brightness)
+                .collect(),
             Control::Stage(_)
             | Control::AngleSnapping
             | Control::AngleTuning
             | Control::MotionSync
             | Control::LiftOff
-            | Control::PowerSaving => return None,
+            | Control::PowerSaving
+            | Control::LightingEffect
+            | Control::LightingColor => return None,
         };
         (!choices.is_empty()).then_some(choices)
     }
@@ -337,6 +419,9 @@ impl App {
             Control::LowBatteryWarning => s.low_battery_warning.map(Value::Percent),
             Control::PowerSaving => s.power_saving.map(|p| Value::Switch(p.on)),
             Control::PowerSavingRate => s.power_saving.map(|p| Value::PollingRate(p.rate)),
+            Control::LightingEffect => s.lighting.map(|l| Value::Effect(l.effect)),
+            Control::LightingColor => s.lighting.map(|l| Value::Color(l.color)),
+            Control::Brightness => s.lighting.map(|l| Value::Brightness(l.brightness)),
         }
     }
 
@@ -349,7 +434,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
-        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+        if is_ctrl_c(code, mods) {
             self.quit = true;
             return None;
         }
@@ -399,8 +484,7 @@ impl App {
     /// (q, Ctrl+C): nothing may change what can't be seen, so a pending edit
     /// waits, unapplied, for the terminal to grow.
     pub fn handle_key_too_small(&mut self, code: KeyCode, mods: KeyModifiers) {
-        self.quit = code == KeyCode::Char('q')
-            || (mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c'));
+        self.quit |= code == KeyCode::Char('q') || is_ctrl_c(code, mods);
     }
 
     /// Only Enter's path writes. A click selects a row, then applies like
@@ -476,20 +560,21 @@ impl App {
         let Some(current) = self.shown(control) else {
             return;
         };
-        let rates = match control {
-            Control::PowerSavingRate => f.power_saving_rates,
-            Control::Stage(_)
-            | Control::PollingRate
-            | Control::Debounce
-            | Control::AngleSnapping
-            | Control::AngleTuning
-            | Control::MotionSync
-            | Control::LiftOff
-            | Control::PowerOff
-            | Control::LowBatteryWarning
-            | Control::PowerSaving => f.polling_rates,
+        self.set_edit(
+            control,
+            step(f, rates(f, control), current, dir, big),
+            false,
+        );
+    }
+
+    /// Whether ← and → would change what `control` shows, for drawing only
+    /// the arrows that do something.
+    pub fn can_step(&self, control: Control) -> (bool, bool) {
+        let (Some(f), Some(current)) = (self.features(), self.shown(control)) else {
+            return (false, false);
         };
-        self.set_edit(control, step(f, rates, current, dir, big), false);
+        let moves = |dir| step(f, rates(f, control), current, dir, false) != current;
+        (moves(-1), moves(1))
     }
 
     fn type_digit(&mut self, c: char) {
@@ -600,6 +685,18 @@ impl App {
                     ..s.power_saving?
                 })
             }
+            (Control::LightingEffect, Value::Effect(effect)) => Change::Lighting(Lighting {
+                effect,
+                ..s.lighting?
+            }),
+            (Control::LightingColor, Value::Color(color)) => Change::Lighting(Lighting {
+                color,
+                ..s.lighting?
+            }),
+            (Control::Brightness, Value::Brightness(brightness)) => Change::Lighting(Lighting {
+                brightness,
+                ..s.lighting?
+            }),
             (_, _) => return None,
         })
     }
@@ -631,7 +728,28 @@ impl App {
                 s.low_battery_warning = s.low_battery_warning.map(|_| low_battery_warning);
             }
             Change::PowerSaving(p) => s.power_saving = Some(p),
+            Change::Lighting(l) => s.lighting = Some(l),
         }
+    }
+}
+
+/// The polling rates `control` offers, if it's a rate.
+fn rates(f: &Features, control: Control) -> &'static [PollingRate] {
+    match control {
+        Control::PowerSavingRate => f.power_saving_rates,
+        Control::Stage(_)
+        | Control::PollingRate
+        | Control::Debounce
+        | Control::AngleSnapping
+        | Control::AngleTuning
+        | Control::MotionSync
+        | Control::LiftOff
+        | Control::PowerOff
+        | Control::LowBatteryWarning
+        | Control::PowerSaving
+        | Control::LightingEffect
+        | Control::LightingColor
+        | Control::Brightness => f.polling_rates,
     }
 }
 
@@ -683,22 +801,16 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
         Value::LiftOff(LiftOff::Unknown(_)) => {
             Value::LiftOff(if up { LiftOff::High } else { LiftOff::Low })
         }
-        Value::PowerOff(p) => {
-            let choices = PowerOff::CHOICES;
-            let at = choices.iter().position(|&c| c == p);
-            let last = choices.len() - 1;
-            let next = match (at, up, big) {
-                (_, true, true) | (None, true, false) => last,
-                (_, false, true) | (None, false, false) => 0,
-                (Some(i), true, false) => (i + 1).min(last),
-                (Some(i), false, false) => i.saturating_sub(1),
-            };
-            Value::PowerOff(choices[next])
-        }
+        Value::PowerOff(p) => Value::PowerOff(walk(&PowerOff::CHOICES, p, up, big)),
         Value::Percent(pct) => {
             let Some(w) = f.low_battery_warning else {
                 return current;
             };
+            // Above the max (other software set it): → can't raise it, ←
+            // brings it within.
+            if pct > w.max {
+                return if up { current } else { Value::Percent(w.max) };
+            }
             let by = if big { w.max } else { w.step };
             let next = if up {
                 pct.saturating_add(by)
@@ -707,7 +819,37 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
             };
             Value::Percent((next / w.step * w.step).min(w.max))
         }
+        Value::Effect(effect) => Value::Effect(walk(&Effect::OFFERED, effect, up, big)),
+        Value::Color(color) => Value::Color(walk(&COLORS.map(|(_, c)| c), color, up, big)),
+        Value::Brightness(pct) => {
+            let by = if big { BRIGHTNESS_MAX } else { BRIGHTNESS_STEP };
+            let next = if up {
+                pct.saturating_add(by)
+            } else {
+                pct.saturating_sub(by)
+            };
+            Value::Brightness((next / BRIGHTNESS_STEP * BRIGHTNESS_STEP).min(BRIGHTNESS_MAX))
+        }
     }
+}
+
+/// The next of `choices` after `current` (before it, `up` false), or the
+/// last (first) with `big`. A value not among them steps to an end.
+fn walk<T: Copy + PartialEq>(choices: &[T], current: T, up: bool, big: bool) -> T {
+    let at = choices.iter().position(|&c| c == current);
+    let last = choices.len().saturating_sub(1);
+    let next = match (at, up, big) {
+        (_, true, true) | (None, true, false) => last,
+        (_, false, true) | (None, false, false) => 0,
+        (Some(i), true, false) => (i + 1).min(last),
+        (Some(i), false, false) => i.saturating_sub(1),
+    };
+    choices.get(next).copied().unwrap_or(current)
+}
+
+/// Ctrl+C quits from every screen, help and the too-small notice included.
+fn is_ctrl_c(code: KeyCode, mods: KeyModifiers) -> bool {
+    mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c')
 }
 
 /// Finds a model by name for `--demo`, ignoring case; the wireless entry if
@@ -721,11 +863,12 @@ pub const DEMO_MODEL: &str = "ROG Harpe II Ace";
 
 /// Plausible settings for `--demo`, within what `f` allows.
 pub fn demo_state(f: &Features) -> (Reading, MouseSettings) {
-    const COLORS: [[u8; 3]; 4] = [[0xff, 0, 0], [0, 0xff, 0], [0, 0x80, 0xff], [0xff, 0xff, 0]];
+    const STAGE_COLORS: [[u8; 3]; 4] =
+        [[0xff, 0, 0], [0, 0xff, 0], [0, 0x80, 0xff], [0xff, 0xff, 0]];
     let d = &f.dpi;
     let stages = [400, 800, 1600, 3200]
         .into_iter()
-        .zip(COLORS)
+        .zip(STAGE_COLORS)
         .take(usize::from(d.stages))
         .map(|(dpi, color)| DpiStage {
             dpi: protocol::snap_dpi(d, dpi),
@@ -764,6 +907,11 @@ pub fn demo_state(f: &Features) -> (Reading, MouseSettings) {
             .filter(|r| r.hz() <= 1000)
             .max()
             .map(|rate| PowerSaving { on: false, rate }),
+        lighting: f.lighting.map(|_| Lighting {
+            effect: Effect::Static,
+            brightness: 50,
+            color: COLORS[0].1,
+        }),
     };
     (reading, settings)
 }
@@ -822,6 +970,9 @@ mod tests {
                 Control::PowerOff,
                 Control::LowBatteryWarning,
                 Control::PowerSaving,
+                Control::LightingEffect,
+                Control::LightingColor,
+                Control::Brightness,
             ]
         );
         assert_eq!(
@@ -1034,6 +1185,26 @@ mod tests {
                 low_battery_warning: 20
             }
         );
+
+        // A warning above the model's max (set by other software) goes back
+        // as it was; stepping it brings it within the max.
+        app.settings.low_battery_warning = Some(80);
+        focus(&mut app, Control::PowerOff);
+        press(&mut app, KeyCode::Left);
+        let Change::Energy {
+            low_battery_warning,
+            ..
+        } = applied(press(&mut app, KeyCode::Enter))
+        else {
+            panic!("not an energy change");
+        };
+        assert_eq!(low_battery_warning, 80);
+        focus(&mut app, Control::LowBatteryWarning);
+        assert_eq!(app.can_step(Control::LowBatteryWarning), (true, false));
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.edit, None, "→ doesn't lower it");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Percent(50)));
     }
 
     #[test]
@@ -1162,6 +1333,121 @@ mod tests {
         assert_eq!(
             applied(press(&mut app, KeyCode::Enter)),
             Change::LiftOff(LiftOff::High)
+        );
+    }
+
+    /// Effect, colour and brightness are one command: changing one sends the
+    /// other two as read.
+    #[test]
+    fn lighting_changes_send_all_three() {
+        let mut app = demo("ROG Harpe II Ace");
+        let lighting = |effect, brightness, color| {
+            Change::Lighting(Lighting {
+                effect,
+                brightness,
+                color,
+            })
+        };
+        let red = [0xff, 0, 0];
+        focus(&mut app, Control::LightingEffect);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            applied(press(&mut app, KeyCode::Enter)),
+            lighting(Effect::Breathing, 50, red)
+        );
+        app.handle_key(KeyCode::Right, KeyModifiers::SHIFT);
+        assert_eq!(
+            app.edit.map(|e| e.value),
+            Some(Value::Effect(Effect::Battery)),
+            "Shift jumps to the last"
+        );
+
+        press(&mut app, KeyCode::Esc);
+        focus(&mut app, Control::LightingColor);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.edit.map(|e| e.value.to_string()).as_deref(),
+            Some("Orange")
+        );
+        assert_eq!(
+            applied(press(&mut app, KeyCode::Enter)),
+            lighting(Effect::Static, 50, [0xff, 0x80, 0])
+        );
+
+        focus(&mut app, Control::Brightness);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Brightness(60)));
+        app.handle_key(KeyCode::Left, KeyModifiers::SHIFT);
+        assert_eq!(
+            app.edit.map(|e| e.value.to_string()).as_deref(),
+            Some("Off")
+        );
+        let change = applied(press(&mut app, KeyCode::Enter));
+        assert_eq!(change, lighting(Effect::Static, 0, red));
+        app.simulate(&change);
+        assert_eq!(app.value(Control::Brightness), Some(Value::Brightness(0)));
+
+        // A brightness other software set off the 10% steps snaps to them.
+        app.settings.lighting = Some(Lighting {
+            effect: Effect::Static,
+            brightness: 45,
+            color: red,
+        });
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Brightness(30)));
+    }
+
+    /// The colour is locked while the effect picks its own; an effect rogctl
+    /// can't send back locks both, until ←/→ on the effect pick a known one.
+    #[test]
+    fn lighting_locks_what_the_effect_ignores() {
+        let mut app = demo("ROG Harpe II Ace");
+        let locked = |app: &App, control| {
+            app.rows()
+                .into_iter()
+                .find(|r| r.control == control)
+                .and_then(|r| r.locked)
+        };
+        for effect in [Effect::ColorCycle, Effect::Battery] {
+            app.simulate(&Change::Lighting(Lighting {
+                effect,
+                brightness: 50,
+                color: [0, 0, 0xff],
+            }));
+            assert!(locked(&app, Control::LightingColor).is_some(), "{effect:?}");
+            assert_eq!(locked(&app, Control::Brightness), None, "{effect:?}");
+        }
+
+        app.settings.lighting = Some(Lighting {
+            effect: Effect::Unknown(0x07),
+            brightness: 50,
+            color: [0x12, 0x34, 0x56],
+        });
+        assert_eq!(
+            app.value(Control::LightingColor)
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("#123456")
+        );
+        assert!(locked(&app, Control::LightingColor).is_some());
+        assert!(locked(&app, Control::Brightness).is_some());
+        focus(&mut app, Control::LightingEffect);
+        assert_eq!(
+            app.value(Control::LightingEffect)
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("Unknown (0x07)")
+        );
+        assert_eq!(press(&mut app, KeyCode::Enter), None, "nothing to send yet");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(
+            applied(press(&mut app, KeyCode::Enter)),
+            Change::Lighting(Lighting {
+                effect: Effect::Static,
+                brightness: 50,
+                color: [0x12, 0x34, 0x56],
+            }),
+            "a custom colour goes back as it was"
         );
     }
 

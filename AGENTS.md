@@ -30,7 +30,7 @@ each widget is a thin frontend over its JSON output. Prefer the simple, obvious 
 | `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
 | `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json` (Plasma polls `rogctl battery --json`) |
 | `udev/70-rogctl.rules` | Grants the logged-in user hidraw access |
-| `README.md`, `docs/cli.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
+| `README.md`, `docs/cli.md`, `docs/CHANGELOG.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
 
 ## Commands
 
@@ -68,6 +68,10 @@ notification about out-of-date widgets; run them with a scratch `XDG_STATE_HOME`
   `plugin.json`, `KPlugin.Version` in the plasmoid's `metadata.json`, `version-name` in the
   GNOME `metadata.json`. `cargo test` checks all four. Whenever `Cargo.toml`'s version
   changes, bump all four in the same change, without asking.
+- A change users can see or feel gets a line in `docs/CHANGELOG.md` under the next release,
+  in its words and sections (Added, Changed, Fixed, Upgrading); refactors, tests and CI
+  don't. Name the mice when it's model-specific, and give the date when the release is
+  tagged.
 
 ## Layering
 
@@ -89,7 +93,8 @@ Control flow for a change: key → `App::handle_key()` → `Action` → `tui::ap
   is fine for foreign enums (`KeyCode`, crossterm `Event`) with a comment.
 - Validate packet arguments before encoding: clamp or refuse (`None`), don't panic.
 - crossterm: act on `KeyEventKind::Press` only. ratatui: draw with `Frame::render_widget()`,
-  not direct buffer writes.
+  not direct buffer writes. The one exception is `ui.rs`'s `Downsample`, which converts the
+  drawn colours for the terminal (`tui.md`).
 - Meaningful names; delete code you replace rather than keeping versioned copies.
 
 ## Testing

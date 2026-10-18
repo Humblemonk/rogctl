@@ -4,6 +4,7 @@
     "return-type": "json",
     "restart-interval": 10,
     "format": "{icon} {text}",
+    "hide-empty-text": true,
     "format-icons": {
       "connected": "󰍽",
       "charging": "󰂄",

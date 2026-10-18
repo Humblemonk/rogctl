@@ -24,15 +24,17 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   power-off byte (usually 6); byte 7 is the low-battery warning.
 - Battery `0`, an all-zero reply, or `FF AA` from a receiver means the mouse is asleep or out
   of range, not empty or broken.
-- Settings reads: `12 00` (active DPI stage in byte 12, counted from 1; stage count in byte 19
-  on `variable_stages` mice), `12 04 00` (DPI on non-X/Y mice, polling rate, debounce, angle
-  snapping and tuning), `12 04 02` (X/Y DPI), `12 04 03` (stage colours, RGB), `12 04 04`
-  (motion sync), `12 06` (lift-off), `12 15` (advanced power saving). DPI is stored as
-  `dpi / step - 1`, 16-bit little-endian. The polling rate is the low 3 bits of its byte; the
-  Harpe II Ace sets the high bits too (`0x63` at 1000 Hz), and masking them is correct.
+- Settings reads: `12 00` (active DPI stage in byte 12, counted from 1; stage count in byte
+  19 on `variable_stages` mice), `12 04 00` (DPI on non-X/Y mice, polling rate, debounce,
+  angle snapping and tuning), `12 04 02` (X/Y DPI), `12 04 03` (stage colours, RGB),
+  `12 04 04` (motion sync), `12 06` (lift-off), `12 15` (advanced power saving), `12 03 00`
+  (lighting: effect in byte 5, brightness in byte 6, colour in bytes 7-9). DPI is stored as
+  `dpi / step - 1`, 16-bit little-endian. The polling rate is the low 3 bits of its byte;
+  the Harpe II Ace sets the high bits too (`0x63` at 1000 Hz), and masking them is correct.
 - Changes: `51 31 <field>`, `51 35` lift-off (also resets sensor calibration), `51 37`
-  power-off and warning together, `51 43` advanced power saving; each followed by `50 03`,
-  which stores it on the mouse.
+  power-off and warning together, `51 43` advanced power saving,
+  `51 28 <zone> 00 <effect> <brightness> R G B` lighting; each followed by `50 03`, which
+  stores it on the mouse.
 
 ## Where models differ
 
@@ -45,7 +47,26 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
     command is `51 35 FF 00 FF <v> 01`. G-Helper's encoding is ignored by this mouse.
   - Advanced power saving: `12 15` byte 5 on/off, byte 6 a polling-rate code;
     `51 43 00 00 <on> <rate>` sets both. 125-2000 Hz (`Features::power_saving_rates`).
-- Not implemented: lighting, button bindings, onboard profiles, DPI stage count, zone mode
+  - Lighting (`LightingZone::First`): GearLink reads and sets zone `00`; the read's reply
+    has 0 in byte 3 whatever zone is asked. Effects as in G-Helper (Static `00`, Breathing
+    `01`, Colour cycle `02`, Reactive `04`, Battery `06`); GearLink has no Off effect but
+    sets brightness 0, a percentage it moves in 10% steps. Battery mode's green/blue/red
+    aren't in the packet. GearLink remembers each effect's colour and brightness itself and
+    sends them on a switch; the mouse holds only the current ones. `12 03 01` answers too
+    (effect `02`, 50%, black); what that slot is isn't known. Zone `03` (all, as the other
+    mice get) works on it too: sent unsaved on the SpeedNova, it was echoed, lit the wheel
+    and read back from zone `00`.
+- Lighting on other mice is G-Helper's and untested (`LightingZone::All`): every mouse whose
+  class has `HasRGB()` and the default `12 03`/`51 28` packets gets the same five effects,
+  set on zone `03` (all zones at once) and read from zone `00`, as G-Helper's settings
+  window does; it sends a single zone (`00` logo, `01` wheel, `02` underglow) only when one
+  is picked or a profile imported. Rainbow (`03`), Comet (`05`) and Off (`F0`) are shown
+  but not offered, as they carry a speed, direction or random colour rogctl doesn't send.
+  The Chakram, Pugio II, Keris Wireless family, Strix Impact II Wireless and Gladius II
+  Wireless override those packets, the brightness range (0-4) or the effect codes, and get
+  no lighting.
+- Not implemented: lighting on the mice above with their own encodings, single lighting
+  zones, Rainbow and Comet, button bindings, onboard profiles, DPI stage count, zone mode
   (`12 14`/`51 44`), acceleration/deceleration, the Omni "booster" polling-rate encoding.
 
 ## Models
@@ -66,11 +87,22 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 - Hardware-verified: one mouse, a Harpe II Ace. On the SpeedNova receiver (`0b05:1ad0`):
   battery and settings reads, and the user's own tests of every change in
   `rogctl settings`. On its cable in wired mode (`0b05:1c69` interface 0, report ID 0,
-  64-byte packets): found and read in `rogctl settings` (battery and settings); changes over
-  the cable are untested. With the receiver plugged in, the cable only charges until the
+  64-byte packets): found and read in `rogctl settings` (battery and settings), and
+  active-stage and polling-rate changes, each echoed and saved without `FF AA`, kept through
+  a replug. With the receiver plugged in, the cable only charges until the
   mouse's mode button is set to wired; then the receiver answers `FF AA` (so, asleep) and the
   cable's replies match the receiver's byte for byte after the report ID
   (`reads_harpe_ii_ace_over_its_cable`).
+- The Harpe II Ace on the SpeedNova answers the first save (`50 03`) after it sat unused or
+  was just turned on with `FF AA`, for active-stage and polling-rate changes alike, and
+  sometimes sends the save's echo 1 ms later; the change survives a power cycle either way
+  (captured read-only, with only rogctl and its widget on the node). G-Helper logs such
+  errors and carries on. `Connection::write()` keeps waiting up to 150 ms for the echo of a
+  change or save after an `FF AA` (this mouse answers a read in about 5 ms, or 70 ms after
+  sitting unused); with none, `Connection::apply()` asks for the save once more, which the
+  mouse then echoes, and reports the save as unconfirmed only if that's rejected too. Its
+  DPI button changes the active stage without any input report on this node, so the TUI
+  polls `12 00`.
 - Everything else is transcribed and untested; say so when a change depends on it. G-Helper
   was wrong about the Harpe II lift-off, so its values for similar mice may be too.
 - Put parsing in pure functions and test it with captured byte arrays. A real SpeedNova
