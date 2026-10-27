@@ -148,6 +148,13 @@ Don't fix a P2 or P3 without asking.
   Review), and every release. Give it the diff, the intent and the hardware results,
   including which mice weren't tested, not the author's conclusions about whether the code
   is right. Docs- or test-only changes can skip this.
+- Set the reviewer's reasoning effort by the worst finding the change could cause, not by
+  its size: a one-line change to `change_request()` is a P0 risk. `high` for a P0 risk (the
+  write path from `Action` to `save_request()`, `configure`'s file writes, `watch`'s loop,
+  deadlines or process handling) and for a release, over the diff since the last tag;
+  `medium` for a P1 risk (reply parsing, `Features`, battery or settings display, JSON
+  fields, exit codes, a widget); `low` for anything else someone asks to have reviewed.
+  When unsure between two levels, take the higher. Never go above `high`.
 
 ## Boundaries
 
