@@ -51,9 +51,15 @@ const LIGHTING_READ_ZONE: u8 = 0x00;
 /// Lighting brightness is a percentage.
 pub const BRIGHTNESS_MAX: u8 = 100;
 
-/// Asks the Omni receiver what is paired with it. Report ID 1, whatever the
-/// mouse uses.
-pub const OMNI_PAIRED: [u8; 2] = [0x01, 0xa0];
+/// The Omni receiver's pairing query uses report ID 1, whatever the mouse uses.
+pub const OMNI_REPORT_ID: u8 = 0x01;
+/// Asks the Omni receiver what is paired with it. Its reply echoes both bytes.
+const OMNI_PAIRED: [u8; 2] = [OMNI_REPORT_ID, 0xa0];
+
+/// The Omni receiver's pairing query.
+pub fn omni_paired_request() -> Request {
+    Request::new(&OMNI_PAIRED, OMNI_PAIRED.len())
+}
 
 /// Longest request built here: a DPI stage with its colour, or the lighting.
 const REQUEST_MAX: usize = 10;
@@ -292,7 +298,8 @@ impl PollingRate {
     }
 }
 
-/// A debounce code, 2 (12 ms) to 7 (32 ms).
+/// A debounce code as the mouse holds it. G-Helper offers 2 (12 ms) to 7
+/// (32 ms).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Debounce(u8);
 
@@ -300,9 +307,21 @@ impl Debounce {
     pub const MIN: Self = Self(2);
     pub const MAX: Self = Self(7);
 
-    /// Clamps to the range G-Helper offers, as it does when reading.
+    /// The code as the mouse holds it, which may be outside the range
+    /// G-Helper offers (`is_known`).
     pub fn from_code(code: u8) -> Self {
-        Self(code.clamp(Self::MIN.0, Self::MAX.0))
+        Self(code)
+    }
+
+    /// The nearest code in the range G-Helper offers.
+    pub fn clamped(self) -> Self {
+        Self(self.0.clamp(Self::MIN.0, Self::MAX.0))
+    }
+
+    /// Whether this is one of the codes G-Helper offers. G-Helper clamps the
+    /// others when reading; rogctl shows them as unknown and never sends one.
+    pub fn is_known(self) -> bool {
+        self == self.clamped()
     }
 
     pub fn code(self) -> u8 {
@@ -694,17 +713,19 @@ fn parse_stages(dpi: &Dpi, reply: &[u8], width: usize, s: &mut MouseSettings) {
 }
 
 /// Parses the product IDs an Omni receiver reports as paired: little-endian,
-/// every 4 bytes from byte 5, until a zero.
-pub fn parse_omni_paired(reply: &[u8]) -> Vec<u16> {
+/// every 4 bytes from byte 5, until a zero. A rejection or empty packet is
+/// `Rejected` or `Empty`.
+pub fn parse_omni_paired(reply: &[u8]) -> Result<Vec<u16>, QueryError> {
+    check_reply(reply)?;
     let Some(rest) = reply.get(5..) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let (entries, _) = rest.as_chunks::<4>();
-    entries
+    Ok(entries
         .iter()
         .map(|&[lo, hi, _, _]| u16::from_le_bytes([lo, hi]))
         .take_while(|&pid| pid != 0)
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -776,7 +797,7 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
             .then(|| config(f.layout.polling_rate().1, &[rate.0])),
         Change::Debounce(d) => f
             .debounce
-            .then(|| config(f.layout.debounce().1, &[Debounce::from_code(d.0).0])),
+            .then(|| config(f.layout.debounce().1, &[d.clamped().0])),
         Change::AngleSnapping(on) => f
             .angle_snapping
             .then(|| config(f.layout.angle_snapping().1, &[u8::from(on)])),
@@ -1188,7 +1209,7 @@ mod tests {
     }
 
     #[test]
-    fn clamps_debounce_and_ignores_unknown_lift_off() {
+    fn keeps_unknown_debounce_and_ignores_unknown_lift_off() {
         let f = features("ROG Keris Wireless", true);
         let mut s = MouseSettings::default();
         parse_settings(
@@ -1197,7 +1218,8 @@ mod tests {
             &reply_with(Query::Config, 0, &[(15, &[0])]),
             &mut s,
         );
-        assert_eq!(s.debounce, Some(Debounce::MIN));
+        assert_eq!(s.debounce, Some(Debounce::from_code(0)));
+        assert!(!Debounce::from_code(0).is_known());
         parse_settings(
             Query::LiftOff,
             f,
@@ -1531,6 +1553,11 @@ mod tests {
             bytes(Change::Debounce(Debounce::MAX)),
             [0, 0x51, 0x31, 0x05, 0, 7]
         );
+        // A code outside G-Helper's range is never sent.
+        assert_eq!(
+            bytes(Change::Debounce(Debounce::from_code(9))),
+            [0, 0x51, 0x31, 0x05, 0, 7]
+        );
         // 800 DPI = (7 + 1) * 100; a colour, if any, isn't sent.
         let dpi = |color| Change::StageDpi {
             stage: 1,
@@ -1638,6 +1665,28 @@ mod tests {
         r[..2].copy_from_slice(&OMNI_PAIRED);
         r[5..7].copy_from_slice(&0x1b65u16.to_le_bytes());
         r[9..11].copy_from_slice(&0x1b1au16.to_le_bytes());
-        assert_eq!(parse_omni_paired(&r), vec![0x1b65, 0x1b1a]);
+        assert_eq!(parse_omni_paired(&r).unwrap(), vec![0x1b65, 0x1b1a]);
+        assert!(matches!(
+            parse_omni_paired(&reply(&[0x01, 0xff, 0xaa])),
+            Err(QueryError::Rejected)
+        ));
+        assert!(matches!(
+            parse_omni_paired(&reply(&[0x01])),
+            Err(QueryError::Empty)
+        ));
+    }
+
+    /// Captured from a real ROG Omni receiver (`0b05:1ace` interface 2) with
+    /// only its ROG Falchion RX Low Profile keyboard paired, the keyboard off
+    /// and then on: the same reply both times, in 1-2 ms. Slot 1 is `1b06`,
+    /// then `02 04` (meaning unknown, not whether it's connected); byte 3 may
+    /// be the number paired.
+    #[test]
+    fn parses_captured_omni_reply_with_a_keyboard() {
+        let r = reply(&[0x01, 0xa0, 0x00, 0x01, 0x00, 0x06, 0x1b, 0x02, 0x04]);
+        assert!(omni_paired_request().answered_by(&r));
+        assert_eq!(parse_omni_paired(&r).unwrap(), vec![0x1b06]);
+        // Another report on the interface isn't taken for the reply.
+        assert!(!omni_paired_request().answered_by(&reply(&[0x01, 0x12, 0x07, 0x00, 0x50])));
     }
 }

@@ -42,8 +42,13 @@ local function lowThreshold()
   return math.clamp(pct, 0, 100)
 end
 
+-- A cleared field is "", which Luau counts as true, so `or` alone keeps it.
 local function binaryName()
-  return noctalia.getConfig("binary") or "rogctl"
+  local binary = noctalia.getConfig("binary")
+  if type(binary) ~= "string" or binary == "" then
+    return "rogctl"
+  end
+  return binary
 end
 
 local function currentSettings()

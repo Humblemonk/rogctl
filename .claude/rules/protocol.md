@@ -76,6 +76,17 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   size, battery format, `Features`). Entries sharing a product ID are told apart by `Match`:
   the SpeedNova receiver (`1ad0`) by its USB product name, the Omni receiver (`1ace`) by
   asking it for the paired mouse (`01 A0`, read-only).
+- The Omni reply (captured on interface 2 with only a Falchion RX Low Profile keyboard
+  paired, `parses_captured_omni_reply_with_a_keyboard`) echoes `01 A0` and lists 4-byte
+  slots from byte 5: product ID (little-endian), then two bytes, `02 04` for that keyboard,
+  meaning unknown; byte 3 may be the count. It answers in 1-2 ms with nothing connected, and
+  the same with the keyboard on: it lists every device paired, not which is connected. So
+  with two supported mice paired, rogctl takes the first in `MODELS` order (G-Helper the
+  first slot) and can't tell which is on. A pairing query that times out, or gets `FF AA`
+  or an all-zero reply, leaves the receiver out, as one with no mouse paired is; only one
+  that can't be opened is kept, as `OMNI_RECEIVER`. Keeping it on a miss was tried and
+  undone: a keyboard-only receiver then showed as a mouse, and an awake mouse as "ROG Omni
+  receiver" with no settings, which the TUI didn't retry.
 - `Features` constants are named after the G-Helper class they come from. Code asks the
   features; never match on a model's name.
 - `cargo test` checks that `udev/70-rogctl.rules` and the README's Supported mice list cover

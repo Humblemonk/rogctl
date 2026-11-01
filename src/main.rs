@@ -480,6 +480,7 @@ fn main() -> ExitCode {
         low_threshold: 20,
     };
     let mut interval = Duration::from_secs(60);
+    let mut interval_given = false;
     // `Some(None)`: --demo without a model name.
     let mut demo: Option<Option<String>> = None;
     let mut desktop: Option<String> = None;
@@ -509,6 +510,7 @@ fn main() -> ExitCode {
             "--interval" => match args.next().and_then(|v| v.parse::<u64>().ok()) {
                 Some(secs) if (1..=MAX_INTERVAL_SECS).contains(&secs) => {
                     interval = Duration::from_secs(secs);
+                    interval_given = true;
                 }
                 _ => {
                     eprintln!("--interval needs a number of seconds from 1 to {MAX_INTERVAL_SECS}");
@@ -540,6 +542,10 @@ fn main() -> ExitCode {
     let settings = matches!(command.as_str(), "settings" | "tui");
     if demo.is_some() && !settings {
         eprintln!("--demo only works with `rogctl settings`");
+        return ExitCode::FAILURE;
+    }
+    if interval_given && command != "watch" {
+        eprintln!("--interval only works with `rogctl watch`");
         return ExitCode::FAILURE;
     }
     if (remove || force) && command != "configure" {

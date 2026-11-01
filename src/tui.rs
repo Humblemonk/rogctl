@@ -197,6 +197,17 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                 app.error("No mouse connected");
                 return;
             };
+            // `tick()` only notices a node's path changing, so the mouse on it
+            // may not be the one shown, and `change` was made for that one's
+            // `Features`.
+            if !dev.is_unchanged() {
+                let current = session.current_path();
+                session.load(app, current.as_slice());
+                app.error(
+                    "No change made: the mouse on this port changed or didn't answer, so it was read again",
+                );
+                return;
+            }
             let mut conn = match dev.connect() {
                 Ok(conn) => conn,
                 Err(e) => {

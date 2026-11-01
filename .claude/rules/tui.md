@@ -31,6 +31,10 @@ paths:
   reads the battery (`12 07`) for the header and the active DPI stage (`12 00`), which the
   mouse's DPI button changes without telling rogctl, every 10 s, without dropping a pending
   edit; a mouse that went to sleep shows as asleep.
+- Since `tick()` compares only paths, `apply_action()` identifies the node again first
+  (`Device::is_unchanged()`: sysfs, and `01 A0` on an Omni receiver). If it isn't the model
+  shown (a receiver swapped for one with the same product ID, another mouse paired, the
+  node gone or not answering), nothing is sent and the mice are read again.
 - A save answered `FF AA` with no echo within 150 ms is asked for once more
   (`Connection::apply()`); rejected again, the message says the mouse didn't confirm saving
   it and that it may not last a power cycle, since the Harpe II Ace keeps such changes but
@@ -58,16 +62,22 @@ several models looks and behaves the same on all of them.
   now is shown dimmed with 🔒 and the reason (`Row::locked`: motion sync at 8000 Hz, the
   power-saving rate while power saving is off, the lighting colour while the effect sets its
   own, the colour and brightness while the effect is one rogctl doesn't send) and can't be
-  focused. Never leave a row visible and focusable but inert.
+  focused; focus on a row that locks moves to the next row that can take it (else the one
+  before) and goes back once it unlocks (`App::focused()`). Never leave a row visible and
+  focusable but inert.
 - **Arrows:** the focused row's text value has ◀ and ▶ only for the ways ←/→ can still go
   (`App::can_step()`), grey before an edit and red during one; none on scales or while DPI
   digits are typed. The ◀ sits in the label's last two columns and DPI values keep a slot
   for the ▶, so values and the stages' swatches stay in their columns.
 - **Unknown values show:** a code rogctl can't decode reads "Unknown (0x..)" (`PowerOff`,
-  `LiftOff::Unknown`), ←/→ still pick a valid value, and it's never sent back. Whether a row
-  shows depends on the model, not the reply, with one exception: lighting, untested on most
-  mice that have it, is left out if its read fails (`Connection::read_settings()`), so the
-  other settings still show.
+  `LiftOff::Unknown`, a `Debounce` outside 2-7), ←/→ still pick a valid value, and rogctl
+  never sends it as a choice. One packet (`51 37`) holds both power-off and the warning, so
+  changing one sends the other back as read, an unknown power-off code included: that
+  leaves it as the mouse had it, where refusing would lock the other setting and a valid
+  stand-in would change it unasked. Whether a row shows depends on the model, not the
+  reply, with one exception:
+  lighting, untested on most mice that have it, is left out if its read fails
+  (`Connection::read_settings()`), so the other settings still show.
 - **Scales:** settings with a short fixed list (`App::choices()`: polling rates, debounce,
   power-off, warning, brightness) draw as a GearLink-style slider, red up to a ● on the
   value. ←/→ step through exactly that list (`arrows_walk_exactly_the_choices`). Two-way

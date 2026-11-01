@@ -148,13 +148,18 @@ Don't fix a P2 or P3 without asking.
   Review), and every release. Give it the diff, the intent and the hardware results,
   including which mice weren't tested, not the author's conclusions about whether the code
   is right. Docs- or test-only changes can skip this.
-- Set the reviewer's reasoning effort by the worst finding the change could cause, not by
-  its size: a one-line change to `change_request()` is a P0 risk. `high` for a P0 risk (the
-  write path from `Action` to `save_request()`, `configure`'s file writes, `watch`'s loop,
-  deadlines or process handling) and for a release, over the diff since the last tag;
-  `medium` for a P1 risk (reply parsing, `Features`, battery or settings display, JSON
-  fields, exit codes, a widget); `low` for anything else someone asks to have reviewed.
-  When unsure between two levels, take the higher. Never go above `high`.
+- Set the reviewer's reasoning effort by the worst finding the change could cause (Review's
+  P0 and P1 lists), not by its size or its files: a one-line change to `change_request()`
+  is a P0 risk. `high` for a P0 risk and for a release. A P0 risk is anything that decides
+  whether a `51`/`50` packet is sent, with what value, or to which model: key and mouse
+  handling in `app.rs` and `tui.rs`, the write path to `save_request()`, `Features` in
+  `models.rs`, discovery and Omni pairing in `device.rs`. So are `configure`'s file writes
+  and anything that starts, restarts or stops `rogctl watch` or waits in its loop, widgets
+  included. A release is reviewed over the diff since the last release: its tag, or the
+  `Release x.y.z` commit if it wasn't tagged. `medium` for a P1 risk (reply parsing,
+  battery or settings display, JSON fields, exit codes, the rest of a widget); `low` for
+  anything else someone asks to have reviewed. When unsure, take the higher. Never go
+  above `high`.
 
 ## Boundaries
 
