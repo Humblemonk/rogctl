@@ -7,11 +7,21 @@
       <summary>rogctl command</summary>
       <description>Name or full path of the rogctl binary.</description>
     </key>
+    <key name="device" type="s">
+      <choices>
+        <choice value="all"/>
+        <choice value="mouse"/>
+        <choice value="keyboard"/>
+      </choices>
+      <default>'all'</default>
+      <summary>Show</summary>
+      <description>Which ASUS devices to show the battery of.</description>
+    </key>
     <key name="interval" type="i">
       <range min="5" max="600"/>
       <default>60</default>
       <summary>Refresh seconds</summary>
-      <description>How often to read the mouse battery.</description>
+      <description>How often to read the battery.</description>
     </key>
     <key name="low-threshold" type="i">
       <range min="0" max="100"/>
@@ -25,7 +35,7 @@
     </key>
     <key name="hide-when-disconnected" type="b">
       <default>true</default>
-      <summary>Hide when no mouse is connected</summary>
+      <summary>Hide when nothing is connected</summary>
       <description>Hide the indicator while the receiver or cable is unplugged.</description>
     </key>
   </schema>

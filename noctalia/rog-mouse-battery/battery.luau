@@ -15,7 +15,7 @@ function M.statusWord(s)
   return noctalia.tr("battery.discharging")
 end
 
--- "79% (discharging)"; "(offline)" replaces the status while the mouse sleeps.
+-- "79% (discharging)"; "(offline)" replaces the status while the device sleeps.
 function M.value(s)
   local word = s.state == "connected" and M.statusWord(s) or noctalia.tr("battery.offline")
   return noctalia.tr("battery.value", { percent = s.battery, status = word })

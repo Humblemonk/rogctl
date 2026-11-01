@@ -1,11 +1,12 @@
 # rogctl
 
-Battery status and settings for ASUS mice on Linux, plus panel widgets for Noctalia, Waybar,
-Quickshell, DankMaterialShell, KDE Plasma and GNOME.
+Battery status and settings for ASUS mice on Linux, battery status for ASUS keyboards, plus
+panel widgets for Noctalia, Waybar, Quickshell, DankMaterialShell, KDE Plasma and GNOME.
 
 rogctl supports 27 battery-powered ROG, TUF and ASUS mice, connected through their own
-receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. See
-[Supported mice](#supported-mice) for the list.
+receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver, and shows the
+battery level of 8 ROG keyboards. See [Supported mice](#supported-mice) and
+[Supported keyboards](#supported-keyboards) for the lists.
 
 <table align="center">
   <tr>
@@ -26,10 +27,11 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
 
 ## Getting started
 
-1. **Check your mouse is supported.** Find it in [Supported mice](#supported-mice).
+1. **Check your mouse or keyboard is supported.** Find it in [Supported mice](#supported-mice)
+   or [Supported keyboards](#supported-keyboards).
 
 2. **Install rogctl.** On Arch Linux, install it from the AUR, which includes the udev rule
-   (skip step 3, then replug the mouse):
+   (skip step 3, then replug the mouse or keyboard):
 
    ```sh
    paru -S rogctl        # or: yay -S rogctl
@@ -44,8 +46,9 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
    cargo install --path .
    ```
 
-3. **Allow access to the mouse without root.** Skip this if you installed from the AUR. This
-   installs a udev rule for the supported USB IDs:
+3. **Allow access to the mouse and keyboard without root.** Skip this if you installed from the AUR. This
+   installs a udev rule for the supported USB IDs. It opens only the interface rogctl reads
+   the battery from:
 
    ```sh
    sudo cp udev/70-rogctl.rules /etc/udev/rules.d/
@@ -58,7 +61,8 @@ receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver. S
    rogctl
    ```
 
-   You should see the mouse's name and level, such as `ROG Chakram X: 80%`.
+   You should see the mouse's name and level, such as `ROG Chakram X: 80%`. With no mouse
+   plugged in, it shows the keyboard's. `rogctl --device all` shows every mouse and keyboard.
 
 5. **Optional: add a panel widget.** See [Panel widgets](#panel-widgets).
 
@@ -98,9 +102,11 @@ needs, and only `q` and `Ctrl+C` work.
 
 ## Panel widgets
 
-Each widget shows the mouse's battery level in your panel or bar. It turns red when the
-battery is low (20% by default), dims while the mouse sleeps and hides while no mouse is
-plugged in. All but Waybar also send a notification when the battery gets low.
+Each widget shows the battery level of your mouse and keyboard in your panel or bar, an icon
+and level for each; its **Show** setting picks one of them instead. It turns red when a
+battery is low (20% by default), dims a device while it sleeps and hides while nothing is
+plugged in. All but Waybar also send a notification when a battery gets low. In Waybar, the
+mouse and the keyboard are a module each.
 
 Install the one for your desktop with `rogctl configure`, such as:
 
@@ -127,12 +133,14 @@ If a widget says rogctl wasn't found, your desktop's `PATH` probably doesn't inc
 
 ## Troubleshooting
 
-- **`No supported mouse found`**: the receiver or cable isn't plugged in, or the mouse isn't
-  in [Supported mice](#supported-mice). `rogctl list` shows what was detected.
+- **`No supported mouse or keyboard found`**: the receiver or cable isn't plugged in, or the
+  device isn't in [Supported mice](#supported-mice) or
+  [Supported keyboards](#supported-keyboards). `rogctl list` shows what was detected.
 - **`Permission denied`**: the udev rule from step 3 isn't active yet. Unplug and replug the
-  receiver or cable, or log out and back in.
-- **`asleep or out of range`**: the mouse is off, asleep or too far from the receiver. Move it
-  to wake it and try again.
+  receiver or cable, or log out and back in. For a keyboard, a rule from before rogctl 2.7.0
+  doesn't cover it: install the rule again.
+- **`asleep or out of range`**: the mouse or keyboard is off, asleep or too far from the
+  receiver. Move or type to wake it and try again.
 - **Dull colours in `rogctl settings`**: without `COLORTERM=truecolor` in its environment
   (often missing over SSH), rogctl uses the 256 standard colours. If your terminal has 24-bit
   colour, set `COLORTERM=truecolor`. `NO_COLOR` turns colour off.
@@ -178,6 +186,21 @@ listed here aren't detected.
 - TX GAMING MOUSE Mini
 
 </details>
+
+## Supported keyboards
+
+rogctl shows the battery level of these keyboards; it doesn't change their settings. Only the
+ROG Falchion RX Low Profile (on its Omni receiver and its cable) has been tested so far.
+Keyboards not listed here aren't detected.
+
+- ROG Azoth
+- ROG Azoth Extreme
+- ROG Azoth Extreme SE
+- ROG Azoth X
+- ROG Falchion
+- ROG Falchion RX Low Profile
+- ROG Strix Scope II 96
+- ROG Strix Scope II 96 RX
 
 ## Scripting
 

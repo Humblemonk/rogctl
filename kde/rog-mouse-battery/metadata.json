@@ -6,12 +6,12 @@
       }
     ],
     "Category": "System Information",
-    "Description": "Battery level for ASUS mice, read through rogctl.",
+    "Description": "Battery level for ASUS mice and keyboards, read through rogctl.",
     "Icon": "input-mouse",
     "Id": "com.github.humblemonk.rogmousebattery",
     "License": "AGPL-3.0-or-later",
-    "Name": "ASUS Mouse Battery",
-    "Version": "2.6.1",
+    "Name": "ASUS Peripheral Battery",
+    "Version": "2.7.0",
     "Website": "https://github.com/humblemonk/rogctl"
   },
   "KPackageStructure": "Plasma/Applet",

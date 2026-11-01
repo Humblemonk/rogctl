@@ -5,6 +5,8 @@ import org.kde.kcmutils as KCM
 
 KCM.SimpleKCM {
     property alias cfg_binary: binaryField.text
+    // all, mouse or keyboard.
+    property string cfg_device: "all"
     property alias cfg_interval: intervalSpin.value
     property alias cfg_lowThreshold: thresholdSpin.value
     property alias cfg_showPercent: showPercentBox.checked
@@ -15,6 +17,28 @@ KCM.SimpleKCM {
             id: binaryField
             Kirigami.FormData.label: i18n("rogctl command:")
             placeholderText: "rogctl"
+        }
+
+        QQC2.ComboBox {
+            Kirigami.FormData.label: i18n("Show:")
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                {
+                    text: i18n("Mouse and keyboard"),
+                    value: "all"
+                },
+                {
+                    text: i18n("Mouse"),
+                    value: "mouse"
+                },
+                {
+                    text: i18n("Keyboard"),
+                    value: "keyboard"
+                }
+            ]
+            Component.onCompleted: currentIndex = Math.max(0, indexOfValue(cfg_device))
+            onActivated: cfg_device = currentValue
         }
 
         QQC2.SpinBox {
@@ -45,7 +69,7 @@ KCM.SimpleKCM {
 
         QQC2.CheckBox {
             id: hideBox
-            text: i18n("Hide when no mouse is connected")
+            text: i18n("Hide when nothing is connected")
         }
     }
 }

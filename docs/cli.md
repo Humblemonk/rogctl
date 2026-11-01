@@ -7,11 +7,12 @@ installing and everyday use.
 
 ```sh
 rogctl                        # "<mouse name>: 80%", plus "(charging)" when charging
+rogctl --device all           # a line like that for every mouse and keyboard
 rogctl --json                 # one JSON status line
 rogctl watch --json           # a status line every 60 s (--interval SECS)
 rogctl watch --format waybar  # the same, as Waybar custom-module JSON
-rogctl list                   # detected devices and their /dev/hidraw nodes
-rogctl refresh PID            # make that `rogctl watch` read the mouse now
+rogctl list                   # detected mice and keyboards and their /dev/hidraw nodes
+rogctl refresh PID            # make that `rogctl watch` read the devices now
 rogctl stop PID               # stop that `rogctl watch`
 rogctl settings               # view and change the mouse's settings
 rogctl settings --demo        # the settings screen without a mouse
@@ -25,10 +26,11 @@ shows the demo as another model from the [Supported mice](../README.md#supported
 
 | Option | Does |
 | --- | --- |
+| `--device DEVICE` | `battery` and `watch`: `mouse`, `keyboard` or `all`. Without it, the mouse, or a keyboard if no mouse is plugged in |
 | `--format FORMAT` | `text` (the default), `json` or `waybar` |
 | `--json` | Same as `--format json` |
 | `--low-threshold PCT` | Level at or below which the battery counts as low (default 20, 0 turns it off) |
-| `--interval SECS` | `watch` only: seconds between reads while the mouse is awake, 1 to 86400 (default 60) |
+| `--interval SECS` | `watch` only: seconds between reads while the device is awake, 1 to 86400 (default 60) |
 
 ## Installing widgets
 
@@ -77,16 +79,19 @@ count; for KDE and GNOME, by the installed files and the version in their `metad
 | 0 | Connected |
 | 1 | Error |
 | 2 | No device |
-| 3 | Mouse asleep or out of range |
+| 3 | Asleep or out of range |
 
-`rogctl list` exits with 0 when it finds a mouse and 2 when it finds none.
+With `--device all`, the code is the best of the devices': 0 if any is connected, then 3 if
+any is asleep, then 1 on an error, otherwise 2.
+
+`rogctl list` exits with 0 when it finds a mouse or keyboard and 2 when it finds none.
 
 ## JSON status
 
 Each status is one line of JSON, for example:
 
 ```json
-{"state":"connected","device":"ROG Harpe II Ace","wireless":true,"battery":53,"charging":false,"low_battery_warning":20,"power_off_minutes":3,"hidraw":"/dev/hidraw8","battery_updated":1790809563}
+{"state":"connected","device":"ROG Harpe II Ace","kind":"mouse","wireless":true,"battery":53,"charging":false,"low_battery_warning":20,"power_off_minutes":3,"hidraw":"/dev/hidraw8","battery_updated":1790809563}
 ```
 
 Fields that don't apply are left out rather than set to `null`.
@@ -94,28 +99,43 @@ Fields that don't apply are left out rather than set to `null`.
 | Field | What |
 | --- | --- |
 | `state` | `connected`, `asleep`, `disconnected` or `error` |
-| `device` | The mouse's name |
+| `device` | The mouse's or keyboard's name |
+| `kind` | `mouse` or `keyboard` |
 | `wireless` | `true` through a receiver, `false` on a cable |
 | `battery` | Level in percent |
 | `charging` | Whether it's charging |
 | `low` | At or below `--low-threshold` and not charging. Mice that report the level in quarters count as low at 25% when the threshold is lower |
-| `low_battery_warning` | The mouse's own low-battery warning level, in percent |
-| `power_off_minutes` | The mouse's auto power-off time |
+| `low_battery_warning` | The mouse's own low-battery warning level, in percent (mice only) |
+| `power_off_minutes` | The mouse's auto power-off time (mice only) |
 | `hidraw` | The `/dev/hidraw` node it was read through |
-| `battery_updated` | Unix time when `battery` was last read from the mouse |
+| `battery_updated` | Unix time when `battery` was last read from the device |
 | `error` | What went wrong, when `state` is `error` |
 | `notify_low` | `watch` only: `true` on the one line where a low-battery notification is due |
 | `pid` | `watch` only: its process ID |
 
-The mouse stops answering while it sleeps. `watch` then keeps reporting the last level read,
+A device stops answering while it sleeps. `watch` then keeps reporting the last level read,
 with `"state":"asleep"`, and reads it every 10 seconds whatever `--interval` is (or every
-`--interval` if that's shorter), so a mouse that wakes shows up within 10 seconds. After an
+`--interval` if that's shorter), so one that wakes shows up within 10 seconds. After an
 error it tries again in 5 seconds, then waits twice as long each time, up to `--interval`.
 
-`notify_low` is set once when the battery drops to the threshold. It's set again only after
-the mouse has charged or risen 5% above the threshold, so a notification on it won't repeat.
+### Every device
 
-To read the mouse right away instead of waiting for the next interval, run
+`--device all` prints one object instead, with a status for each device, mice first, and
+`watch`'s `pid` once:
+
+```json
+{"devices":[{"state":"connected","device":"ROG Harpe II Ace","kind":"mouse",…},{"state":"asleep","device":"ROG Falchion RX Low Profile","kind":"keyboard",…}],"pid":4242}
+```
+
+`devices` is empty while nothing is plugged in. A receiver and a cable for the same model count
+as one device, as without `--device all`. `watch` keeps each device's last level while it
+sleeps and decides each one's `notify_low` separately, and waits as briefly as the device that
+needs it soonest.
+
+`notify_low` is set once when the battery drops to the threshold. It's set again only after
+the device has charged or risen 5% above the threshold, so a notification on it won't repeat.
+
+To read the devices right away instead of waiting for the next interval, run
 `rogctl refresh PID` with the `pid` from its output; `rogctl stop PID` stops it. Both signal
 the process only if it's a `rogctl watch` (`refresh` sends `SIGUSR1`, `stop` `SIGTERM`) and
 exit 1 otherwise. Run them through the same command as `watch`: under a wrapper, such as a
@@ -125,5 +145,7 @@ container's, the `pid` is only right there. `kill -USR1 PID` works too where the
 
 `--format waybar` prints Waybar's custom-module JSON: `text`, `tooltip`, `percentage`, `alt`
 (the state, or `charging`, for `format-icons`) and `class` (the state plus `charging` and
-`low`). The `text` is empty while no mouse is plugged in, which hides the module. See
+`low`). The `text` is empty while nothing is plugged in, which hides the module. A module shows
+one device, so it doesn't take `--device all`: use a module with `--device mouse` and one with
+`--device keyboard`. See
 [waybar/](../waybar/README.md).

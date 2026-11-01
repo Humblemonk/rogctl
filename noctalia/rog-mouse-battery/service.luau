@@ -1,8 +1,10 @@
 --!nonstrict
--- Runs `rogctl watch --json` and publishes each status line to shared state
--- under "status" for the bar widget. Also sends the low-battery notification
--- when rogctl flags one (`notify_low`), here rather than in the widget so it
--- fires once no matter how many bars show the widget.
+-- Runs `rogctl watch --json --device ...` and publishes each line to shared
+-- state under "status" for the bar widget, always as `{ devices = {...},
+-- pid = ... }` (or `error`): a list of the statuses to show, empty while
+-- nothing is connected. Also sends each low-battery notification when rogctl
+-- flags one (`notify_low`), here rather than in the widget so it fires once no
+-- matter how many bars show the widget.
 
 local battery = require("./battery.luau")
 
@@ -37,6 +39,15 @@ local function interval()
   return math.clamp(secs, 5, 600)
 end
 
+-- Passed to `--device`: all, mouse or keyboard.
+local function device()
+  local value = noctalia.getConfig("device")
+  if value == "mouse" or value == "keyboard" then
+    return value
+  end
+  return "all"
+end
+
 local function lowThreshold()
   local pct = math.floor(tonumber(noctalia.getConfig("low_threshold")) or 20)
   return math.clamp(pct, 0, 100)
@@ -52,7 +63,7 @@ local function binaryName()
 end
 
 local function currentSettings()
-  return binaryName() .. "\n" .. tostring(interval()) .. "\n" .. tostring(lowThreshold())
+  return binaryName() .. "\n" .. device() .. "\n" .. tostring(interval()) .. "\n" .. tostring(lowThreshold())
 end
 
 local function publish(status)
@@ -62,7 +73,20 @@ local function publish(status)
 end
 
 local function publishError(message)
-  publish({ state = "error", charging = false, error = message })
+  publish({ devices = {}, error = message })
+end
+
+-- `--device all` prints `{ devices, pid }`; mouse or keyboard one status, which
+-- is left out of the list while disconnected.
+local function report(line)
+  if line.devices ~= nil then
+    return line
+  end
+  local devices = {}
+  if line.state ~= "disconnected" then
+    devices = { line }
+  end
+  return { devices = devices, pid = line.pid }
 end
 
 -- Forward declaration: handleLine restarts the stream, startStream reads lines.
@@ -80,15 +104,18 @@ local function handleLine(line)
     publishError(noctalia.tr("error.exited", { binary = binaryName(), code = line:sub(#EXIT_MARKER + 1) }))
     return
   end
-  local status, err = noctalia.json.decode(line)
-  if type(status) ~= "table" then
+  local decoded, err = noctalia.json.decode(line)
+  if type(decoded) ~= "table" then
     noctalia.log("rog-mouse-battery: bad line from rogctl: " .. tostring(err))
     return
   end
+  local status = report(decoded)
   publish(status)
-  if status.notify_low then
-    -- Solaar's format: the device name as the title, its battery line as the body.
-    noctalia.notify(status.device or noctalia.tr("tooltip.mouse"), battery.line(status))
+  for _, s in ipairs(status.devices) do
+    if s.notify_low then
+      -- Solaar's format: the device name as the title, its battery line as the body.
+      noctalia.notify(s.device or noctalia.tr("tooltip." .. (s.kind or "mouse")), battery.line(s))
+    end
   end
 end
 
@@ -106,7 +133,9 @@ function startStream()
     return
   end
   local script = shellQuote(binary)
-    .. " watch --json --interval "
+    .. " watch --json --device "
+    .. device()
+    .. " --interval "
     .. tostring(interval())
     .. " --low-threshold "
     .. tostring(lowThreshold())
@@ -121,7 +150,7 @@ function startStream()
   end
 end
 
--- `rogctl refresh` makes the running rogctl read the mouse now. It reports its
+-- `rogctl refresh` makes the running rogctl read the devices now. It reports its
 -- pid in each line since runStream doesn't; rogctl signals it only if it's a
 -- `rogctl watch`, unlike `kill`.
 local function refreshNow()

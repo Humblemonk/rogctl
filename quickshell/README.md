@@ -19,25 +19,32 @@ Then put `RogMouseWidget {}` in your bar.
 
 ## Customize
 
-The settings (rogctl command, refresh interval, low-battery threshold) are in
-`RogMouseSettings.qml`; updates keep your changes to it. Low-battery notifications use
+The settings (which devices to show, rogctl command, refresh interval, low-battery threshold)
+are in `RogMouseSettings.qml`; updates keep your changes to it. `device` is `"all"` (the
+default), `"mouse"` or `"keyboard"`; a settings file from before 2.7.0 has none, which means
+all. Low-battery notifications use
 `notify-send`.
 
 Before 2.6.0 the settings were at the top of `RogMouse.qml`. If you changed them there, note
 them first: updating needs `--force` once, which overwrites `RogMouse.qml`. Then set them again
 in `RogMouseSettings.qml`.
 
-`RogMouseWidget.qml` is a small example to restyle. To build your own, read these from the
-`RogMouse` singleton, which runs one rogctl however many bars use it:
+`RogMouseWidget.qml` is a small example to restyle: an icon and level for each device. To build
+your own, read these from the `RogMouse` singleton, which runs one rogctl however many bars use
+it:
 
 | Property | What |
 | --- | --- |
-| `battery` | Level in percent, -1 while unknown |
-| `charging` | Whether it's charging |
-| `low` | At or below the threshold and not charging |
-| `connected` | Whether the mouse answered the last read |
-| `device` | The mouse's name |
-| `status` | The whole [status line](../docs/cli.md#json-status) |
+| `devices` | A [status](../docs/cli.md#json-status) for each device, mice first; empty while none is plugged in |
+| `error` | Why rogctl couldn't run, or `""` |
+| `battery` | The first device's level in percent, -1 while unknown |
+| `charging` | Whether the first device is charging |
+| `low` | Whether the first device is at or below the threshold and not charging |
+| `connected` | Whether the first device answered the last read |
+| `device` | The first device's name |
+| `status` | The first device's status |
+
+Its `lowBattery(device)` signal passes the status of the device that ran low.
 
 ## Remove
 

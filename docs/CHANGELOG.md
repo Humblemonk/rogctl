@@ -6,6 +6,49 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.7.0 — 2026-11-01
+
+Keyboard battery levels.
+
+### Added
+
+- **Keyboards**: the battery level of the ROG Azoth, Azoth Extreme, Azoth Extreme SE, Azoth X,
+  Falchion, Falchion RX Low Profile, Strix Scope II 96 and Strix Scope II 96 RX, on their own
+  receiver, a cable or the ROG Omni receiver. rogctl only reads keyboards; `rogctl settings`
+  stays for mice. Tested on a Falchion RX Low Profile.
+- `--device mouse|keyboard|all` for `rogctl battery` and `rogctl watch`. With `all`, the JSON
+  is one object with a status for each device (`devices`), and `watch` keeps each device's
+  last level and low-battery notification separately. Each status has a new `kind` field,
+  `mouse` or `keyboard`.
+- A **Show** setting in every widget: mouse and keyboard (the default), only the mouse, or
+  only the keyboard. With both, the widget shows an icon and level for each device that's
+  plugged in, and names the device in its low-battery notification. The Waybar config has a
+  module for each.
+
+### Changed
+
+- The widgets are now called **ASUS Peripheral Battery** (was ASUS Mouse Battery). Their
+  settings carry over.
+- Without `--device`, `rogctl battery` and `rogctl watch` show a keyboard when no mouse is
+  plugged in, and say "No supported mouse or keyboard found" when there's neither.
+- `rogctl list` shows keyboards, and says whether each device is a mouse or a keyboard.
+
+### Fixed
+
+- The udev rule opens only the interface rogctl reads on each receiver, cable and keyboard.
+  Before, it opened all of them, including the keyboard interface that most receivers have,
+  so any program you ran could read what you typed on a keyboard paired to the ROG Omni
+  receiver, or the keys a mouse sends, without root.
+
+### Upgrading
+
+- Install the udev rule again (step 3 of [Getting started](../README.md#getting-started)) so
+  rogctl can read keyboards without root, then unplug and replug each receiver and cable, or
+  restart, to drop the access the old rule gave. Until then a keyboard shows "Permission
+  denied". The AUR package installs the new rule itself; replug after upgrading.
+- Run `rogctl configure` for your desktop again to update the widget. In Waybar, add the
+  `custom/rog-keyboard` module that `rogctl configure waybar` prints.
+
 ## 2.6.1 — 2026-11-01
 
 ### Fixed

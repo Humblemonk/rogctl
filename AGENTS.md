@@ -12,24 +12,26 @@ per-model differences, capturing unknown commands), `tui.md` for `app.rs`/`ui.rs
 ## Project
 
 `rogctl` reads the battery level of ASUS mice (every battery-powered mouse G-Helper supports)
-on Linux over `/dev/hidraw`, and ships panel widgets that display it. `rogctl settings`
-reads and changes the mouse's settings. Treat all supported mice alike: don't special-case
-one model in docs, UI text or defaults. The CLI is the only thing that talks to the mouse;
-each widget is a thin frontend over its JSON output. Prefer the simple, obvious solution.
+and keyboards (G-Helper's battery-powered ones whose interface is known) on Linux over
+`/dev/hidraw`, and ships panel widgets that display it. `rogctl settings` reads and changes
+the mouse's settings; keyboards are only ever read (`12 01`). Treat all supported mice alike,
+and all keyboards: don't special-case one model in docs, UI text or defaults. The CLI is the
+only thing that talks to the devices; each widget is a thin frontend over its JSON output.
+Prefer the simple, obvious solution.
 
 | Path | What |
 |------|------|
 | `src/device.rs` | Discovery (sysfs, Omni pairing) and hidraw I/O: `Connection` sends a request, waits for its reply |
 | `src/protocol.rs` | Every byte sent or parsed: requests, reply parsers, `Features` (what a model has) |
-| `src/models.rs` | `MODELS`: supported mice and their `Features`, transcribed from G-Helper |
+| `src/models.rs` | `MODELS`: supported mice and their `Features`, and `KEYBOARDS`, transcribed from G-Helper |
 | `src/main.rs` | CLI (`battery`, `watch`, `list`, `refresh`, `stop`, `settings`, `configure`), JSON status output |
 | `src/waybar.rs` | `--format waybar`: the status as Waybar custom-module JSON |
 | `src/configure.rs` | `rogctl configure`: installs or removes a widget from copies built into the binary |
 | `src/app.rs` | TUI state and key handling (`Control`, `Value`, `Action`); no I/O |
 | `src/ui.rs` | TUI rendering with ratatui |
 | `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
-| `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json` (Plasma polls `rogctl battery --json`) |
-| `udev/70-rogctl.rules` | Grants the logged-in user hidraw access |
+| `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json --device …` (Plasma polls `rogctl battery`) |
+| `udev/70-rogctl.rules` | Grants the logged-in user hidraw access to the one interface rogctl uses per device |
 | `README.md`, `docs/cli.md`, `docs/CHANGELOG.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
 
 ## Commands
@@ -84,6 +86,8 @@ Control flow for a change: key → `App::handle_key()` → `Action` → `tui::ap
   without knowing what they mean.
 - What a mouse supports lives in its `Features`. Code asks the features (or the settings read
   back); never match on a model's name.
+- Whether a device is a mouse or a keyboard is its model's `kind`. Only mice reach
+  `rogctl settings` (`device::discover_mice()`), and `Connection::apply()` refuses a keyboard.
 
 ## Rust rules
 
@@ -119,14 +123,14 @@ catch.
 rather than promoting a lower one.
 
 - **P0**: changes the mouse or the user's system unasked, or leaves a widget stuck: a `51`
-  or `50` packet sent without Enter, Space or a click, to the wrong model, or with a value
-  that wasn't validated; a write outside rogctl's own state that `configure` wasn't asked
-  for; `watch` hanging or multiplying, so a widget shows a stale level for good (c5d7939,
-  42a9472)
-- **P1**: a battery level, charging or asleep state shown wrong on some mouse (4f0f059,
-  cb82df5), a setting read back or shown wrong, a change reported as not made or not saved
-  when it was (2fb1e13), a widget that stops reacting (2fb1e13), a supported mouse reported
-  missing, a panic, a changed exit code or JSON field
+  or `50` packet sent without Enter, Space or a click, to the wrong model or to a keyboard,
+  or with a value that wasn't validated; a write outside rogctl's own state that `configure`
+  wasn't asked for; `watch` hanging or multiplying, so a widget shows a stale level for good
+  (c5d7939, 42a9472)
+- **P1**: a battery level, charging or asleep state shown wrong on some mouse or keyboard
+  (4f0f059, cb82df5), a setting read back or shown wrong, a change reported as not made or
+  not saved when it was (2fb1e13), a widget that stops reacting (2fb1e13), a supported mouse
+  or keyboard reported missing, a panic, a changed exit code or JSON field
 - **P2**: users notice, but nothing is shown wrong: a misleading message, help or readme
   wording, a widget that behaves unlike the others, a slow update. Also a broken Rust or
   Layering rule that makes a P0/P1 likely later (`_` over rogctl's own enum, a raw byte
@@ -143,7 +147,7 @@ Don't fix a P2 or P3 without asking.
 - If a byte offset or command value is uncertain, say so and capture it rather than guess
   (`protocol.md` explains how, read-only, with ASUS GearLink).
 - Say in the commit or PR body which mice a change depends on, and whether and how it was
-  tested on hardware. Only one mouse has been: see `protocol.md`.
+  tested on hardware. Only one mouse and one keyboard have been: see `protocol.md`.
 - Have a session that didn't write it review any change that could cause a P0 or P1 (see
   Review), and every release. Give it the diff, the intent and the hardware results,
   including which mice weren't tested, not the author's conclusions about whether the code

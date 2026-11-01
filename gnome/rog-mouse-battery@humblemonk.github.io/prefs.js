@@ -33,9 +33,28 @@ export default class RogMouseBatteryPreferences extends ExtensionPreferences {
     });
     group.add(binary);
 
+    // The `device` setting's values, in the order the row lists them.
+    const devices = ["all", "mouse", "keyboard"];
+    const device = new Adw.ComboRow({
+      title: _("Show"),
+      subtitle: _("Which ASUS devices to show the battery of."),
+      model: Gtk.StringList.new([
+        _("Mouse and keyboard"),
+        _("Mouse"),
+        _("Keyboard"),
+      ]),
+      selected: Math.max(0, devices.indexOf(settings.get_string("device"))),
+    });
+    device.connect("notify::selected", () => {
+      const value = devices[device.selected] ?? "all";
+      if (value !== settings.get_string("device"))
+        settings.set_string("device", value);
+    });
+    group.add(device);
+
     const interval = new Adw.SpinRow({
       title: _("Refresh seconds"),
-      subtitle: _("How often to read the mouse battery."),
+      subtitle: _("How often to read the battery."),
       adjustment: new Gtk.Adjustment({
         lower: 5,
         upper: 600,
@@ -74,7 +93,7 @@ export default class RogMouseBatteryPreferences extends ExtensionPreferences {
     group.add(showPercent);
 
     const hide = new Adw.SwitchRow({
-      title: _("Hide when no mouse is connected"),
+      title: _("Hide when nothing is connected"),
       subtitle: _(
         "Hide the indicator while the receiver or cable is unplugged.",
       ),

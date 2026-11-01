@@ -7,7 +7,7 @@ use super::{State, Status};
 
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Line {
-    /// The level, e.g. "80%". Empty while no mouse is plugged in, which
+    /// The level, e.g. "80%". Empty while nothing is plugged in, which
     /// makes Waybar hide the module.
     pub text: String,
     /// Picks the icon when `format-icons` is keyed by name.
@@ -20,7 +20,8 @@ pub struct Line {
     pub percentage: Option<u8>,
 }
 
-pub fn line(s: &Status) -> Line {
+/// `nothing_found` is the tooltip while nothing is plugged in.
+pub fn line(s: &Status, nothing_found: &str) -> Line {
     let state = state_name(s.state);
     let mut class = vec![state];
     if s.charging {
@@ -45,7 +46,7 @@ pub fn line(s: &Status) -> Line {
     Line {
         text,
         alt,
-        tooltip: tooltip(s),
+        tooltip: tooltip(s, nothing_found),
         class,
         percentage: s.battery,
     }
@@ -61,11 +62,11 @@ fn state_name(state: State) -> &'static str {
 }
 
 /// The widgets' wording: "Battery: 79% (discharging)", with "(offline)"
-/// while the mouse sleeps.
-fn tooltip(s: &Status) -> String {
-    let device = escape(s.device.unwrap_or("Mouse"));
+/// while the device sleeps.
+fn tooltip(s: &Status, nothing_found: &str) -> String {
+    let device = escape(s.device.unwrap_or("Device"));
     let detail = match s.state {
-        State::Disconnected => return "No supported mouse found".to_owned(),
+        State::Disconnected => return nothing_found.to_owned(),
         State::Error => format!("Error: {}", escape(s.error.as_deref().unwrap_or("unknown"))),
         State::Asleep => match s.battery {
             Some(pct) => format!("Battery: {pct}% (offline)"),
@@ -102,9 +103,13 @@ mod tests {
         s
     }
 
+    fn line_of(s: &Status) -> Line {
+        line(s, "No supported mouse found")
+    }
+
     #[test]
     fn connected() {
-        let l = line(&status(State::Connected, Some(80), false));
+        let l = line_of(&status(State::Connected, Some(80), false));
         assert_eq!(l.text, "80%");
         assert_eq!(l.alt, "connected");
         assert_eq!(l.class, ["connected"]);
@@ -114,10 +119,10 @@ mod tests {
 
     #[test]
     fn low_until_charging() {
-        let l = line(&status(State::Connected, Some(20), false));
+        let l = line_of(&status(State::Connected, Some(20), false));
         assert_eq!(l.class, ["connected", "low"]);
 
-        let l = line(&status(State::Connected, Some(20), true));
+        let l = line_of(&status(State::Connected, Some(20), true));
         assert_eq!(l.alt, "charging");
         assert_eq!(l.class, ["connected", "charging"]);
         assert_eq!(l.tooltip, "ROG Harpe II Ace\nBattery: 20% (charging)");
@@ -125,21 +130,24 @@ mod tests {
 
     #[test]
     fn asleep_keeps_last_level() {
-        let l = line(&status(State::Asleep, Some(55), false));
+        let l = line_of(&status(State::Asleep, Some(55), false));
         assert_eq!(l.text, "55%");
         assert_eq!(l.class, ["asleep"]);
         assert_eq!(l.tooltip, "ROG Harpe II Ace\nBattery: 55% (offline)");
 
-        let l = line(&status(State::Asleep, None, false));
+        let l = line_of(&status(State::Asleep, None, false));
         assert_eq!(l.text, "?");
         assert_eq!(l.percentage, None);
     }
 
     #[test]
     fn disconnected_hides_the_module() {
-        let l = line(&Status::empty(State::Disconnected));
+        let l = line(
+            &Status::empty(State::Disconnected),
+            "No supported keyboard found",
+        );
         assert_eq!(l.text, "");
-        assert_eq!(l.tooltip, "No supported mouse found");
+        assert_eq!(l.tooltip, "No supported keyboard found");
     }
 
     #[test]
@@ -148,7 +156,7 @@ mod tests {
             error: Some("<bad> & worse".to_owned()),
             ..status(State::Error, None, false)
         };
-        let l = line(&s);
+        let l = line_of(&s);
         assert_eq!(l.text, "?");
         assert_eq!(
             l.tooltip,
@@ -159,7 +167,7 @@ mod tests {
     /// Waybar needs `text`; `percentage` is left out rather than null.
     #[test]
     fn json_shape() {
-        let json = serde_json::to_value(line(&Status::empty(State::Disconnected))).unwrap();
+        let json = serde_json::to_value(line_of(&Status::empty(State::Disconnected))).unwrap();
         assert_eq!(json["text"], "");
         assert_eq!(json["class"], serde_json::json!(["disconnected"]));
         assert!(json.get("percentage").is_none());

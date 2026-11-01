@@ -89,14 +89,53 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   receiver" with no settings, which the TUI didn't retry.
 - `Features` constants are named after the G-Helper class they come from. Code asks the
   features; never match on a model's name.
-- `cargo test` checks that `udev/70-rogctl.rules` and the README's Supported mice list cover
-  every entry; update both when you add a model.
+- `cargo test` checks that `udev/70-rogctl.rules` has exactly one line per entry's product ID
+  and interface, and that the README's Supported mice and Supported keyboards lists cover
+  every entry; update both when you add a model. The rule matches the USB interface's
+  `modalias` (`usb:v0B05p1ACE*in02`), the one attribute holding vendor, product and
+  interface, so it opens only the interface rogctl uses: receivers and keyboards also have a
+  keyboard interface (usage page 7) that carries every keystroke.
+- Report descriptors read from sysfs (`/sys/class/hidraw/*/device/report_descriptor`,
+  world-readable) on 2026-11-01: rogctl's interface has only vendor pages on the SpeedNova
+  (`1ad0` interface 2: `FF00`-`FF02`), the Omni receiver (`1ace` interface 2: the same), the
+  Harpe II Ace cable (`1c69` interface 0: `FF01`) and the Falchion RX Low Profile wired
+  (`1b04` interface 1: `FF00`). Their other interfaces carry keystrokes (page 7), the
+  pointer or media keys, and the installed rule leaves them closed. Other models' interfaces
+  are unchecked.
 - README.md doesn't mention G-Helper; the attribution lives in `src/models.rs`, AGENTS.md,
   this file and CONTRIBUTING.md.
 
+## Keyboards
+
+- Battery only, from G-Helper's `app/Peripherals/Keyboard/AsusKeyboard.cs` and
+  `Models/`: `12 01` (its "power" page) on interface 1 (`mi_01`), report ID 0, 65 bytes; on
+  the Omni receiver interface 2, report ID 2 (`col02`, page `FF00`), 64 bytes, beside a
+  mouse's report 3 on the same node. The percentage is byte 6, or 11 on the Falchion family
+  (`Battery::Keyboard { byte }`); byte 9 is 1 while charging. G-Helper's comments say byte 7
+  is the sleep timeout; bytes 7 and 10 aren't read (10 was `14`, perhaps a 20% warning).
+- `KEYBOARDS` follows `MODELS`, so every mouse ranks first. `select_models()` takes the first
+  match of each kind, so one Omni receiver can yield a mouse and a keyboard: they share the
+  node, `discover()` lists both, and `rogctl battery --device all` groups entries by kind and
+  name, as it does a mouse's receiver and cable.
+- Left out: G-Helper's keyboards without an `mi_` path (it picks the interface from the
+  report descriptor: a vendor `FF00` page with 64-byte output reports), the Claymore II
+  (`196b`) and Strix Scope RX TKL Wireless (`1a07`). The Falchion RX (`1b04`) is one of those
+  in G-Helper but was captured on interface 1.
+- Captured 2026-11-01 from a Falchion RX Low Profile, read-only (`12 01`, `01 A0`):
+  - Omni receiver: pairing reply `01 a0 00 01 00 06 1b 02 04` (`1b06`); battery
+    `02 12 01 00 00 00 34 02 01 00 14 34 ff 0e`: 52% in bytes 6 and 11 (not a 0-10 gauge on
+    this one), not charging. On the cable in 2.4 GHz mode byte 9 became `01` and bytes 12-13
+    `65 0f` (millivolts, perhaps); no `1b04` node appears then. Switched off: `02 ff aa` in
+    1-2 ms, which `means_asleep` reads as asleep, and the pairing reply is unchanged.
+  - Wired mode (`0b05:1b04`, "ROG FALCHION RX LOW PROFILE"): five interfaces; interface 1 is
+    the only `FF00` page, unnumbered, 64-byte input and output. Same reply after the report ID
+    (`12 01 00 00 00 34 02 01 01 14 34 84 0f`), charging.
+- The reporter of issue #34 read a Falchion (`193e`) the same way: interface 1, bytes 11 and 9.
+
 ## Verification and captures
 
-- Hardware-verified: one mouse, a Harpe II Ace. On the SpeedNova receiver (`0b05:1ad0`):
+- Hardware-verified: one mouse, a Harpe II Ace, and one keyboard, a Falchion RX Low Profile
+  (battery only, above). On the SpeedNova receiver (`0b05:1ad0`):
   battery and settings reads, and the user's own tests of every change in
   `rogctl settings`. On its cable in wired mode (`0b05:1c69` interface 0, report ID 0,
   64-byte packets): found and read in `rogctl settings` (battery and settings), and

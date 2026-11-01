@@ -1,7 +1,9 @@
-// Runs `rogctl watch --json` and publishes each status line as the "status"
-// global var for the bar widgets. Also sends the low-battery notification
-// when rogctl flags one (`notify_low`), here rather than in the widget so it
-// fires once however many bars show it.
+// Runs `rogctl watch --json --device ...` and publishes each line as the
+// "status" global var for the bar widgets, always as `{ devices, pid }` (or
+// `error`): the statuses to show, an empty list while nothing is connected.
+// Also sends each low-battery notification when rogctl flags one
+// (`notify_low`), here rather than in the widget so it fires once however
+// many bars show it.
 
 import QtQuick
 import Quickshell
@@ -16,6 +18,8 @@ PluginComponent {
     property var popoutService: null
 
     readonly property string binary: pluginData.binary || "rogctl"
+    // Passed to `--device`: all, mouse or keyboard.
+    readonly property string device: ["mouse", "keyboard"].includes(pluginData.device) ? pluginData.device : "all"
     readonly property int interval: pluginData.interval || 60
     readonly property int lowThreshold: pluginData.lowThreshold ?? 20
 
@@ -23,6 +27,7 @@ PluginComponent {
     property bool restarting: false
 
     onBinaryChanged: restart()
+    onDeviceChanged: restart()
     onIntervalChanged: restart()
     onLowThresholdChanged: restart()
 
@@ -51,22 +56,37 @@ PluginComponent {
         PluginService.setGlobalVar(pluginId, "status", status);
     }
 
+    // `--device all` prints `{ devices, pid }`; mouse or keyboard one status,
+    // which is left out of the list while disconnected.
+    function report(line) {
+        if (line.devices !== undefined)
+            return line;
+        return {
+            devices: line.state === "disconnected" ? [] : [line],
+            pid: line.pid
+        };
+    }
+
     function handleLine(line) {
         let status;
         try {
-            status = JSON.parse(line);
+            status = report(JSON.parse(line));
         } catch (e) {
             console.warn("rogMouseBattery: bad line from rogctl:", line);
             return;
         }
         publish(status);
-        if (status.notify_low)
-            Quickshell.execDetached(["notify-send", "-a", "rogctl", "-i", "input-mouse", status.device || tr("Mouse"), tr("Battery: %1% (%2)").arg(status.battery).arg(statusWord(status))]);
+        for (const s of status.devices) {
+            if (!s.notify_low)
+                continue;
+            const keyboard = s.kind === "keyboard";
+            Quickshell.execDetached(["notify-send", "-a", "rogctl", "-i", keyboard ? "input-keyboard" : "input-mouse", s.device || tr(keyboard ? "Keyboard" : "Mouse"), tr("Battery: %1% (%2)").arg(s.battery).arg(statusWord(s))]);
+        }
     }
 
     Process {
         id: watcher
-        command: [root.binary, "watch", "--json", "--interval", String(root.interval), "--low-threshold", String(root.lowThreshold)]
+        command: [root.binary, "watch", "--json", "--device", root.device, "--interval", String(root.interval), "--low-threshold", String(root.lowThreshold)]
         running: true
         stdout: SplitParser {
             onRead: line => root.handleLine(line)
@@ -75,8 +95,7 @@ PluginComponent {
             if (root.restarting)
                 return;
             root.publish({
-                state: "error",
-                charging: false,
+                devices: [],
                 error: root.tr("%1 exited with status %2").arg(root.binary).arg(exitCode)
             });
         }
@@ -102,7 +121,7 @@ PluginComponent {
     }
 
     // The widget asks for a fresh reading by setting "refresh". `rogctl
-    // refresh` makes the running rogctl read the mouse right away; it signals
+    // refresh` makes the running rogctl read the devices right away; it signals
     // the pid only if it's a `rogctl watch`, unlike `kill`.
     Connections {
         target: PluginService
