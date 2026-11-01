@@ -6,6 +6,26 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.6.1 — 2026-11-01
+
+### Fixed
+
+- `rogctl settings` checks which mouse is connected before every change. Before, swapping a
+  receiver for another with the same USB ID, or pairing a different mouse to the ROG Omni
+  receiver in place of the first, while it was open could send the change in the format of
+  the mouse shown first. Now it makes no change and reads the mouse again instead.
+- The Noctalia widget runs `rogctl` when its "rogctl command" setting is cleared, as the
+  other widgets do.
+- In `rogctl settings`, a button debounce code outside the 12-32 ms range shows as
+  "Unknown" instead of as 12 or 32 ms; ←/→ pick a value as usual.
+- In `rogctl settings`, when the selected setting locks (motion sync at 8000 Hz, say), the
+  selection moves to the next setting rather than back to the top.
+
+### Changed
+
+- `--interval` only works with `rogctl watch`; with another command it's an error (exit 1)
+  instead of being ignored.
+
 ## 2.6.0 — 2026-10-18
 
 Lighting, and safer widgets.

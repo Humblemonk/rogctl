@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::models::{MODELS, OMNI_PID, OMNI_RECEIVER};
 use crate::protocol::{
-    self, Battery, Change, Features, MouseSettings, OMNI_PAIRED, Query, Reading, Request,
+    self, Battery, Change, Features, MouseSettings, OMNI_REPORT_ID, Query, Reading, Request,
 };
 
 pub const ASUS_VID: u16 = 0x0b05;
@@ -104,13 +104,7 @@ pub fn candidate_nodes() -> Vec<PathBuf> {
 pub fn discover() -> Vec<Device> {
     let mut found: Vec<Device> = Vec::new();
     for c in candidates() {
-        let model = if c.pid == OMNI_PID {
-            omni_model(omni_paired(&c.hidraw))
-        } else {
-            let product = usb_product(&c.sys).unwrap_or_default();
-            select_model(c.pid, c.interface, &product, &[])
-        };
-        if let Some(model) = model {
+        if let Some(model) = identify(&c) {
             found.push(Device {
                 model,
                 hidraw: c.hidraw,
@@ -121,11 +115,26 @@ pub fn discover() -> Vec<Device> {
     found
 }
 
+/// Which model a candidate node is, asking an Omni receiver which mouse is
+/// paired (read-only).
+fn identify(c: &Candidate) -> Option<&'static Model> {
+    if c.pid == OMNI_PID {
+        omni_model(omni_paired(&c.hidraw))
+    } else {
+        let product = usb_product(&c.sys).unwrap_or_default();
+        select_model(c.pid, c.interface, &product, &[])
+    }
+}
+
+/// What tells models apart: each entry's product ID, interface and name
+/// together are unique (`entries_are_unambiguous`).
+fn key(m: &Model) -> (u16, u8, &'static str) {
+    (m.pid, m.interface, m.name)
+}
+
 /// Where `model` is in `MODELS`. OMNI_RECEIVER isn't there; it goes last.
-/// Found by value: a `const` has no one address to compare, and each entry's
-/// product ID, interface and name together are unique (`entries_are_unambiguous`).
+/// Found by value (`key`): a `const` has no one address to compare.
 fn rank(model: &Model) -> usize {
-    let key = |m: &Model| (m.pid, m.interface, m.name);
     MODELS
         .iter()
         .position(|m| key(m) == key(model))
@@ -134,7 +143,9 @@ fn rank(model: &Model) -> usize {
 
 /// Picks the model for an Omni receiver from its pairing reply. If the
 /// receiver couldn't be opened or written to, keep it so the battery read
-/// reports why (e.g. no udev rule) instead of it looking unplugged.
+/// reports why (e.g. no udev rule) instead of it looking unplugged. One that
+/// didn't answer is left out, as one with no supported mouse paired is: a
+/// receiver answers within milliseconds even then (protocol.md).
 fn omni_model(paired: Result<Vec<u16>, QueryError>) -> Option<&'static Model> {
     match paired {
         Ok(paired) => select_model(OMNI_PID, OMNI_RECEIVER.interface, "", &paired),
@@ -187,16 +198,20 @@ fn usb_product(sys: &Path) -> Option<String> {
 /// Asks an Omni receiver which devices are paired with it, as G-Helper's
 /// `DedectOmniMouse` does.
 fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
+    let request = protocol::omni_paired_request();
     let mut file = open(hidraw)?;
     drain(&mut file);
     let mut packet = [0u8; 64];
-    packet[..OMNI_PAIRED.len()].copy_from_slice(&OMNI_PAIRED);
+    let bytes = request.bytes();
+    packet[..bytes.len()].copy_from_slice(bytes);
     file.write_all(&packet)?;
-    let report_id = OMNI_PAIRED[0];
-    let reply = read_packet(&mut file, report_id, Instant::now() + REPLY_TIMEOUT, |r| {
-        r[0] == report_id
+    let deadline = Instant::now() + REPLY_TIMEOUT;
+    // The echo already has report ID 1; a rejection or empty packet doesn't,
+    // and another report on the interface could look empty.
+    let reply = read_packet(&mut file, OMNI_REPORT_ID, deadline, |r| {
+        r[0] == OMNI_REPORT_ID && request.answered_by(r)
     })?;
-    Ok(protocol::parse_omni_paired(&reply))
+    protocol::parse_omni_paired(&reply)
 }
 
 #[derive(Debug)]
@@ -243,6 +258,19 @@ impl From<io::Error> for QueryError {
 }
 
 impl Device {
+    /// Whether the node still holds the model it was found as. Another mouse
+    /// can take it over between reads without the node's path changing: a
+    /// receiver swapped for one with the same product ID, or another mouse
+    /// paired to the Omni receiver. Reads sysfs, and asks an Omni receiver
+    /// which mouse is paired; sends nothing that changes the mouse.
+    pub fn is_unchanged(&self) -> bool {
+        candidates()
+            .iter()
+            .find(|c| c.hidraw == self.hidraw)
+            .and_then(identify)
+            .is_some_and(|m| key(m) == key(self.model))
+    }
+
     pub fn connect(&self) -> io::Result<Connection> {
         Ok(Connection {
             model: self.model,
@@ -488,6 +516,22 @@ mod tests {
         assert!(rank(cable) < rank(&OMNI_RECEIVER));
     }
 
+    /// `Device::is_unchanged` tells apart the models that can take over a node
+    /// without its path changing.
+    #[test]
+    fn tells_apart_models_sharing_a_node() {
+        let ace = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let extreme = select_model(0x1ad0, 2, "EXTREME", &[]).unwrap();
+        assert_ne!(key(ace), key(extreme));
+        let mini = select_model(OMNI_PID, 2, "", &[0x1b65]).unwrap();
+        let keris = select_model(OMNI_PID, 2, "", &[0x1b1a]).unwrap();
+        assert_ne!(key(mini), key(keris));
+        assert_eq!(
+            key(ace),
+            key(select_model(0x1ad0, 2, "SPEEDNOVA", &[]).unwrap())
+        );
+    }
+
     #[test]
     fn identifies_omni_mouse_by_paired_id() {
         // A keyboard (unknown ID) paired first, then a Harpe Ace Mini.
@@ -505,8 +549,12 @@ mod tests {
         let f = m.features;
         assert_eq!(f.dpi.stages, 0);
         assert_eq!((f.power_off, f.low_battery_warning), (None, None));
-        // No answer or no supported mouse paired: nothing to report.
-        assert!(omni_model(Err(QueryError::Timeout)).is_none());
+        // No answer, or no supported mouse paired, such as the captured reply
+        // with only a Falchion RX Low Profile keyboard: nothing to report.
+        for e in [QueryError::Timeout, QueryError::Rejected, QueryError::Empty] {
+            assert!(omni_model(Err(e)).is_none());
+        }
+        assert!(omni_model(Ok(vec![0x1b06])).is_none());
         assert!(omni_model(Ok(vec![0x1234])).is_none());
         assert_eq!(omni_model(Ok(vec![0x1b65])).unwrap().name, "Harpe Ace Mini");
     }

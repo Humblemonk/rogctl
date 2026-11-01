@@ -127,7 +127,8 @@ impl fmt::Display for Value {
         match *self {
             Self::Dpi(dpi) => write!(f, "{dpi}"),
             Self::PollingRate(rate) => write!(f, "{} Hz", rate.hz()),
-            Self::Debounce(d) => write!(f, "{} ms", d.ms()),
+            Self::Debounce(d) if d.is_known() => write!(f, "{} ms", d.ms()),
+            Self::Debounce(d) => write!(f, "Unknown ({:#04x})", d.code()),
             Self::Switch(true) => write!(f, "On"),
             Self::Switch(false) => write!(f, "Off"),
             Self::Degrees(0) => write!(f, "0°"),
@@ -360,13 +361,25 @@ impl App {
             .collect()
     }
 
-    /// The focused control: the last one focused if it's still there, else
-    /// the first.
+    /// The focused control: the last one focused if it can still be, else
+    /// the nearest row that can, the next one first (a locked row stays
+    /// shown, and focus goes back to it once it unlocks), else the first.
     pub fn focused(&self) -> Option<Control> {
-        let controls = self.controls();
-        self.focus
-            .filter(|c| controls.contains(c))
-            .or_else(|| controls.first().copied())
+        let rows = self.rows();
+        let free = |r: &&Row| r.locked.is_none();
+        let at = self
+            .focus
+            .and_then(|c| rows.iter().position(|r| r.control == c));
+        let nearest = at.and_then(|i| {
+            let (before, after) = rows.split_at(i);
+            after
+                .iter()
+                .find(free)
+                .or_else(|| before.iter().rev().find(free))
+        });
+        nearest
+            .or_else(|| rows.iter().find(free))
+            .map(|r| r.control)
     }
 
     /// Every value a setting with a short fixed list can take, in ←/→
@@ -640,7 +653,19 @@ impl App {
                 }
                 (_, Value::Switch(on)) => Value::Switch(!on),
                 // Other values change with ←/→ first.
-                (_, _) => return None,
+                (
+                    _,
+                    Value::Dpi(_)
+                    | Value::PollingRate(_)
+                    | Value::Debounce(_)
+                    | Value::Degrees(_)
+                    | Value::LiftOff(_)
+                    | Value::PowerOff(_)
+                    | Value::Percent(_)
+                    | Value::Effect(_)
+                    | Value::Color(_)
+                    | Value::Brightness(_),
+                ) => return None,
             },
         };
         if self.value(control) == Some(value) {
@@ -671,6 +696,8 @@ impl App {
                 power_off,
                 low_battery_warning: s.low_battery_warning.unwrap_or(0),
             },
+            // Power-off goes back as read, even an unknown code, so it stays as
+            // the mouse had it (tui.md, "Unknown values show").
             (Control::LowBatteryWarning, Value::Percent(low_battery_warning)) => Change::Energy {
                 power_off: s.power_off.unwrap_or(PowerOff::NEVER),
                 low_battery_warning,
@@ -697,7 +724,25 @@ impl App {
                 brightness,
                 ..s.lighting?
             }),
-            (_, _) => return None,
+            // A control paired with another control's value. Listed by
+            // control, so a new one doesn't compile until it has a change.
+            (
+                Control::Stage(_)
+                | Control::PollingRate
+                | Control::Debounce
+                | Control::AngleSnapping
+                | Control::AngleTuning
+                | Control::MotionSync
+                | Control::LiftOff
+                | Control::PowerOff
+                | Control::LowBatteryWarning
+                | Control::PowerSaving
+                | Control::PowerSavingRate
+                | Control::LightingEffect
+                | Control::LightingColor
+                | Control::Brightness,
+                _,
+            ) => return None,
         })
     }
 
@@ -780,8 +825,8 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
         Value::Debounce(d) => Value::Debounce(match (up, big) {
             (true, true) => Debounce::MAX,
             (false, true) => Debounce::MIN,
-            (true, false) => Debounce::from_code(d.code().saturating_add(1)),
-            (false, false) => Debounce::from_code(d.code().saturating_sub(1)),
+            (true, false) => Debounce::from_code(d.code().saturating_add(1)).clamped(),
+            (false, false) => Debounce::from_code(d.code().saturating_sub(1)).clamped(),
         }),
         Value::Switch(on) => Value::Switch(!on),
         Value::Degrees(d) => {
@@ -1150,6 +1195,18 @@ mod tests {
         );
     }
 
+    /// Focus on a row that locks moves to the nearest one, not the top, and
+    /// back once it unlocks.
+    #[test]
+    fn focus_leaves_a_locked_row_for_the_next() {
+        let mut app = demo("ROG Harpe II Ace");
+        focus(&mut app, Control::MotionSync);
+        app.simulate(&Change::PollingRate(PollingRate::HZ_8000));
+        assert_eq!(app.focused(), Some(Control::LiftOff));
+        app.simulate(&Change::PollingRate(PollingRate::HZ_1000));
+        assert_eq!(app.focused(), Some(Control::MotionSync));
+    }
+
     #[test]
     fn motion_sync_locks_at_8000_hz() {
         let mut app = demo("ROG Harpe II Ace");
@@ -1333,6 +1390,29 @@ mod tests {
         assert_eq!(
             applied(press(&mut app, KeyCode::Enter)),
             Change::LiftOff(LiftOff::High)
+        );
+    }
+
+    /// A debounce code outside G-Helper's range shows as unknown rather than
+    /// as the nearest one, and ←/→ pick a valid one.
+    #[test]
+    fn unknown_debounce_shows_and_steps_to_a_valid_one() {
+        let mut app = demo("ROG Harpe II Ace");
+        app.settings.debounce = Some(Debounce::from_code(1));
+        focus(&mut app, Control::Debounce);
+        let shown = app.value(Control::Debounce).map(|v| v.to_string());
+        assert_eq!(shown.as_deref(), Some("Unknown (0x01)"));
+        assert_eq!(press(&mut app, KeyCode::Enter), None, "nothing to send yet");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            applied(press(&mut app, KeyCode::Enter)),
+            Change::Debounce(Debounce::MIN)
+        );
+        app.settings.debounce = Some(Debounce::from_code(9));
+        press(&mut app, KeyCode::Left);
+        assert_eq!(
+            applied(press(&mut app, KeyCode::Enter)),
+            Change::Debounce(Debounce::MAX)
         );
     }
 
