@@ -42,12 +42,14 @@ Keyboard battery levels.
 
 ### Upgrading
 
-- Install the udev rule again (step 3 of [Getting started](../README.md#getting-started)) so
-  rogctl can read keyboards without root, then unplug and replug each receiver and cable, or
-  restart, to drop the access the old rule gave. Until then a keyboard shows "Permission
-  denied". The AUR package installs the new rule itself; replug after upgrading.
-- Run `rogctl configure` for your desktop again to update the widget. In Waybar, add the
-  `custom/rog-keyboard` module that `rogctl configure waybar` prints.
+- Install the udev rule again (step 3 of [Getting started](../README.md#getting-started)),
+  then unplug and replug each receiver and cable, or restart, to drop the access the old rule
+  gave. Until then a keyboard on its own receiver or cable shows "Permission denied". The AUR
+  package installs the new rule itself; replug after upgrading.
+- Run `rogctl configure` for your desktop again to update the widget. In Waybar, add
+  `--device mouse` to your `custom/rog-mouse` module's `exec`, or it shows the keyboard when
+  no mouse is plugged in, and add the `custom/rog-keyboard` module that
+  `rogctl configure waybar` prints.
 
 ## 2.6.1 — 2026-11-01
 
