@@ -18,7 +18,7 @@ use device::{Device, Kind};
 use protocol::PowerOff;
 
 const USAGE: &str = "\
-rogctl - battery status and settings for ASUS mice, battery status for ASUS keyboards
+rogctl - battery levels for ASUS mice and keyboards, and settings for the mice
 
 Examples:
   rogctl                                 Show the mouse's battery level (a
