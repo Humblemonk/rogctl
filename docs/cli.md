@@ -129,8 +129,9 @@ error it tries again in 5 seconds, then waits twice as long each time, up to `--
 
 `devices` is empty while nothing is plugged in. A receiver and a cable for the same model count
 as one device, as without `--device all`. `watch` keeps each device's last level while it
-sleeps and decides each one's `notify_low` separately, and waits as briefly as the device that
-needs it soonest.
+sleeps and decides each one's `notify_low` separately, and reads each on its own schedule: a
+sleeping keyboard is read every 10 seconds without reading an awake mouse that often. Each line
+has every device, the ones not read that time with their last status (and no `notify_low`).
 
 `notify_low` is set once when the battery drops to the threshold. It's set again only after
 the device has charged or risen 5% above the threshold, so a notification on it won't repeat.

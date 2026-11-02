@@ -219,16 +219,20 @@ fn groups(selection: Selection, devices: &[Device]) -> Vec<Vec<&Device>> {
     }
 }
 
-/// Reads the devices `selection` asks for. Not `All`: always one status,
-/// "disconnected" if there's nothing to read.
+/// Reads the devices `selection` asks for.
 fn poll(selection: Selection) -> Vec<Status> {
     let devices = device::discover();
-    let statuses: Vec<Status> = groups(selection, &devices)
+    let statuses = groups(selection, &devices)
         .iter()
         .map(|group| read_first(group))
         .collect();
+    or_disconnected(statuses, selection)
+}
+
+/// Not `All`: always one status, "disconnected" if there's nothing to read.
+fn or_disconnected(mut statuses: Vec<Status>, selection: Selection) -> Vec<Status> {
     if statuses.is_empty() && selection != Selection::All {
-        return vec![Status::empty(State::Disconnected)];
+        statuses.push(Status::empty(State::Disconnected));
     }
     statuses
 }
@@ -468,14 +472,15 @@ fn block_refresh_signal() -> libc::sigset_t {
     }
 }
 
-/// Sleeps for `wait`, returning early if SIGUSR1 arrives: a widget asking to
-/// read the mouse now. Several signals during one wait count as one.
-fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
+/// Sleeps for `wait`, returning early, with true, if SIGUSR1 arrives: a
+/// widget asking to read the devices now. Several signals during one wait
+/// count as one.
+fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return;
+            return false;
         }
         let timeout = libc::timespec {
             tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
@@ -484,12 +489,12 @@ fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
         // SAFETY: `set` is a valid sigset_t and `timeout` outlives the call.
         let got = unsafe { libc::sigtimedwait(set, std::ptr::null_mut(), &timeout) };
         if got == libc::SIGUSR1 {
-            return;
+            return true;
         }
         // EAGAIN means the time ran out; EINTR (another signal, e.g. SIGCONT)
         // means keep waiting.
         if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            return;
+            return false;
         }
     }
 }
@@ -507,36 +512,28 @@ const ASLEEP_RETRY: Duration = Duration::from_secs(10);
 /// A day. Far larger values would overflow the deadline in `wait_or_refresh`.
 const MAX_INTERVAL_SECS: u64 = 86_400;
 
-/// How long to wait before the next poll, the shortest any device needs: the
-/// interval; after errors a retry that doubles each time up to the interval;
-/// while asleep `ASLEEP_RETRY`.
-fn next_wait(
-    states: impl IntoIterator<Item = State>,
-    interval: Duration,
-    retry: &mut Duration,
-) -> Duration {
-    let (mut error, mut asleep) = (false, false);
-    for state in states {
-        match state {
-            State::Error => error = true,
-            State::Asleep => asleep = true,
-            State::Connected | State::Disconnected => {}
+/// How long until a device is read again: the interval; after an error a
+/// retry that doubles each time up to the interval; while asleep
+/// `ASLEEP_RETRY`.
+fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration {
+    match state {
+        State::Error => {
+            let wait = interval.min(*retry);
+            *retry = retry.saturating_mul(2);
+            wait
+        }
+        // Sleeping leaves the error backoff alone, so errors between sleeps
+        // still back off.
+        State::Asleep => interval.min(ASLEEP_RETRY),
+        State::Connected | State::Disconnected => {
+            *retry = ERROR_RETRY;
+            interval
         }
     }
-    let mut wait = interval;
-    if error {
-        wait = wait.min(*retry);
-        *retry = retry.saturating_mul(2);
-    } else if !asleep {
-        *retry = ERROR_RETRY;
-    }
-    // Sleeping leaves the error backoff alone, so errors between sleeps
-    // still back off.
-    if asleep {
-        wait = wait.min(ASLEEP_RETRY);
-    }
-    wait
 }
+
+/// A device, as `watch` keeps track of it: its kind and model name.
+type DeviceKey = (Option<Kind>, Option<&'static str>);
 
 /// What `watch` remembers about one device between reads.
 #[derive(Debug, Default)]
@@ -547,11 +544,7 @@ struct Tracked {
 
 /// Carries each device's level over while it sleeps and decides its
 /// low-battery notification, keyed by device so each has its own.
-fn track(
-    statuses: &mut [Status],
-    tracked: &mut HashMap<(Option<Kind>, Option<&'static str>), Tracked>,
-    low_threshold: u8,
-) {
+fn track(statuses: &mut [Status], tracked: &mut HashMap<DeviceKey, Tracked>, low_threshold: u8) {
     for status in statuses {
         let t = tracked.entry((status.kind, status.device)).or_default();
         carry_over(status, &mut t.last_known);
@@ -559,17 +552,116 @@ fn track(
     }
 }
 
+/// Devices due within this of each other are read together, so they share a
+/// line rather than printing two a moment apart.
+const DUE_SLACK: Duration = Duration::from_secs(1);
+
+/// When `watch` next reads one device, and what it read last.
+#[derive(Debug)]
+struct Due {
+    at: Instant,
+    retry: Duration,
+    status: Status,
+}
+
+/// `watch`'s state: each device is read on its own schedule, so one that's
+/// asleep or failing is retried often without reading the others as often.
+struct Watch {
+    interval: Duration,
+    low_threshold: u8,
+    tracked: HashMap<DeviceKey, Tracked>,
+    due: HashMap<DeviceKey, Due>,
+}
+
+impl Watch {
+    fn new(interval: Duration, low_threshold: u8) -> Self {
+        Self {
+            interval,
+            low_threshold,
+            tracked: HashMap::new(),
+            due: HashMap::new(),
+        }
+    }
+
+    /// One pass over the devices `keys` names: reads each one that's due, or
+    /// every one on a refresh, with `read(index)`, and repeats the others'
+    /// last status (without its notification). A device not seen on the last
+    /// pass is read at once. Returns the statuses and the wait until the next
+    /// one is due: the interval with no devices.
+    fn step(
+        &mut self,
+        keys: &[DeviceKey],
+        mut read: impl FnMut(usize) -> Status,
+        now: Instant,
+        refresh: bool,
+    ) -> (Vec<Status>, Duration) {
+        self.due.retain(|key, _| keys.contains(key));
+        let mut statuses = Vec::with_capacity(keys.len());
+        for (index, key) in keys.iter().enumerate() {
+            let waiting = self
+                .due
+                .get(key)
+                .filter(|due| !refresh && due.at > now + DUE_SLACK);
+            if let Some(due) = waiting {
+                statuses.push(Status {
+                    notify_low: false,
+                    ..due.status.clone()
+                });
+                continue;
+            }
+            let mut status = read(index);
+            track(
+                std::slice::from_mut(&mut status),
+                &mut self.tracked,
+                self.low_threshold,
+            );
+            let mut retry = self.due.get(key).map_or(ERROR_RETRY, |due| due.retry);
+            let wait = next_wait(status.state, self.interval, &mut retry);
+            self.due.insert(
+                *key,
+                Due {
+                    at: now + wait,
+                    retry,
+                    status: status.clone(),
+                },
+            );
+            statuses.push(status);
+        }
+        let wait = self
+            .due
+            .values()
+            .map(|due| due.at.saturating_duration_since(now))
+            .min()
+            .unwrap_or(self.interval);
+        (statuses, wait)
+    }
+}
+
 fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
     // Before the first line: a widget only learns the pid from that, and
     // SIGUSR1 would kill the process until it's blocked.
-    let refresh = block_refresh_signal();
+    let signals = block_refresh_signal();
     configure::notify_if_outdated();
-    let mut tracked = HashMap::new();
-    let mut retry = ERROR_RETRY;
+    let mut watch = Watch::new(interval, output.low_threshold);
+    let mut refresh = false;
     loop {
-        let mut statuses = poll(output.selection);
-        track(&mut statuses, &mut tracked, output.low_threshold);
-        let wait = next_wait(statuses.iter().map(|s| s.state), interval, &mut retry);
+        let devices = device::discover();
+        let groups = groups(output.selection, &devices);
+        let keys: Vec<DeviceKey> = groups
+            .iter()
+            .map(|group| {
+                let model = group.first().map(|d| d.model);
+                (model.map(|m| m.kind), model.map(|m| m.name))
+            })
+            .collect();
+        let read = |i: usize| {
+            groups.get(i).map_or_else(
+                || Status::empty(State::Disconnected),
+                |group| read_first(group),
+            )
+        };
+        let (statuses, wait) = watch.step(&keys, read, Instant::now(), refresh);
+        let mut statuses = or_disconnected(statuses, output.selection);
         // stdout closed: the bar (or pipe reader) went away, so stop.
         if output
             .print(&mut statuses, Some(std::process::id()))
@@ -577,7 +669,7 @@ fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
         {
             return ExitCode::SUCCESS;
         }
-        wait_or_refresh(&refresh, wait);
+        refresh = wait_or_refresh(&signals, wait);
     }
 }
 
@@ -943,13 +1035,13 @@ mod tests {
     fn sigusr1_ends_the_wait() {
         let set = block_refresh_signal();
         let start = Instant::now();
-        wait_or_refresh(&set, Duration::from_millis(50));
+        assert!(!wait_or_refresh(&set, Duration::from_millis(50)));
         assert!(start.elapsed() >= Duration::from_millis(50));
 
         // SAFETY: signals this thread, which has SIGUSR1 blocked.
         unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGUSR1) };
         let start = Instant::now();
-        wait_or_refresh(&set, Duration::from_secs(10));
+        assert!(wait_or_refresh(&set, Duration::from_secs(10)));
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
@@ -1006,40 +1098,34 @@ mod tests {
         let interval = Duration::from_secs(60);
         let mut retry = ERROR_RETRY;
         let waits: Vec<u64> = (0..6)
-            .map(|_| next_wait([State::Error], interval, &mut retry).as_secs())
+            .map(|_| next_wait(State::Error, interval, &mut retry).as_secs())
             .collect();
         assert_eq!(waits, [5, 10, 20, 40, 60, 60]);
 
+        assert_eq!(next_wait(State::Connected, interval, &mut retry), interval);
+        assert_eq!(next_wait(State::Error, interval, &mut retry), ERROR_RETRY);
         assert_eq!(
-            next_wait([State::Connected], interval, &mut retry),
-            interval
-        );
-        assert_eq!(next_wait([State::Error], interval, &mut retry), ERROR_RETRY);
-        assert_eq!(
-            next_wait([State::Error], interval, &mut retry),
+            next_wait(State::Error, interval, &mut retry),
             2 * ERROR_RETRY
         );
 
         // Asleep never backs off, and doesn't reset the error backoff.
         for _ in 0..6 {
-            assert_eq!(
-                next_wait([State::Asleep], interval, &mut retry),
-                ASLEEP_RETRY
-            );
+            assert_eq!(next_wait(State::Asleep, interval, &mut retry), ASLEEP_RETRY);
         }
         assert_eq!(
-            next_wait([State::Error], interval, &mut retry),
+            next_wait(State::Error, interval, &mut retry),
             4 * ERROR_RETRY
         );
         assert_eq!(
-            next_wait([State::Disconnected], interval, &mut retry),
+            next_wait(State::Disconnected, interval, &mut retry),
             interval
         );
 
         // Never waits longer than a short interval.
         let short = Duration::from_secs(2);
-        assert_eq!(next_wait([State::Error], short, &mut retry), short);
-        assert_eq!(next_wait([State::Asleep], short, &mut retry), short);
+        assert_eq!(next_wait(State::Error, short, &mut retry), short);
+        assert_eq!(next_wait(State::Asleep, short, &mut retry), short);
     }
 
     /// A model as `discover` would find it on `hidraw`.
@@ -1169,20 +1255,105 @@ mod tests {
         );
     }
 
-    /// With several devices, the shortest wait any of them needs.
+    const MOUSE: DeviceKey = (Some(Kind::Mouse), Some("Mouse"));
+    const KEYBOARD: DeviceKey = (Some(Kind::Keyboard), Some("Keyboard"));
+
+    /// Runs one `Watch::step` at `at` seconds, reading device i as
+    /// `reads[i]`, and returns which devices it read, the levels shown and the
+    /// wait in seconds.
+    fn step(
+        watch: &mut Watch,
+        start: Instant,
+        at: u64,
+        keys: &[DeviceKey],
+        reads: &[Status],
+        refresh: bool,
+    ) -> (Vec<usize>, Vec<Option<u8>>, u64) {
+        let mut read = Vec::new();
+        let (statuses, wait) = watch.step(
+            keys,
+            |i| {
+                read.push(i);
+                reads[i].clone()
+            },
+            start + Duration::from_secs(at),
+            refresh,
+        );
+        let levels = statuses.iter().map(|s| s.battery).collect();
+        (read, levels, wait.as_secs())
+    }
+
+    /// A sleeping keyboard is read every 10 s without reading the awake mouse
+    /// that often: each device has its own schedule.
     #[test]
-    fn waits_for_the_most_urgent_device() {
-        let interval = Duration::from_secs(60);
-        let mut retry = ERROR_RETRY;
-        let both = [State::Connected, State::Asleep];
-        assert_eq!(next_wait(both, interval, &mut retry), ASLEEP_RETRY);
-        let mixed = [State::Connected, State::Error];
-        assert_eq!(next_wait(mixed, interval, &mut retry), ERROR_RETRY);
-        assert_eq!(next_wait(mixed, interval, &mut retry), 2 * ERROR_RETRY);
-        let all = [State::Asleep, State::Error];
-        assert_eq!(next_wait(all, interval, &mut retry), ASLEEP_RETRY);
-        assert_eq!(next_wait([], interval, &mut retry), interval);
-        assert_eq!(retry, ERROR_RETRY, "nothing failing resets the backoff");
+    fn reads_each_device_when_it_is_due() {
+        let mut watch = Watch::new(Duration::from_secs(60), 20);
+        let start = Instant::now();
+        let keys = [MOUSE, KEYBOARD];
+        let reads = [connected("Mouse", 80), asleep("Keyboard")];
+        assert_eq!(
+            step(&mut watch, start, 0, &keys, &reads, false),
+            (vec![0, 1], vec![Some(80), None], 10)
+        );
+        for at in [10, 20, 30, 40, 50] {
+            let (read, levels, wait) = step(&mut watch, start, at, &keys, &reads, false);
+            assert_eq!((read, wait), (vec![1], 10), "at {at} s");
+            assert_eq!(levels, [Some(80), None], "the mouse's last level");
+        }
+        let (read, _, _) = step(&mut watch, start, 60, &keys, &reads, false);
+        assert_eq!(read, [0, 1], "both due at 60 s");
+
+        // A refresh reads both at once.
+        let (read, _, _) = step(&mut watch, start, 61, &keys, &reads, true);
+        assert_eq!(read, [0, 1]);
+    }
+
+    /// Each device backs off its own errors, and with nothing plugged in the
+    /// wait is the interval.
+    #[test]
+    fn backs_off_each_device_on_its_own() {
+        let mut watch = Watch::new(Duration::from_secs(60), 20);
+        let start = Instant::now();
+        let keys = [MOUSE, KEYBOARD];
+        let failing = Status {
+            device: Some("Keyboard"),
+            ..Status::empty(State::Error)
+        };
+        let reads = [connected("Mouse", 80), failing];
+        let waits: Vec<u64> = [0, 5, 15]
+            .into_iter()
+            .map(|at| step(&mut watch, start, at, &keys, &reads, false).2)
+            .collect();
+        assert_eq!(waits, [5, 10, 20]);
+        assert_eq!(step(&mut watch, start, 100, &[], &[], false).2, 60);
+    }
+
+    /// A device that appears is read at once, and the repeated status of one
+    /// not yet due doesn't repeat its low-battery notification.
+    #[test]
+    fn notifies_once_and_reads_new_devices_at_once() {
+        let mut watch = Watch::new(Duration::from_secs(60), 20);
+        let start = Instant::now();
+        let mut low = connected("Mouse", 15);
+        low.kind = Some(Kind::Mouse);
+        let (statuses, _) = watch.step(&[MOUSE], |_| low.clone(), start, false);
+        assert!(statuses[0].notify_low);
+
+        let mut keyboard = connected("Keyboard", 52);
+        keyboard.kind = Some(Kind::Keyboard);
+        let reads = [low, keyboard];
+        let mut read = Vec::new();
+        let (statuses, _) = watch.step(
+            &[MOUSE, KEYBOARD],
+            |i| {
+                read.push(i);
+                reads[i].clone()
+            },
+            start + Duration::from_secs(5),
+            false,
+        );
+        assert_eq!(read, [1], "only the new keyboard");
+        assert!(statuses[0].low && !statuses[0].notify_low);
     }
 
     #[test]
