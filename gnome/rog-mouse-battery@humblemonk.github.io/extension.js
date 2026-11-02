@@ -320,7 +320,7 @@ const Indicator = GObject.registerClass(
       if (!s || s.state === "error")
         entry.add_style_class_name("rog-mouse-battery-error");
       // Asleep: the level shown is the last one read.
-      entry.opacity = !s || s.state !== "asleep" ? 255 : 128;
+      entry.opacity = s?.state !== "asleep" ? 255 : 128;
       this._box.add_child(entry);
     }
 
