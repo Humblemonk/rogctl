@@ -94,7 +94,7 @@ when a change depends on their runtime behaviour.
   label pairs), and so is everything else once that's available, since a rendered tree hides
   `setGlyph`/`setText`. Without it the widget falls back to the first device's glyph and every
   level as text. Its tooltip for several devices keys each row by kind ("Mouse 23%
-  (discharging)"), not by name: Noctalia caps tooltips at 280 px, cuts key/value rows short,
+  (discharging)"), not by name: Noctalia caps tooltips at 280 px, cuts key-value rows short,
   and loses the coloured keys in plain text. `rogctl configure noctalia` copies the plugin to
   `~/.local/share/noctalia/plugins/rog-mouse-battery`; it's never a symlink, so edits only
   take effect after installing again (with the user's permission). Logs:
