@@ -35,9 +35,10 @@ shows the demo as another model from the [Supported mice](../README.md#supported
 ## Installing widgets
 
 `rogctl configure DESKTOP` installs the panel widget for `noctalia`, `waybar`, `quickshell`,
-`dms`, `kde` or `gnome`; without `DESKTOP` it lists them. The widget files are built into
-rogctl, so this needs no checkout, and running it again after updating rogctl updates the
-widget. `--remove` removes the widget.
+`dms`, `kde` or `gnome`; without `DESKTOP` it lists them, marking each one whose widget is
+`installed` or `out of date`. Waybar is never marked, since rogctl doesn't edit its config.
+The widget files are built into rogctl, so this needs no checkout, and running it again after
+updating rogctl updates the widget. `--remove` removes the widget.
 
 | Desktop | Install | Remove |
 | --- | --- | --- |

@@ -6,6 +6,13 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.7.1 — 2026-11-01
+
+### Added
+
+- `rogctl configure` on its own marks each desktop whose widget is installed, and says when
+  one is out of date. Waybar is never marked, since rogctl doesn't edit its config.
+
 ## 2.7.0 — 2026-11-01
 
 Keyboard battery levels.
