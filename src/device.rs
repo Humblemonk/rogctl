@@ -299,6 +299,88 @@ impl Device {
     pub fn read_battery(&self) -> Result<Reading, QueryError> {
         self.connect()?.read_battery()
     }
+
+    /// The battery and, unless the mouse is asleep, every setting.
+    pub fn read(&self) -> Result<Outcome, QueryError> {
+        let mut conn = self.connect()?;
+        let reading = conn.read_battery()?;
+        if reading.is_asleep() {
+            return Ok(Outcome::Asleep);
+        }
+        let settings = conn.read_settings(&reading)?;
+        Ok(Outcome::Awake(reading, settings))
+    }
+
+    /// Changes one setting, saves it on the mouse, and reads everything
+    /// back. The only code that changes a mouse. Its callers are
+    /// `tui::apply_action`, on Enter, Space or a click, and
+    /// `settings::apply_all`, for `rogctl settings set` and `import`.
+    ///
+    /// `change` was made for this model's `Features`, so nothing is sent if
+    /// the node holds another mouse now (`is_unchanged`).
+    pub fn apply(&self, change: &Change) -> Applied {
+        if !self.is_unchanged() {
+            return Applied {
+                result: Err(ApplyError::Replaced),
+                read_back: None,
+            };
+        }
+        let mut conn = match self.connect() {
+            Ok(conn) => conn,
+            Err(e) => {
+                return Applied {
+                    result: Err(ApplyError::Open(e)),
+                    read_back: None,
+                };
+            }
+        };
+        let result = conn.apply(change);
+        drop(conn);
+        // Read back either way, so what's shown is what the mouse has.
+        Applied {
+            result,
+            read_back: Some(self.read()),
+        }
+    }
+}
+
+/// What reading a mouse found.
+#[derive(Debug)]
+pub enum Outcome {
+    Awake(Reading, MouseSettings),
+    Asleep,
+}
+
+/// What [`Device::apply`] did.
+#[derive(Debug)]
+pub struct Applied {
+    pub result: Result<(), ApplyError>,
+    /// The mouse read back after the change; None if nothing was sent.
+    pub read_back: Option<Result<Outcome, QueryError>>,
+}
+
+/// The device `order` puts first among those that answer, reading each in
+/// turn: the first awake, else the first asleep, else the first error. None
+/// with no devices.
+pub fn first_answering(
+    devices: &[Device],
+    order: impl IntoIterator<Item = usize>,
+) -> Option<(usize, Result<Outcome, QueryError>)> {
+    let mut fallback: Option<(usize, Result<Outcome, QueryError>)> = None;
+    for i in order {
+        let Some(device) = devices.get(i) else {
+            continue;
+        };
+        let outcome = device.read();
+        if matches!(outcome, Ok(Outcome::Awake(..))) {
+            return Some((i, outcome));
+        }
+        // Prefer a sleeping mouse over another node's error.
+        if fallback.as_ref().is_none_or(|(_, f)| f.is_err()) {
+            fallback = Some((i, outcome));
+        }
+    }
+    fallback
 }
 
 /// An open hidraw node, for several exchanges in a row.
@@ -400,9 +482,9 @@ impl Connection {
     }
 
     /// Changes one setting and saves it on the mouse. The only code that
-    /// writes settings; only `tui::apply_action` calls it. Never writes to a
+    /// writes settings; only `Device::apply` calls it. Never writes to a
     /// keyboard.
-    pub fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
+    fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
         let model = self.model;
         match model.kind {
             Kind::Mouse => {}
@@ -426,6 +508,10 @@ impl Connection {
 /// Which step of [`Connection::apply`] failed.
 #[derive(Debug)]
 pub enum ApplyError {
+    /// The node holds another mouse now, or doesn't answer: nothing was sent.
+    Replaced,
+    /// The node couldn't be opened: nothing was sent.
+    Open(io::Error),
     /// The mouse didn't take the change.
     NotChanged(QueryError),
     /// The mouse took the change, but the save failed, so it may be lost when

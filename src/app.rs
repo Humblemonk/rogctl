@@ -69,6 +69,44 @@ impl Panel {
 }
 
 impl Control {
+    /// Every control but the DPI stages, in row order.
+    pub const FIXED: [Self; 13] = [
+        Self::PollingRate,
+        Self::Debounce,
+        Self::AngleSnapping,
+        Self::AngleTuning,
+        Self::MotionSync,
+        Self::LiftOff,
+        Self::PowerOff,
+        Self::LowBatteryWarning,
+        Self::PowerSaving,
+        Self::PowerSavingRate,
+        Self::LightingEffect,
+        Self::LightingColor,
+        Self::Brightness,
+    ];
+
+    /// Its name in `rogctl settings get`, `set` and exported files. Part of
+    /// the documented CLI (docs/cli.md): never rename one.
+    pub fn key(self) -> String {
+        match self {
+            Self::Stage(i) => format!("dpi-{}", i + 1),
+            Self::PollingRate => "polling-rate".into(),
+            Self::Debounce => "debounce".into(),
+            Self::AngleSnapping => "angle-snapping".into(),
+            Self::AngleTuning => "angle-tuning".into(),
+            Self::MotionSync => "motion-sync".into(),
+            Self::LiftOff => "lift-off".into(),
+            Self::PowerOff => "power-off".into(),
+            Self::LowBatteryWarning => "low-battery-warning".into(),
+            Self::PowerSaving => "power-saving".into(),
+            Self::PowerSavingRate => "power-saving-rate".into(),
+            Self::LightingEffect => "effect".into(),
+            Self::LightingColor => "colour".into(),
+            Self::Brightness => "brightness".into(),
+        }
+    }
+
     pub fn label(self) -> String {
         match self {
             Self::Stage(i) => format!("DPI stage {}", i + 1),
@@ -181,6 +219,25 @@ pub struct Message {
     pub error: bool,
 }
 
+/// A checked change, and the message for once it's made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Planned {
+    pub change: Change,
+    pub done: String,
+}
+
+/// Why [`App::change`] made no change, with a message saying so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The mouse has that value already.
+    Unchanged(String),
+    /// The setting can't take it now: it's locked, or the value is one rogctl
+    /// shows but doesn't send.
+    NotNow(String),
+    /// Not a value the setting takes, or a setting the mouse doesn't have.
+    Invalid(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// `done` is the message to show once it has worked.
@@ -208,7 +265,7 @@ pub struct Row {
     pub locked: Option<&'static str>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct App {
     pub model: Option<&'static Model>,
     pub link: Link,
@@ -309,23 +366,8 @@ impl App {
         let mut rows: Vec<Row> = (0..s.stages.len())
             .map(|i| row(Control::Stage(i)))
             .collect();
-        let optional = [
-            (s.polling_rate.is_some(), Control::PollingRate),
-            (s.debounce.is_some(), Control::Debounce),
-            (s.angle_snapping.is_some(), Control::AngleSnapping),
-            (s.angle_tuning.is_some(), Control::AngleTuning),
-            (s.motion_sync.is_some(), Control::MotionSync),
-            (s.lift_off.is_some(), Control::LiftOff),
-            (s.power_off.is_some(), Control::PowerOff),
-            (s.low_battery_warning.is_some(), Control::LowBatteryWarning),
-            (s.power_saving.is_some(), Control::PowerSaving),
-            (s.power_saving.is_some(), Control::PowerSavingRate),
-            (s.lighting.is_some(), Control::LightingEffect),
-            (s.lighting.is_some(), Control::LightingColor),
-            (s.lighting.is_some(), Control::Brightness),
-        ];
-        for (present, control) in optional {
-            if present {
+        for control in Control::FIXED {
+            if self.value(control).is_some() {
                 rows.push(Row {
                     control,
                     locked: match control {
@@ -628,29 +670,11 @@ impl App {
         let f = self.features()?;
         let edit = self.edit.take().filter(|e| e.control == control);
         let value = match edit {
-            Some(Edit {
-                value: Value::Dpi(dpi),
-                typed: true,
-                ..
-            }) => {
-                if !(f.dpi.min..=f.dpi.max).contains(&dpi) {
-                    self.error(format!("DPI must be {} to {}", f.dpi.min, f.dpi.max));
-                    self.edit = edit;
-                    return None;
-                }
-                Value::Dpi(protocol::snap_dpi(&f.dpi, dpi))
-            }
             Some(edit) => edit.value,
             None => match (control, self.value(control)?) {
-                (Control::Stage(i), _) => {
-                    if !f.dpi.switchable || self.settings.active_stage == Some(i) {
-                        return None;
-                    }
-                    return Some(Action::Apply {
-                        change: Change::ActiveStage(i),
-                        done: format!("DPI stage {} is active", i + 1),
-                    });
-                }
+                // Only the mouse's DPI button picks the stage on some mice.
+                (Control::Stage(_), _) if !f.dpi.switchable => return None,
+                (Control::Stage(i), _) => return self.applying(self.activate(i), None),
                 (_, Value::Switch(on)) => Value::Switch(!on),
                 // Other values change with ←/→ first.
                 (
@@ -668,13 +692,175 @@ impl App {
                 ) => return None,
             },
         };
-        if self.value(control) == Some(value) {
-            return None;
+        self.applying(self.change(control, value), edit)
+    }
+
+    /// The action for a planned change. A refused one shows why, keeping
+    /// `edit` to fix (a typed DPI out of range); one that changes nothing
+    /// does nothing.
+    fn applying(
+        &mut self,
+        planned: Result<Planned, Refusal>,
+        edit: Option<Edit>,
+    ) -> Option<Action> {
+        match planned {
+            Ok(Planned { change, done }) => Some(Action::Apply { change, done }),
+            Err(Refusal::Unchanged(_)) => None,
+            Err(Refusal::NotNow(why) | Refusal::Invalid(why)) => {
+                self.error(why);
+                self.edit = edit;
+                None
+            }
         }
-        Some(Action::Apply {
-            change: self.change_for(control, value)?,
-            done: format!("{} set to {value}", control.label()),
+    }
+
+    /// The change that sets `control` to `value`, checked against what the
+    /// mouse takes and has now. The one check for every way of changing a
+    /// setting: Enter and clicks here, `rogctl settings set` and `import`.
+    pub fn change(&self, control: Control, value: Value) -> Result<Planned, Refusal> {
+        let label = control.label();
+        let (Some(f), Some(row)) = (
+            self.features(),
+            self.rows().into_iter().find(|r| r.control == control),
+        ) else {
+            return Err(Refusal::Invalid(format!(
+                "{label}: this mouse doesn't have it"
+            )));
+        };
+        // Before the range check too: a value another program set outside
+        // rogctl's choices (brightness 35%) is no error while it stays.
+        let unchanged = |value| {
+            (self.value(control) == Some(value))
+                .then(|| Refusal::Unchanged(format!("{label} is already {value}")))
+        };
+        if let Some(refusal) = unchanged(value) {
+            return Err(refusal);
+        }
+        let value = self.checked(f, control, value)?;
+        if let Some(refusal) = unchanged(value) {
+            return Err(refusal);
+        }
+        if let Some(why) = row.locked {
+            return Err(Refusal::NotNow(format!(
+                "{label} can't be changed now: {why}"
+            )));
+        }
+        if let Value::Effect(effect) = value
+            && !Effect::OFFERED.contains(&effect)
+        {
+            return Err(Refusal::NotNow(format!(
+                "rogctl doesn't set the {value} effect"
+            )));
+        }
+        let change = self
+            .change_for(control, value)
+            .ok_or_else(|| Refusal::Invalid(format!("{label} can't be {value}")))?;
+        Ok(Planned {
+            change,
+            done: format!("{label} set to {value}"),
         })
+    }
+
+    /// The change that makes DPI stage `stage` (from 0) the active one.
+    /// The active stage may be unknown (a reply naming no stage): any can
+    /// be picked then.
+    pub fn activate(&self, stage: usize) -> Result<Planned, Refusal> {
+        let stages = self.settings.stages.len();
+        let Some(f) = self.features().filter(|_| stages > 1) else {
+            return Err(Refusal::Invalid(
+                "Active DPI stage: this mouse doesn't have it".into(),
+            ));
+        };
+        if stage >= stages {
+            return Err(Refusal::Invalid(format!("DPI stage must be 1 to {stages}")));
+        }
+        let done = format!("DPI stage {} is active", stage + 1);
+        if self.settings.active_stage == Some(stage) {
+            return Err(Refusal::Unchanged(format!(
+                "DPI stage {} is already active",
+                stage + 1
+            )));
+        }
+        if !f.dpi.switchable {
+            return Err(Refusal::NotNow(
+                "Active DPI stage: only the mouse's DPI button changes it".into(),
+            ));
+        }
+        Ok(Planned {
+            change: Change::ActiveStage(stage),
+            done,
+        })
+    }
+
+    /// `value` as the mouse takes it (a DPI snapped to its step), or why it
+    /// can't: out of range, or not one of the setting's choices.
+    fn checked(&self, f: &Features, control: Control, value: Value) -> Result<Value, Refusal> {
+        let label = control.label();
+        if let Some(choices) = self.choices(control)
+            && !choices.contains(&value)
+        {
+            let list: Vec<String> = choices.iter().map(ToString::to_string).collect();
+            return Err(Refusal::Invalid(format!(
+                "{label} must be one of: {}",
+                list.join(", ")
+            )));
+        }
+        match value {
+            Value::Dpi(dpi) if !(f.dpi.min..=f.dpi.max).contains(&dpi) => Err(Refusal::Invalid(
+                format!("DPI must be {} to {}", f.dpi.min, f.dpi.max),
+            )),
+            Value::Dpi(dpi) => Ok(Value::Dpi(protocol::snap_dpi(&f.dpi, dpi))),
+            Value::Degrees(d) => match f.angle_tuning {
+                Some(t) if (t.min..=t.max).contains(&d) && d % t.step.max(1) == 0 => Ok(value),
+                Some(t) => Err(Refusal::Invalid(format!(
+                    "{label} must be {} to {} degrees, in steps of {}",
+                    t.min, t.max, t.step
+                ))),
+                None => Err(Refusal::Invalid(format!(
+                    "{label}: this mouse doesn't have it"
+                ))),
+            },
+            Value::LiftOff(LiftOff::Unknown(_)) => {
+                Err(Refusal::Invalid(format!("{label} must be Low or High")))
+            }
+            Value::Effect(Effect::Unknown(_)) => {
+                Err(Refusal::Invalid(format!("{label}: unknown effect")))
+            }
+            Value::PollingRate(_)
+            | Value::Debounce(_)
+            | Value::Switch(_)
+            | Value::LiftOff(_)
+            | Value::PowerOff(_)
+            | Value::Percent(_)
+            | Value::Effect(_)
+            | Value::Color(_)
+            | Value::Brightness(_) => Ok(value),
+        }
+    }
+
+    /// The values a setting can be named as, for `rogctl settings set`: its
+    /// choices, both ways of a switch, the effects rogctl knows and the
+    /// standard colours. Empty for DPI and angle tuning, which take numbers.
+    pub fn named_values(&self, control: Control) -> Vec<Value> {
+        if let Some(choices) = self.choices(control) {
+            return choices;
+        }
+        match control {
+            Control::AngleSnapping | Control::MotionSync | Control::PowerSaving => {
+                vec![Value::Switch(false), Value::Switch(true)]
+            }
+            Control::LiftOff => vec![Value::LiftOff(LiftOff::Low), Value::LiftOff(LiftOff::High)],
+            Control::LightingEffect => Effect::KNOWN.map(Value::Effect).to_vec(),
+            Control::LightingColor => COLORS.map(|(_, c)| Value::Color(c)).to_vec(),
+            Control::Stage(_)
+            | Control::PollingRate
+            | Control::Debounce
+            | Control::AngleTuning
+            | Control::PowerOff
+            | Control::LowBatteryWarning
+            | Control::PowerSavingRate
+            | Control::Brightness => Vec::new(),
+        }
     }
 
     fn change_for(&self, control: Control, value: Value) -> Option<Change> {
@@ -839,7 +1025,10 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
             } else {
                 d.saturating_sub(by)
             };
-            Value::Degrees(next.clamp(t.min, t.max))
+            // Down to a multiple of the step, which `App::change()` asks for,
+            // should another program have set one between.
+            let next = next.clamp(t.min, t.max);
+            Value::Degrees(next - next.rem_euclid(t.step.max(1)))
         }
         Value::LiftOff(LiftOff::Low) => Value::LiftOff(LiftOff::High),
         Value::LiftOff(LiftOff::High) => Value::LiftOff(LiftOff::Low),
@@ -905,6 +1094,25 @@ pub fn find_model(name: &str) -> Option<&'static Model> {
 }
 
 pub const DEMO_MODEL: &str = "ROG Harpe II Ace";
+
+/// The model `--demo` shows: `name`, or the default. An unknown name's error
+/// lists the names it takes, one per line.
+pub fn demo_model(name: Option<&str>) -> Result<&'static Model, String> {
+    let name = name.unwrap_or(DEMO_MODEL);
+    find_model(name).ok_or_else(|| {
+        let mut names: Vec<&str> = Vec::new();
+        for m in MODELS {
+            if !names.contains(&m.name) {
+                names.push(m.name);
+            }
+        }
+        let mut text = format!("Unknown model {name:?}. --demo takes one of:\n");
+        for name in names {
+            text.push_str(&format!("  {name}\n"));
+        }
+        text
+    })
+}
 
 /// Plausible settings for `--demo`, within what `f` allows.
 pub fn demo_state(f: &Features) -> (Reading, MouseSettings) {
@@ -1634,5 +1842,155 @@ mod tests {
         assert_eq!(Value::Degrees(-5).to_string(), "-5°");
         assert_eq!(Value::Degrees(5).to_string(), "+5°");
         assert_eq!(Value::Percent(0).to_string(), "Off");
+    }
+
+    fn refused(planned: Result<Planned, Refusal>) -> Refusal {
+        match planned {
+            Err(refusal) => refusal,
+            Ok(p) => panic!("expected a refusal, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn change_checks_values_as_the_mouse_takes_them() {
+        let app = demo(DEMO_MODEL);
+        let stage = Control::Stage(0);
+        assert!(matches!(
+            refused(app.change(stage, Value::Dpi(10))),
+            Refusal::Invalid(m) if m == "DPI must be 100 to 42000"
+        ));
+        let planned = app.change(stage, Value::Dpi(1234)).unwrap();
+        assert!(
+            matches!(planned.change, Change::StageDpi { dpi: 1250, .. }),
+            "snapped to the step: {planned:?}"
+        );
+        assert_eq!(planned.done, "DPI stage 1 set to 1250");
+        assert!(matches!(
+            refused(app.change(stage, Value::Dpi(400))),
+            Refusal::Unchanged(m) if m == "DPI stage 1 is already 400"
+        ));
+        let slow = MODELS
+            .iter()
+            .find(|m| !m.features.polling_rates.contains(&PollingRate::HZ_8000))
+            .unwrap();
+        assert!(matches!(
+            refused(demo(slow.name).change(Control::PollingRate, Value::PollingRate(PollingRate::HZ_8000))),
+            Refusal::Invalid(m) if m.starts_with("Polling rate must be one of: ")
+        ));
+        assert!(matches!(
+            refused(app.change(Control::Brightness, Value::Brightness(35))),
+            Refusal::Invalid(_)
+        ));
+        assert!(matches!(
+            refused(app.change(Control::LiftOff, Value::LiftOff(LiftOff::Unknown(9)))),
+            Refusal::Invalid(_)
+        ));
+        assert!(matches!(
+            refused(app.change(Control::Debounce, Value::Debounce(Debounce::MIN))),
+            Refusal::Invalid(m) if m.contains("doesn't have")
+        ));
+    }
+
+    #[test]
+    fn change_refuses_what_cant_change_now() {
+        let mut app = demo(DEMO_MODEL);
+        let locked = refused(app.change(
+            Control::PowerSavingRate,
+            Value::PollingRate(PollingRate::HZ_125),
+        ));
+        assert_eq!(
+            locked,
+            Refusal::NotNow(
+                "Power-saving rate can't be changed now: only while power saving is on".into()
+            )
+        );
+        assert!(matches!(
+            refused(app.change(Control::LightingEffect, Value::Effect(Effect::Rainbow))),
+            Refusal::NotNow(m) if m == "rogctl doesn't set the Rainbow effect"
+        ));
+        app.simulate(&Change::PollingRate(PollingRate::HZ_8000));
+        assert!(matches!(
+            refused(app.change(Control::MotionSync, Value::Switch(false))),
+            Refusal::NotNow(_)
+        ));
+        assert!(
+            matches!(
+                refused(app.change(Control::MotionSync, Value::Switch(true))),
+                Refusal::Unchanged(_)
+            ),
+            "a locked setting already right isn't an error"
+        );
+    }
+
+    /// As before `App::change()`: Enter on a stage picks it on a switchable
+    /// mouse even when the reply named no active stage.
+    #[test]
+    fn enter_picks_a_stage_when_none_is_known_active() {
+        let mut app = demo(DEMO_MODEL);
+        app.settings.active_stage = None;
+        focus(&mut app, Control::Stage(2));
+        assert_eq!(
+            applied(press(&mut app, KeyCode::Enter)),
+            Change::ActiveStage(2)
+        );
+    }
+
+    #[test]
+    fn activate_checks_the_stage() {
+        let app = demo(DEMO_MODEL);
+        assert_eq!(app.activate(0).unwrap().change, Change::ActiveStage(0));
+        assert!(matches!(refused(app.activate(1)), Refusal::Unchanged(_)));
+        assert!(matches!(refused(app.activate(4)), Refusal::Invalid(_)));
+        let fixed = MODELS
+            .iter()
+            .find(|m| m.features.dpi.stages > 1 && !m.features.dpi.switchable)
+            .unwrap();
+        let app = demo(fixed.name);
+        assert!(matches!(refused(app.activate(0)), Refusal::NotNow(_)));
+    }
+
+    /// Every value ←/→ reaches on every row of every model is one
+    /// `change()` takes, so sharing it with the CLI left the screen as it was.
+    #[test]
+    fn every_step_is_a_change_the_mouse_takes() {
+        for model in MODELS {
+            let app = demo(model.name);
+            for control in app.controls() {
+                let Some(current) = app.value(control) else {
+                    continue;
+                };
+                // `demo()` shows the wireless entry of a model that has two.
+                let f = app.features().unwrap();
+                for (dir, big) in [(-1, false), (1, false), (-1, true), (1, true)] {
+                    let next = step(f, rates(f, control), current, dir, big);
+                    match app.change(control, next) {
+                        Ok(_) | Err(Refusal::Unchanged(_)) => {}
+                        Err(e) => panic!("{} {control:?} {next:?}: {e:?}", model.name),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn angle_tuning_steps_to_a_multiple_of_its_step() {
+        let f = MODELS
+            .iter()
+            .map(|m| &m.features)
+            .find(|f| f.angle_tuning.is_some_and(|t| t.step == 5))
+            .unwrap();
+        let rates = f.polling_rates;
+        assert_eq!(
+            step(f, rates, Value::Degrees(3), 1, false),
+            Value::Degrees(5)
+        );
+        assert_eq!(
+            step(f, rates, Value::Degrees(3), -1, false),
+            Value::Degrees(-5)
+        );
+        assert_eq!(
+            step(f, rates, Value::Degrees(0), -1, true),
+            Value::Degrees(-20)
+        );
     }
 }

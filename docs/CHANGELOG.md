@@ -6,6 +6,31 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.8.0
+
+Settings from the command line.
+
+### Added
+
+- `rogctl settings get`, `set`, `export` and `import`: read and change the mouse's settings
+  without the settings screen, such as `rogctl settings set polling-rate=1000 dpi-2=1600`
+  from a script or a keybinding. `export` saves them all to a JSON file, and `import` puts
+  them back on the same model, changing only what differs, so importing at every login
+  doesn't write to the mouse each time. They check each value as the settings screen does,
+  and refuse a value the mouse doesn't take before changing anything. `--dry-run` shows what
+  would change. Keys and values are in the
+  [command reference](cli.md#settings-from-the-command-line). Tested on a ROG Harpe II Ace.
+
+### Changed
+
+- In `rogctl settings`, angle tuning steps to multiples of the mouse's step (5° on some mice)
+  when another program set a value between them.
+
+### Upgrading
+
+- rogctl may say your widget is out of date, though it hasn't changed apart from its version
+  number. Run `rogctl configure` for your desktop again to clear it.
+
 ## 2.7.1 — 2026-11-02
 
 ### Added

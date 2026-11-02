@@ -426,10 +426,22 @@ impl Effect {
         }
     }
 
+    /// Every effect rogctl can name: the offered ones, then those from other
+    /// software.
+    pub const KNOWN: [Self; 8] = [
+        Self::Static,
+        Self::Breathing,
+        Self::ColorCycle,
+        Self::Reactive,
+        Self::Battery,
+        Self::Rainbow,
+        Self::Comet,
+        Self::Off,
+    ];
+
     fn from_code(code: u8) -> Self {
-        Self::OFFERED
+        Self::KNOWN
             .into_iter()
-            .chain([Self::Rainbow, Self::Comet, Self::Off])
             .find(|e| e.code() == code)
             .unwrap_or(Self::Unknown(code))
     }
@@ -753,7 +765,7 @@ pub fn parse_omni_paired(reply: &[u8]) -> Result<Vec<u16>, QueryError> {
 // Changing
 // ---------------------------------------------------------------------------
 
-/// One setting change. Built by the TUI, sent by `device::Connection::apply`.
+/// One setting change. Built by `app::App::change`, sent by `device::Device::apply`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     /// Index into the stages.
@@ -1779,5 +1791,10 @@ mod tests {
         assert_eq!(parse_omni_paired(&r).unwrap(), vec![0x1b06]);
         // Another report on the interface isn't taken for the reply.
         assert!(!omni_paired_request().answered_by(&reply(&[0x01, 0x12, 0x07, 0x00, 0x50])));
+    }
+
+    #[test]
+    fn known_effects_start_with_the_offered_ones() {
+        assert_eq!(Effect::KNOWN[..Effect::OFFERED.len()], Effect::OFFERED);
     }
 }

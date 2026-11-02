@@ -3,6 +3,7 @@ mod configure;
 mod device;
 mod models;
 mod protocol;
+mod settings;
 mod tui;
 mod ui;
 mod waybar;
@@ -26,6 +27,7 @@ Examples:
   rogctl --device all                    Show every mouse's and keyboard's level
   rogctl settings                        View and change DPI, polling rate and more
   rogctl settings --demo                 Try the settings screen without a mouse
+  rogctl settings set polling-rate=1000  Change a setting without the screen
   rogctl configure kde                   Add the battery widget to KDE Plasma
 
 Usage:
@@ -39,6 +41,12 @@ Usage:
   rogctl settings [--demo [MODEL]]       View and change the mouse's settings (DPI,
                                          polling rate, ...). --demo runs without a
                                          mouse, as MODEL (default ROG Harpe II Ace)
+  rogctl settings get [--json]           Print the mouse's settings
+  rogctl settings set KEY=VALUE... [--dry-run]
+                                         Change settings; `get` lists the keys
+  rogctl settings export [FILE]          Save the settings as JSON (stdout without FILE)
+  rogctl settings import FILE [--dry-run]
+                                         Change the settings to FILE's (- for stdin)
   rogctl configure [DESKTOP] [--remove] [--force]
                                          Install the panel widget for DESKTOP (noctalia,
                                          waybar, quickshell, dms, kde or gnome), or
@@ -52,7 +60,8 @@ Options:
   --low-threshold PCT    Level at or below which the battery counts as low
                          (default 20, 0 turns it off)
 
-Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 asleep. With
+Exit status of `battery` and `settings get|set|export|import`: 0 connected
+(or done), 1 error, 2 no device, 3 asleep. With
 --device all, the best of the devices': connected, then asleep, then error.
 `watch` reads the devices right away when sent SIGUSR1, which `refresh` sends.
 `refresh` and `stop` signal only a `rogctl watch`; widgets use them with the
@@ -760,9 +769,25 @@ fn main() -> ExitCode {
     let mut pid: Option<String> = None;
     let mut remove = false;
     let mut force = false;
+    // `rogctl settings get|set|export|import`, and their arguments.
+    let settings = matches!(command.as_str(), "settings" | "tui");
+    let is_settings_command =
+        |a: &str| settings && matches!(a, "get" | "set" | "export" | "import");
+    let mut settings_command: Option<String> = None;
+    let mut settings_args: Vec<String> = Vec::new();
+    let mut dry_run = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--demo" => demo = Some(args.next_if(|v| !v.starts_with('-'))),
+            // After `settings get` and the like, only a model's name: a
+            // `KEY=VALUE` or file name there is the command's.
+            "--demo" => {
+                demo = Some(args.next_if(|v| {
+                    !v.starts_with('-')
+                        && !is_settings_command(v)
+                        && (settings_command.is_none() || app::find_model(v).is_some())
+                }));
+            }
+            "--dry-run" => dry_run = true,
             "--json" => output.format = Format::Json,
             "--remove" => remove = true,
             "--force" => force = true,
@@ -814,6 +839,14 @@ fn main() -> ExitCode {
             other if matches!(command.as_str(), "refresh" | "stop") && pid.is_none() => {
                 pid = Some(other.to_owned());
             }
+            other if settings_command.is_none() && is_settings_command(other) => {
+                settings_command = Some(other.to_owned());
+            }
+            // `-` is stdin or stdout. `angle-tuning=-5` starts with a key;
+            // `--demo=X` is no argument.
+            other if settings_command.is_some() && (other == "-" || !other.starts_with('-')) => {
+                settings_args.push(other.to_owned());
+            }
             other => {
                 eprintln!("unknown argument: {other}\n\n{USAGE}");
                 return ExitCode::FAILURE;
@@ -822,7 +855,6 @@ fn main() -> ExitCode {
     }
 
     // `tui` was the command's first name; it still works, undocumented.
-    let settings = matches!(command.as_str(), "settings" | "tui");
     if demo.is_some() && !settings {
         eprintln!("--demo only works with `rogctl settings`");
         return ExitCode::FAILURE;
@@ -845,6 +877,29 @@ fn main() -> ExitCode {
     if (remove || force) && command != "configure" {
         eprintln!("--remove and --force only work with `rogctl configure`");
         return ExitCode::FAILURE;
+    }
+
+    if dry_run && !matches!(settings_command.as_deref(), Some("set" | "import")) {
+        eprintln!("--dry-run only works with `rogctl settings set` and `import`");
+        return ExitCode::FAILURE;
+    }
+    if let Some(name) = settings_command {
+        let json = output.format == Format::Json;
+        let command = match (name.as_str(), settings_args.len()) {
+            (_, _) if output.format == Format::Waybar => None,
+            ("get", 0) => Some(settings::Command::Get { json }),
+            (_, _) if json => None,
+            ("set", _) => Some(settings::Command::Set(settings_args)),
+            ("export", 0 | 1) => Some(settings::Command::Export(settings_args.pop())),
+            ("import", 1) => settings_args.pop().map(settings::Command::Import),
+            _ => None,
+        };
+        let Some(command) = command else {
+            eprintln!("unknown or missing arguments for `rogctl settings {name}`\n\n{USAGE}");
+            return ExitCode::FAILURE;
+        };
+        let demo = demo.as_ref().map(|name| name.as_deref());
+        return ExitCode::from(settings::run(command, demo, dry_run));
     }
 
     match command.as_str() {

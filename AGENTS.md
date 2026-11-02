@@ -14,10 +14,10 @@ per-model differences, capturing unknown commands), `tui.md` for `app.rs`/`ui.rs
 `rogctl` reads the battery level of ASUS mice (every battery-powered mouse G-Helper supports)
 and keyboards (G-Helper's battery-powered ones whose interface is known) on Linux over
 `/dev/hidraw`, and ships panel widgets that display it. `rogctl settings` reads and changes
-the mouse's settings; keyboards are only ever read (`12 01`). Treat all supported mice alike,
-and all keyboards: don't special-case one model in docs, UI text or defaults. The CLI is the
-only thing that talks to the devices; each widget is a thin frontend over its JSON output.
-Prefer the simple, obvious solution.
+the mouse's settings, on its screen or with `get`/`set`/`export`/`import`; keyboards are only
+ever read (`12 01`). Treat all supported mice alike, and all keyboards: don't special-case
+one model in docs, UI text or defaults. The CLI is the only thing that talks to the devices;
+each widget is a thin frontend over its JSON output. Prefer the simple, obvious solution.
 
 | Path | What |
 |------|------|
@@ -29,7 +29,8 @@ Prefer the simple, obvious solution.
 | `src/configure.rs` | `rogctl configure`: installs or removes a widget from copies built into the binary |
 | `src/app.rs` | TUI state and key handling (`Control`, `Value`, `Action`); no I/O |
 | `src/ui.rs` | TUI rendering with ratatui |
-| `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
+| `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, which sends a change on Enter, Space or a click |
+| `src/settings.rs` | `rogctl settings get`, `set`, `export`, `import`; `describe()`, how a change went, for both |
 | `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json --device …` (Waybar `--format waybar`; Plasma polls `rogctl battery`) |
 | `udev/70-rogctl.rules` | Grants the logged-in user hidraw access to the one interface rogctl uses per device |
 | `README.md`, `docs/cli.md`, `docs/CHANGELOG.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
@@ -77,11 +78,16 @@ notification about out-of-date widgets; run them with a scratch `XDG_STATE_HOME`
 
 ## Layering
 
-Control flow for a change: key → `App::handle_key()` → `Action` → `tui::apply_action()` →
-`Connection::apply()` → `protocol::change_request()` + `save_request()`.
+Control flow for a change: key → `App::handle_key()` → `App::change()` → `Action` →
+`tui::apply_action()` → `Device::apply()` → `protocol::change_request()` + `save_request()`.
+`rogctl settings set`/`import` go `settings::apply_all()` → `App::change()` →
+`Device::apply()`.
 
-- `tui::apply_action()` is the only caller of `Connection::apply()`, the only code that sends
-  a change. `app.rs` and `ui.rs` never use `device`.
+- `Device::apply()` is the only code that sends a change (`Connection::apply()` is private to
+  it). Its only callers are `tui::apply_action()` and `settings::apply_all()`.
+- `App::change()` (and `App::activate()` for the active stage) is the one check of a value
+  for both: range, choices, locks. Don't check a value elsewhere or send one it refused.
+  `app.rs` and `ui.rs` never use `device`.
 - Raw protocol bytes live only in `protocol.rs`, as named constants. `device.rs` moves bytes
   without knowing what they mean.
 - What a mouse supports lives in its `Features`. Code asks the features (or the settings read
@@ -123,10 +129,11 @@ catch.
 rather than promoting a lower one.
 
 - **P0**: changes the mouse or the user's system unasked, or leaves a widget stuck: a `51`
-  or `50` packet sent without Enter, Space or a click, to the wrong model or to a keyboard,
-  or with a value that wasn't validated; a write outside rogctl's own state that `configure`
-  wasn't asked for; `watch` hanging or multiplying, so a widget shows a stale level for good
-  (c5d7939, 42a9472)
+  or `50` packet sent without Enter, Space, a click or a `settings set`/`import` (an
+  `import` sending a setting the mouse already has counts), to the wrong model or to a
+  keyboard, or with a value that wasn't validated; a write outside rogctl's own state that
+  `configure` wasn't asked for; `watch` hanging or multiplying, so a widget shows a stale
+  level for good (c5d7939, 42a9472)
 - **P1**: a battery level, charging or asleep state shown wrong on some mouse or keyboard
   (4f0f059, cb82df5), a setting read back or shown wrong, a change reported as not made or
   not saved when it was (2fb1e13), a widget that stops reacting (2fb1e13), a supported mouse
@@ -156,8 +163,9 @@ Don't fix a P2 or P3 without asking.
   P0 and P1 lists), not by its size or its files: a one-line change to `change_request()`
   is a P0 risk. `high` for a P0 risk and for a release. A P0 risk is anything that decides
   whether a `51`/`50` packet is sent, with what value, or to which model: key and mouse
-  handling in `app.rs` and `tui.rs`, the write path to `save_request()`, `Features` in
-  `models.rs`, discovery and Omni pairing in `device.rs`. So are `configure`'s file writes
+  handling and `App::change()` in `app.rs`, `tui.rs`, `settings.rs`'s parsing and
+  `apply_all()`, the write path to `save_request()`, `Features` in `models.rs`, discovery
+  and Omni pairing in `device.rs`. So are `configure`'s file writes
   and anything that starts, restarts or stops `rogctl watch` or waits in its loop, widgets
   included. A release is reviewed over the diff since the last release: its tag, or the
   `Release x.y.z` commit if it wasn't tagged. `medium` for a P1 risk (reply parsing,
@@ -171,7 +179,9 @@ Don't fix a P2 or P3 without asking.
   changes (`51 …` and `50 …` packets) persist on the device. Reads (`12 …`, `01 A0`) are
   fine. `rogctl settings` against the real mouse only reads until Enter or Space is pressed
   or a selected row is clicked, so an agent driving it may send navigation keys and `q` but
-  never Enter, Space or mouse clicks. Test changes with `--demo` and unit tests.
+  never Enter, Space or mouse clicks. Agents may run `rogctl settings get`, `export` and
+  `set`/`import` with `--dry-run` against the real mouse, but never `set` or `import`
+  without it. Test changes with `--demo` and unit tests.
 - **Don't change the user's system without asking first.** This includes `cargo install`,
   `rogctl configure` (except against a scratch `HOME`, as `widgets.md` explains),
   `noctalia msg plugins enable|disable`, editing anything under
