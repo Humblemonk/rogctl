@@ -733,7 +733,10 @@ mod tests {
         let reply = read_packet(&mut file, 0x03, deadline, |r| request.answered_by(r)).unwrap();
         assert_eq!(reply[..6], [0x03, 0x12, 0x07, 0, 0, 0x50]);
 
-        // Its own report ID's rejection still counts.
+        // Its own report ID's rejection still counts: `03 ff aa`, captured
+        // 2026-11-01 from the SpeedNova receiver (Harpe II Ace) with the mouse
+        // switched off. Each receiver answered on the request's report ID
+        // (SpeedNova 03, Omni 02).
         let mut rejected = [0u8; 64];
         rejected[..3].copy_from_slice(&[0x03, 0xff, 0xaa]);
         receiver.send(&rejected).unwrap();

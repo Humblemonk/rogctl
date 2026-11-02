@@ -18,7 +18,11 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   (report ID 0); `read_packet` compensates.
 - Replies echo the request's header: 3 bytes, or 4 for the `12 00` and `12 04 xx` reads.
   `FF AA` in bytes 1-2 means rejected. Replies carry no request ID, so another process on
-  the node (GearLink, a widget's `rogctl watch`) can cause a stray one.
+  the node (GearLink, a widget's `rogctl watch`) can cause a stray one. They do carry the
+  request's report ID, rejections included (`03 ff aa` from the SpeedNova with the Harpe II
+  Ace off, `02 ff aa` from the Omni receiver with the Falchion RX off), so `read_packet`
+  ignores a reply on another report ID. The report ID of the mouse's own rejection of a
+  first save (below) wasn't recorded.
 - Battery (`12 07`): byte 10 = charging; the level is byte 5 as a percentage, or a 0-4 level
   ×25 in byte 5 or 7 on older mice (`Battery::Quarters`). `Features::power_off` names the
   power-off byte (usually 6); byte 7 is the low-battery warning.

@@ -61,9 +61,21 @@ local function tooltip(devices)
     end
     return { { noctalia.tr("tooltip.battery"), level(s) }, { noctalia.tr("tooltip.device"), deviceName(s) } }
   end
+  -- Two of a kind are numbered in the bar's order ("Mouse 1", "Mouse 2").
+  local counts, seen = {}, {}
+  for _, s in ipairs(devices) do
+    local kind = s.kind or "mouse"
+    counts[kind] = (counts[kind] or 0) + 1
+  end
   local rows = {}
   for _, s in ipairs(devices) do
-    table.insert(rows, { noctalia.tr("tooltip." .. (s.kind or "mouse")), level(s) })
+    local kind = s.kind or "mouse"
+    local label = noctalia.tr("tooltip." .. kind)
+    if counts[kind] > 1 then
+      seen[kind] = (seen[kind] or 0) + 1
+      label = label .. " " .. tostring(seen[kind])
+    end
+    table.insert(rows, { label, level(s) })
   end
   return rows
 end

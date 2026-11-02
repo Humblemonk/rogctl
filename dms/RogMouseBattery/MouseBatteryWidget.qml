@@ -172,7 +172,7 @@ PluginComponent {
 
     popoutContent: Component {
         PopoutComponent {
-            headerText: root.devices.length === 1 ? (root.devices[0].device || root.tr("Not connected")) : root.tr("ASUS devices")
+            headerText: root.devices.length === 0 ? root.tr("Not connected") : root.devices.length === 1 ? (root.devices[0].device || root.tr("ASUS devices")) : root.tr("ASUS devices")
             detailsText: {
                 const s = root.status;
                 if (!s)

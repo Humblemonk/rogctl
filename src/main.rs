@@ -53,7 +53,7 @@ Options:
 
 Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 asleep. With
 --device all, the best of the devices': connected, then asleep, then error.
-`watch` reads the mouse right away when sent SIGUSR1, which `refresh` sends.
+`watch` reads the devices right away when sent SIGUSR1, which `refresh` sends.
 `refresh` and `stop` signal only a `rogctl watch`; widgets use them with the
 `pid` from its output.
 ";
