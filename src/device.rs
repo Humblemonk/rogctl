@@ -1,6 +1,6 @@
 //! Finding supported mice and keyboards over Linux hidraw, and talking to
-//! them. Each exchange writes one request and waits, with a deadline, for the reply that
-//! echoes it. The bytes are in `protocol.rs`.
+//! them. Each exchange writes one request and waits, with a deadline, for the
+//! reply that echoes it. The bytes are in `protocol.rs`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -227,10 +227,8 @@ fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
     packet[..bytes.len()].copy_from_slice(bytes);
     file.write_all(&packet)?;
     let deadline = Instant::now() + REPLY_TIMEOUT;
-    // The echo already has report ID 1; a rejection or empty packet doesn't,
-    // and another report on the interface could look empty.
     let reply = read_packet(&mut file, OMNI_REPORT_ID, deadline, |r| {
-        r[0] == OMNI_REPORT_ID && request.answered_by(r)
+        request.answered_by(r)
     })?;
     protocol::parse_omni_paired(&reply)
 }
@@ -721,12 +719,12 @@ mod tests {
         let request = Battery::Percent.request(0x03);
         let mut keyboard_off = [0u8; 64];
         keyboard_off[..3].copy_from_slice(&[0x02, 0xff, 0xaa]);
-        let mut mouse_empty = [0u8; 64];
-        mouse_empty[0] = 0x02;
+        let mut keyboard_empty = [0u8; 64];
+        keyboard_empty[0] = 0x02;
         let mut battery = [0u8; 64];
         battery[..6].copy_from_slice(&[0x03, 0x12, 0x07, 0, 0, 0x50]);
         receiver.send(&keyboard_off).unwrap();
-        receiver.send(&mouse_empty).unwrap();
+        receiver.send(&keyboard_empty).unwrap();
         receiver.send(&battery).unwrap();
         let deadline = Instant::now() + Duration::from_millis(50);
         let reply = read_packet(&mut file, 0x03, deadline, |r| request.answered_by(r)).unwrap();

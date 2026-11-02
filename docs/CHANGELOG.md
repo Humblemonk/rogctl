@@ -13,6 +13,11 @@ Releases that need you to do something after upgrading have an **Upgrading** not
 - `rogctl configure` on its own marks each desktop whose widget is installed, and says when
   one is out of date. Waybar is never marked, since rogctl doesn't edit its config.
 
+### Upgrading
+
+- rogctl may say your widget is out of date, though it hasn't changed apart from its version
+  number. Run `rogctl configure` for your desktop again to clear it.
+
 ## 2.7.0 — 2026-11-01
 
 Keyboard battery levels.

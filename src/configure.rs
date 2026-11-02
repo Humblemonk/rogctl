@@ -866,13 +866,14 @@ impl Copied {
 
     /// Whether rogctl installed this widget from an older version's bundle.
     /// Goes by the record, not the files, so the user's own edits don't count.
-    /// `false` with no record, or once every recorded file is gone.
+    /// `false` with no record, or once every recorded file but the user's
+    /// settings is gone.
     fn is_outdated(&self) -> Result<bool> {
         let Some(text) = self.read_record_text()? else {
             return Ok(false);
         };
         let mut record = parse_record(&text);
-        if !record.iter().any(|(path, _)| self.dir.join(path).exists()) {
+        if !self.any_present(&record) {
             return Ok(false);
         }
         let mut current = self.bundle_entries();
@@ -888,9 +889,14 @@ impl Copied {
     /// after the widget is removed.
     fn is_installed(&self) -> Result<bool> {
         let entries = self.read_record()?.unwrap_or_else(|| self.bundle_entries());
-        Ok(entries
+        Ok(self.any_present(&entries))
+    }
+
+    /// Whether any of `entries` but the user's settings is on disk.
+    fn any_present(&self, entries: &[Entry]) -> bool {
+        entries
             .iter()
-            .any(|(path, _)| !self.bundle.is_users(path) && self.dir.join(path).exists()))
+            .any(|(path, _)| !self.bundle.is_users(path) && self.dir.join(path).exists())
     }
 
     fn bundle_entries(&self) -> Vec<Entry> {
@@ -1491,6 +1497,17 @@ mod tests {
         };
         write(quickshell.dir.join("RogMouseSettings.qml"), "edited");
         assert_eq!(quickshell.is_installed(), Ok(false));
+        write(
+            quickshell.record.clone(),
+            &format!(
+                "version 2.6.0\n{:016x} RogMouse.qml\n{:016x} RogMouseSettings.qml\n",
+                checksum(b"old"),
+                checksum(b"old settings")
+            ),
+        );
+        assert_eq!(quickshell.is_installed(), Ok(false), "removed by hand");
+        assert_eq!(quickshell.is_outdated(), Ok(false), "removed by hand");
+        fs::remove_file(&quickshell.record).unwrap();
         write(quickshell.dir.join("RogMouse.qml"), "by hand");
         assert_eq!(quickshell.is_installed(), Ok(true), "no record");
     }
