@@ -107,7 +107,8 @@ the mouse already matches sends nothing. It only takes a file made from the same
 refuses one with a setting the model doesn't have, a value it doesn't take or a setting
 given twice before changing anything. It skips, with a note, a setting that can't be changed
 now: a locked one, the Rainbow, Comet or Off effect, which rogctl shows but doesn't send, or
-one the mouse didn't report this time, such as lighting that didn't read.
+one the mouse didn't report this time, such as lighting that didn't read, or a DPI stage
+beyond those the mouse uses now (on mice that use 2 to 4 of them).
 
 After each change rogctl checks that the mouse reads it back. If the mouse took the change
 but reads back another value, rogctl says so and stops with 1. If the mouse can't be read

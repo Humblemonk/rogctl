@@ -172,8 +172,8 @@ fn find(app: &App, key: &str) -> Result<Setting, String> {
         return Ok(setting);
     }
     let name = app.model.map_or("mouse", |m| m.name);
-    Err(if model_has(app, key) {
-        format!("The {name} didn't report {key} this time: try again")
+    Err(if let Some(why) = unreported(app, key) {
+        format!("{key}: {why}")
     } else if is_known_key(key) {
         format!("This {name} doesn't have {key}")
     } else {
@@ -187,6 +187,24 @@ fn lookup(app: &App, key: &str) -> Option<Setting> {
         .into_iter()
         .map(|(s, _)| s)
         .find(|s| s.key() == key)
+}
+
+/// Why the mouse doesn't show `key`, a setting its model has: a stage beyond
+/// those it uses now, or one it didn't report (lighting that didn't read).
+/// None if the model hasn't the setting.
+fn unreported(app: &App, key: &str) -> Option<String> {
+    let model = app.model.filter(|_| model_has(app, key))?;
+    let name = model.name;
+    let used = app.settings.stages.len();
+    let stage = key
+        .strip_prefix("dpi-")
+        .and_then(|n| n.parse::<usize>().ok());
+    Some(match stage {
+        Some(n) if n > used && model.features.dpi.variable_stages => {
+            format!("the {name} uses {used} DPI stages now")
+        }
+        Some(_) | None => format!("the {name} didn't report it this time"),
+    })
 }
 
 /// Whether the mouse's model has the setting `key`, read or not: its demo
@@ -529,17 +547,22 @@ fn parse_file(app: &App, path: &str, text: &str) -> Result<(Vec<(Setting, Wanted
         ));
     }
     let mut wanted = Vec::new();
-    let mut skipped = false;
+    let mut skipped: Vec<String> = Vec::new();
     for (key, value) in file.settings.ok_or_else(not_ours)?.0 {
         let setting = match find(app, &key) {
             Ok(setting) => setting,
-            // The model has it, so the mouse just didn't report it.
-            Err(_) if model_has(app, &key) => {
-                eprintln!("Skipped: {key}: the {name} didn't report it this time");
-                skipped = true;
-                continue;
-            }
-            Err(e) => return Err(format!("{path}: {e}")),
+            Err(e) => match unreported(app, &key) {
+                // `in_order()` refuses the others given twice.
+                Some(_) if skipped.contains(&key) => {
+                    return Err(format!("{path}: {key} is given twice"));
+                }
+                Some(why) => {
+                    eprintln!("Skipped: {key}: {why}");
+                    skipped.push(key);
+                    continue;
+                }
+                None => return Err(format!("{path}: {e}")),
+            },
         };
         let text = match &value {
             Json::String(_) | Json::Number(_) | Json::Bool(_) => json_text(&value),
@@ -551,7 +574,7 @@ fn parse_file(app: &App, path: &str, text: &str) -> Result<(Vec<(Setting, Wanted
         wanted.push((setting, value));
     }
     let wanted = in_order(app, wanted).map_err(|e| format!("{path}: {e}"))?;
-    Ok((wanted, skipped))
+    Ok((wanted, !skipped.is_empty()))
 }
 
 // ---------------------------------------------------------------------------
@@ -963,7 +986,17 @@ mod tests {
         unlit.settings.lighting = None;
         assert_eq!(
             find(&unlit, "colour"),
-            Err("The ROG Harpe II Ace didn't report colour this time: try again".into())
+            Err("colour: the ROG Harpe II Ace didn't report it this time".into())
+        );
+        let mut three = app.clone();
+        three.settings.stages.truncate(3);
+        assert_eq!(
+            find(&three, "dpi-4"),
+            Err("dpi-4: the ROG Harpe II Ace uses 3 DPI stages now".into())
+        );
+        assert_eq!(
+            find(&three, "dpi-5"),
+            Err("This ROG Harpe II Ace doesn't have dpi-5".into())
         );
         let keys: Vec<String> = settings_of(&app).iter().map(|(s, _)| s.key()).collect();
         assert_eq!(
@@ -1209,6 +1242,11 @@ mod tests {
             !list
                 .iter()
                 .any(|&(s, _)| s == Setting::Control(Control::LightingEffect))
+        );
+        let twice = r#"{"version":1,"model":"ROG Harpe II Ace","settings":{"colour":"red","colour":"blue"}}"#;
+        assert_eq!(
+            parse_file(&app, "f", twice).unwrap_err(),
+            "f: colour is given twice"
         );
     }
 
