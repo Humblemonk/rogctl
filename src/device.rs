@@ -911,7 +911,11 @@ mod tests {
     }
 
     /// A rejection with no echo is asked once more; rejected again, it's
-    /// reported.
+    /// reported. The first half is what a Harpe II Ace on the SpeedNova did
+    /// just after it was turned on, captured read-only on 2026-11-02 during an
+    /// active-stage change: the change's echo, `03 ff aa` 7 ms later for the
+    /// save (on the mouse's report ID, so `read_packet` keeps it), no echo,
+    /// then the second save's echo 154 ms later.
     #[test]
     fn apply_asks_once_more_after_a_rejection() {
         let (result, got) = apply_to_fake(vec![
