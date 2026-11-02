@@ -21,7 +21,8 @@ const USAGE: &str = "\
 rogctl - battery status and settings for ASUS mice, battery status for ASUS keyboards
 
 Examples:
-  rogctl                                 Show the mouse's battery level
+  rogctl                                 Show the mouse's battery level (a
+                                         keyboard's if there's no mouse)
   rogctl --device all                    Show every mouse's and keyboard's level
   rogctl settings                        View and change DPI, polling rate and more
   rogctl settings --demo                 Try the settings screen without a mouse
@@ -80,7 +81,7 @@ struct Status {
     hidraw: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    /// Unix seconds when `battery` was last read from the mouse.
+    /// Unix seconds when `battery` was last read from the device.
     #[serde(skip_serializing_if = "Option::is_none")]
     battery_updated: Option<u64>,
     /// At or below `--low-threshold` and not charging.
@@ -92,7 +93,7 @@ struct Status {
     /// The `watch` process, for `rogctl refresh` and `rogctl stop`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
-    /// The smallest change in `battery` the mouse reports: 25 for mice that
+    /// The smallest change in `battery` the device reports: 25 for mice that
     /// report quarters, else 1.
     #[serde(skip)]
     battery_step: u8,
@@ -413,7 +414,7 @@ fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
-/// The word for a mouse that's awake, as every widget and the TUI show it:
+/// The word for a device that's awake, as every widget and the TUI show it:
 /// "Battery: 79% (discharging)". The kernel's and desktops' words, not
 /// Solaar's "recharging".
 fn charge_word(charging: bool, battery: Option<u8>) -> &'static str {
@@ -499,12 +500,12 @@ fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) -> bool {
     }
 }
 
-/// First retry after an error, which is often brief: a wired mouse rejecting a
-/// query, or its node going away for a moment. (A receiver rejecting a query
-/// means the mouse is asleep; see `ASLEEP_RETRY`.)
+/// First retry after an error, which is often brief: a device on a cable
+/// rejecting a query, or its node going away for a moment. (A receiver
+/// rejecting a query means the device is asleep; see `ASLEEP_RETRY`.)
 const ERROR_RETRY: Duration = Duration::from_secs(5);
 
-/// How often to read a sleeping mouse (in the TUI, a failed one too), so one
+/// How often to read a sleeping device (in the TUI, a failed mouse too), so one
 /// that wakes shows its level within about 10 s rather than a whole interval
 /// later. OpenRazer's battery notifier (`battery_notifier.py`) retries as often.
 const ASLEEP_RETRY: Duration = Duration::from_secs(10);

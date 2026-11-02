@@ -21,7 +21,7 @@ Keyboard battery levels.
   last level and low-battery notification separately and reads each on its own schedule, so
   a sleeping keyboard doesn't make it read an awake mouse every 10 seconds. Each status has a
   new `kind` field, `mouse` or `keyboard`.
-- A **Show** setting in every widget: mouse and keyboard (the default), only the mouse, or
+- A **Show** setting in every widget but Waybar: mouse and keyboard (the default), only the mouse, or
   only the keyboard. With both, the widget shows an icon and level for each device that's
   plugged in, and names the device in its low-battery notification. The Waybar config has a
   module for each.

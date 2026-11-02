@@ -1,6 +1,5 @@
 //! Finding supported mice and keyboards over Linux hidraw, and talking to
-//! them. Each
-//! exchange writes one request and waits, with a deadline, for the reply that
+//! them. Each exchange writes one request and waits, with a deadline, for the reply that
 //! echoes it. The bytes are in `protocol.rs`.
 
 use std::fs::{self, File, OpenOptions};
@@ -240,17 +239,17 @@ fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
 pub enum QueryError {
     Io(io::Error),
     Timeout,
-    /// The mouse answered with an error (`FF AA`).
+    /// The device answered with an error (`FF AA`).
     Rejected,
-    /// The receiver answered with an all-zero packet; the mouse is unreachable.
+    /// The receiver answered with an all-zero packet; the device is unreachable.
     Empty,
     /// The model doesn't have the setting a change was for.
     Unsupported,
 }
 
 impl QueryError {
-    /// Whether this means the mouse is asleep or out of range rather than
-    /// broken. A receiver answers for a sleeping mouse with an empty reply, no
+    /// Whether this means the device is asleep or out of range rather than
+    /// broken. A receiver answers for a sleeping device with an empty reply, no
     /// reply, or a rejection (`FF AA`); over a cable a rejection is a real error.
     pub fn means_asleep(&self, wireless: bool) -> bool {
         match self {

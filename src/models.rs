@@ -4,7 +4,7 @@
 //! `app/Peripherals/Keyboard/` (the 2026-10-24 tree). Models whose
 //! `HasBattery()` is false there are left out.
 //!
-//! Each entry is one way a mouse shows up on USB: its own receiver, a cable,
+//! Each entry is one way a mouse or keyboard shows up on USB: its own receiver, a cable,
 //! or a shared receiver (SpeedNova, Omni). Names drop G-Helper's
 //! "(Wireless)"/"(Wired)"/"(OMNI)" suffix; `wireless` carries that instead.
 //! The `Features` constants are named after the G-Helper class they come from.
@@ -15,10 +15,10 @@ use crate::protocol::{
     WarningRange,
 };
 
-/// ROG Omni receiver; the paired mouse is found by asking the receiver.
+/// ROG Omni receiver; the paired mouse and keyboard are found by asking it.
 pub const OMNI_PID: u16 = 0x1ace;
 
-/// An Omni receiver whose paired mouse couldn't be asked for, usually for
+/// An Omni receiver whose paired devices couldn't be asked for, usually for
 /// lack of permission. Every Omni entry shares these query parameters, so the
 /// battery read still works, or fails with the real reason. Not in `MODELS`.
 pub static OMNI_RECEIVER: Model = omni("ROG Omni receiver", &[], BATTERY_ONLY);

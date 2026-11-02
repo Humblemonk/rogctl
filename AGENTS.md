@@ -30,7 +30,7 @@ Prefer the simple, obvious solution.
 | `src/app.rs` | TUI state and key handling (`Control`, `Value`, `Action`); no I/O |
 | `src/ui.rs` | TUI rendering with ratatui |
 | `src/tui.rs` | TUI terminal setup, event loop, and `apply_action()`, the only writer |
-| `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json --device …` (Plasma polls `rogctl battery`) |
+| `noctalia/`, `waybar/`, `quickshell/`, `dms/`, `kde/`, `gnome/` | Panel widgets over `rogctl watch --json --device …` (Waybar `--format waybar`; Plasma polls `rogctl battery`) |
 | `udev/70-rogctl.rules` | Grants the logged-in user hidraw access to the one interface rogctl uses per device |
 | `README.md`, `docs/cli.md`, `docs/CHANGELOG.md` | User docs; `docs/cli.md` has the commands, exit codes and JSON fields |
 

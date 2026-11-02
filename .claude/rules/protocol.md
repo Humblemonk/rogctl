@@ -27,7 +27,7 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   ×25 in byte 5 or 7 on older mice (`Battery::Quarters`). `Features::power_off` names the
   power-off byte (usually 6); byte 7 is the low-battery warning.
 - Battery `0` while not charging, an all-zero reply, no reply, or `FF AA` from a receiver
-  means the mouse is asleep or out of range, not empty or broken.
+  means the device is asleep or out of range, not empty or broken.
 - Settings reads: `12 00` (active DPI stage in byte 12, counted from 1; stage count in byte
   19 on `variable_stages` mice), `12 04 00` (DPI on non-X/Y mice, polling rate, debounce,
   angle snapping and tuning), `12 04 02` (X/Y DPI), `12 04 03` (stage colours, RGB),
@@ -79,7 +79,7 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 - `MODELS` lists each way a mouse appears on USB (product ID, interface, report ID, packet
   size, battery format, `Features`). Entries sharing a product ID are told apart by `Match`:
   the SpeedNova receiver (`1ad0`) by its USB product name, the Omni receiver (`1ace`) by
-  asking it for the paired mouse (`01 A0`, read-only).
+  asking it for the paired devices (`01 A0`, read-only).
 - The Omni reply (captured on interface 2 with only a Falchion RX Low Profile keyboard
   paired, `parses_captured_omni_reply_with_a_keyboard`) echoes `01 A0` and lists 4-byte
   slots from byte 5: product ID (little-endian), then two bytes, `02 04` for that keyboard,
@@ -87,14 +87,14 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   the same with the keyboard on: it lists every device paired, not which is connected. So
   with two supported mice paired, rogctl takes the first in `MODELS` order (G-Helper the
   first slot) and can't tell which is on. A pairing query that times out, or gets `FF AA`
-  or an all-zero reply, leaves the receiver out, as one with no mouse paired is; only one
+  or an all-zero reply, leaves the receiver out, as one with nothing supported paired is; only one
   that can't be opened is kept, as `OMNI_RECEIVER`. Keeping it on a miss was tried and
   undone: a keyboard-only receiver then showed as a mouse, and an awake mouse as "ROG Omni
   receiver" with no settings, which the TUI didn't retry.
 - `Features` constants are named after the G-Helper class they come from. Code asks the
   features; never match on a model's name.
 - `cargo test` checks that `udev/70-rogctl.rules` has exactly one line per entry's product ID
-  and interface, and that the README's Supported mice and Supported keyboards lists cover
+  and interface, and that the readme's Supported mice and Supported keyboards lists cover
   every entry; update both when you add a model. The rule matches the USB interface's
   `modalias` (`usb:v0B05p1ACE*in02`), the one attribute holding vendor, product and
   interface, so it opens only the interface rogctl uses: receivers and keyboards also have a

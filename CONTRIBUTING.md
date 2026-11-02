@@ -15,7 +15,7 @@ cd rogctl
 cargo build
 ```
 
-To talk to a mouse without root, install the udev rule once (see
+To talk to a mouse or keyboard without root, install the udev rule once (see
 [Getting started](README.md#getting-started), step 3), then run from the checkout:
 
 ```sh
@@ -81,9 +81,9 @@ Keyboards are read only, for their battery. They go in `KEYBOARDS` in `src/model
 G-Helper's
 [`app/Peripherals/Keyboard/Models/`](https://github.com/seerge/g-helper/tree/main/app/Peripherals/Keyboard/Models),
 for a class whose `HasBattery()` is true. A constructor such as `base(0x0B05, 0x193E, "mi_01",
-0x00)` maps to `keyboard("Name", 0x193e, true, PERCENT)`: product ID, whether it's a receiver,
-and the battery byte, `FALCHION_PERCENT` if the class (or one it inherits from) overrides
-`ParseBattery` to byte 11. A keyboard on the Omni receiver goes in with `omni_keyboard()` and
+0x00)` maps to `keyboard("ROG Falchion", 0x193e, true, FALCHION_PERCENT)`: product ID, whether
+it's a receiver, and the battery byte: `PERCENT`, or `FALCHION_PERCENT` if the class (or one it
+inherits from) overrides `ParseBattery` to byte 11, as the Falchion does. A keyboard on the Omni receiver goes in with `omni_keyboard()` and
 its ID from `KeyboardFromOmniPid` in `PeripheralsProvider.cs`. A class with no `mi_01` path
 (G-Helper finds its interface from the report descriptor) needs its interface number, which
 `cargo run -- list` doesn't show for an unknown keyboard: report the output of
@@ -141,17 +141,18 @@ The widgets share `Cargo.toml`'s version; `cargo test` fails until every manifes
 - Write commit subjects in the imperative, under about 72 characters ("Fix Omni pairing
   lookup", not "Fixed Omni pairing"). Use the body to explain why.
 - Update the docs when behavior users can see changes: README.md for installing, settings and
-  supported mice, [docs/cli.md](docs/cli.md) for commands, flags, exit codes and JSON fields,
+  supported mice and keyboards, [docs/cli.md](docs/cli.md) for commands, flags, exit codes and JSON fields,
   and the widget's own readme for widget setup.
 
 ## Reporting a problem
 
 Include:
 
-- the output of `rogctl list` and `rogctl --json`
+- the output of `rogctl list` and `rogctl --device all --json`
 - for a settings problem, what `rogctl settings` shows next to what the mouse's own
   software shows
 - `lsusb | grep -i asus`
-- your mouse model and whether it's on the receiver or a cable
+- your mouse or keyboard model and whether it's on its receiver, the Omni receiver or a
+  cable
 - for widget problems, which desktop and its version; for Noctalia, `noctalia --version` and
   any lines mentioning `rog-mouse-battery` in `~/.cache/noctalia/noctalia.log`

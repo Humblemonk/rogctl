@@ -6,7 +6,7 @@ installing and everyday use.
 ## Commands
 
 ```sh
-rogctl                        # "<mouse name>: 80%", plus "(charging)" when charging
+rogctl                        # "<device name>: 80%", plus "(charging)" when charging
 rogctl --device all           # a line like that for every mouse and keyboard
 rogctl --json                 # one JSON status line
 rogctl watch --json           # a status line every 60 s (--interval SECS)

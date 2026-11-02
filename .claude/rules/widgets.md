@@ -15,7 +15,8 @@ paths:
 
 Each widget is a thin frontend over `rogctl`'s JSON status line. Each shows the mouse and the
 keyboard, or one of them: its Show setting (`device`: `all`, the default, `mouse` or
-`keyboard`) is passed as `--device`.
+`keyboard`) is passed as `--device`. Waybar instead has a module per device (Per widget,
+below).
 
 ## The JSON contract
 
@@ -29,10 +30,10 @@ keyboard, or one of them: its Show setting (`device`: `all`, the default, `mouse
   status is an empty list) and renders a list: an icon (by `kind`) and level per device, a
   tooltip or menu line per device, a notification per `notify_low`. Its own errors (rogctl
   missing or exiting) are `{ devices: [], error }`.
-- Shared logic lives in `rogctl`, not the frontends. `watch` keeps the last level while the
-  mouse sleeps, sets `low` (and `notify_low` on the one line a notification is due: once per
-  drop, re-armed by charging or rising 5% above the threshold), reports its `pid`, and
-  re-reads the mouse on SIGUSR1.
+- Shared logic lives in `rogctl`, not the frontends. `watch` keeps each device's last level while
+  it sleeps, reads each device on its own schedule, sets `low` (and `notify_low` on the one
+  line a notification is due: once per drop, re-armed by charging or rising 5% above the
+  threshold), reports its `pid`, and re-reads every device on SIGUSR1.
 - Widgets pass `--device` and `--low-threshold`, restart `rogctl` when the binary, device,
   interval or threshold setting changes, and refresh with `rogctl refresh PID`, through the binary the watch
   started with. Never `kill` a `pid` from the status line: under a wrapper it can name
@@ -50,7 +51,8 @@ keyboard, or one of them: its Show setting (`device`: `all`, the default, `mouse
   and so on, outside the package directory so it isn't packaged). The main README.md only
   links to them.
 - The same settings (binary, device, interval, low threshold, show percent, hide when
-  disconnected) with the same defaults, the same wording ("Battery: 79% (discharging)", then "charging"
+  disconnected; Quickshell's example widget has only the first four, and Waybar takes them as
+  `exec` flags) with the same defaults, the same wording ("Battery: 79% (discharging)", then "charging"
   or "full"; Solaar's layout, but the kernel's "charging", not its "recharging"), red when
   `low`, dimmed while asleep, and restarting `rogctl` 10 s after it exits.
 - Luau files start with `--!nonstrict`. User-visible strings go through `noctalia.tr()` with

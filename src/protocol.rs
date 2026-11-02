@@ -7,7 +7,7 @@
 //!
 //! A request is `[report_id, command, …]`, zero-padded to the model's packet
 //! size. The reply echoes the request's first bytes, or is `FF AA` in bytes 1-2
-//! when the mouse rejects it. Changes (`SET`) are stored on the mouse only after
+//! when the device rejects it. Changes (`SET`) are stored on the mouse only after
 //! a `SAVE`.
 
 use crate::device::QueryError;
@@ -487,7 +487,7 @@ impl std::fmt::Display for PowerOff {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
-    /// Percent. 0 can mean the mouse is asleep: see [`Reading::is_asleep`].
+    /// Percent. 0 can mean the device is asleep: see [`Reading::is_asleep`].
     pub battery: u8,
     pub charging: bool,
     pub power_off: Option<PowerOff>,
@@ -496,8 +496,8 @@ pub struct Reading {
 }
 
 impl Reading {
-    /// As G-Helper decides: a receiver whose mouse sleeps or is out of range
-    /// still answers, with 0% and not charging. An empty mouse on its cable
+    /// As G-Helper decides: a receiver whose device sleeps or is out of range
+    /// still answers, with 0% and not charging. An empty device on its cable
     /// reports 0% while charging.
     pub fn is_asleep(&self) -> bool {
         self.battery == 0 && !self.charging

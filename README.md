@@ -47,8 +47,8 @@ battery level of 8 ROG keyboards. See [Supported mice](#supported-mice) and
    ```
 
 3. **Allow access to the mouse and keyboard without root.** Skip this if you installed from the AUR. This
-   installs a udev rule for the supported USB IDs. It opens only the interface rogctl reads
-   the battery from:
+   installs a udev rule for the supported USB IDs. It opens only the one interface rogctl
+   uses on each device:
 
    ```sh
    sudo cp udev/70-rogctl.rules /etc/udev/rules.d/
@@ -137,8 +137,8 @@ If a widget says rogctl wasn't found, your desktop's `PATH` probably doesn't inc
   device isn't in [Supported mice](#supported-mice) or
   [Supported keyboards](#supported-keyboards). `rogctl list` shows what was detected.
 - **`Permission denied`**: the udev rule from step 3 isn't active yet. Unplug and replug the
-  receiver or cable, or log out and back in. For a keyboard, a rule from before rogctl 2.7.0
-  doesn't cover it: install the rule again.
+  receiver or cable, or log out and back in. For a keyboard on its own receiver or cable, a
+  rule from before rogctl 2.7.0 doesn't cover it: install the rule again.
 - **`asleep or out of range`**: the mouse or keyboard is off, asleep or too far from the
   receiver. Move or type to wake it and try again.
 - **Dull colours in `rogctl settings`**: without `COLORTERM=truecolor` in its environment

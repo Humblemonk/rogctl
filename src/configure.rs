@@ -629,7 +629,7 @@ fn print_binary_hint(desktop: Desktop) {
         Desktop::Quickshell => {
             say!("If it says rogctl wasn't found, set binary in RogMouseSettings.qml to {exe}")
         }
-        Desktop::Waybar => say!("If Waybar can't find rogctl, put {exe} in the exec line."),
+        Desktop::Waybar => say!("If Waybar can't find rogctl, put {exe} in each exec line."),
     }
 }
 
