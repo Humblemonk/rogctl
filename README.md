@@ -1,12 +1,11 @@
 # rogctl
 
-Battery status and settings for ASUS mice on Linux, battery status for ASUS keyboards, plus
-panel widgets for Noctalia, Waybar, Quickshell, DankMaterialShell, KDE Plasma and GNOME.
+Battery levels for ASUS mice and keyboards on Linux, a settings screen for the mice, and panel
+widgets for Noctalia, Waybar, Quickshell, DankMaterialShell, KDE Plasma and GNOME.
 
-rogctl supports 27 battery-powered ROG, TUF and ASUS mice, connected through their own
-receiver, a USB cable, the ROG SpeedNova 8K receiver or the ROG Omni receiver, and shows the
-battery level of 8 ROG keyboards. See [Supported mice](#supported-mice) and
-[Supported keyboards](#supported-keyboards) for the lists.
+It supports 27 battery-powered ROG, TUF and ASUS mice and 8 ROG keyboards, on their own
+receiver, a USB cable, or the ROG SpeedNova 8K and ROG Omni receivers. See
+[Supported mice](#supported-mice) and [Supported keyboards](#supported-keyboards).
 
 <table align="center">
   <tr>
