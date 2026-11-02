@@ -13,7 +13,10 @@ paths:
 
 # Panel widgets
 
-Each widget is a thin frontend over `rogctl`'s JSON status line.
+Each widget is a thin frontend over `rogctl`'s JSON status line. Each shows the mouse and the
+keyboard, or one of them: its Show setting (`device`: `all`, the default, `mouse` or
+`keyboard`) is passed as `--device`. Waybar instead has a module per device (Per widget,
+below).
 
 ## The JSON contract
 
@@ -22,12 +25,17 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
   remove a field, update every widget in the same change (grep for it under
   `noctalia/ quickshell/ dms/ kde/ gnome/`), `src/waybar.rs` and the field table in
   `docs/cli.md`.
-- Shared logic lives in `rogctl`, not the frontends. `watch` keeps the last level while the
-  mouse sleeps, sets `low` (and `notify_low` on the one line a notification is due: once per
-  drop, re-armed by charging or rising 5% above the threshold), reports its `pid`, and
-  re-reads the mouse on SIGUSR1.
-- Widgets pass `--low-threshold`, restart `rogctl` when the binary, interval or threshold
-  setting changes, and refresh with `rogctl refresh PID`, through the binary the watch
+- With `--device all` the line is `{ devices: [status, …], pid }`; with `mouse` or `keyboard`
+  one status, as before. Every widget turns the latter into the former (a disconnected
+  status is an empty list) and renders a list: an icon (by `kind`) and level per device, a
+  tooltip or menu line per device, a notification per `notify_low`. Its own errors (rogctl
+  missing or exiting) are `{ devices: [], error }`.
+- Shared logic lives in `rogctl`, not the frontends. `watch` keeps each device's last level while
+  it sleeps, reads each device on its own schedule, sets `low` (and `notify_low` on the one
+  line a notification is due: once per drop, re-armed by charging or rising 5% above the
+  threshold), reports its `pid`, and re-reads every device on SIGUSR1.
+- Widgets pass `--device` and `--low-threshold`, restart `rogctl` when the binary, device,
+  interval or threshold setting changes, and refresh with `rogctl refresh PID`, through the binary the watch
   started with. Never `kill` a `pid` from the status line: under a wrapper it can name
   another process, and `refresh`/`stop` check it's a `rogctl watch`. Noctalia (seen on
   5.3.0) restarts a plugin's service when one of its settings changes, which ends the
@@ -35,15 +43,16 @@ Each widget is a thin frontend over `rogctl`'s JSON status line.
   also polls the settings in `update()` and stops `rogctl` with `rogctl stop PID`; the exit
   marker restarts it. A failed stop is logged once and not retried until the settings
   change again. The Plasma widget polls one-shot `rogctl battery`, so it keeps its
-  own sleeping-level and notified-once state.
+  own sleeping-level and notified-once state, per device (kind and name).
 
 ## Keep them alike
 
 - Each widget's setup, settings and removal are in the readme next to it (`waybar/README.md`
   and so on, outside the package directory so it isn't packaged). The main README.md only
   links to them.
-- The same settings (binary, interval, low threshold, show percent, hide when disconnected)
-  with the same defaults, the same wording ("Battery: 79% (discharging)", then "charging"
+- The same settings (binary, device, interval, low threshold, show percent, hide when
+  disconnected; Quickshell's example widget has only the first four, and Waybar takes them as
+  `exec` flags) with the same defaults, the same wording ("Battery: 79% (discharging)", then "charging"
   or "full"; Solaar's layout, but the kernel's "charging", not its "recharging"), red when
   `low`, dimmed while asleep, and restarting `rogctl` 10 s after it exits.
 - Luau files start with `--!nonstrict`. User-visible strings go through `noctalia.tr()` with
@@ -83,11 +92,19 @@ when a change depends on their runtime behaviour.
 
 ## Per widget
 
-- **Noctalia**: `rogctl configure noctalia` copies the plugin to
+- **Noctalia**: several devices are drawn with `barWidget.render()` (a `ui.row` of glyph and
+  label pairs), and so is everything else once that's available, since a rendered tree hides
+  `setGlyph`/`setText`. Without it the widget falls back to the first device's glyph and every
+  level as text. Its tooltip for several devices keys each row by kind ("Mouse 23%
+  (discharging)", numbered when two share one: "Mouse 1", "Mouse 2"), not by
+  name: Noctalia caps tooltips at 280 px, cuts key-value rows short,
+  and loses the coloured keys in plain text. `rogctl configure noctalia` copies the plugin to
   `~/.local/share/noctalia/plugins/rog-mouse-battery`; it's never a symlink, so edits only
   take effect after installing again (with the user's permission). Logs:
   `~/.cache/noctalia/noctalia.log`. Docs: <https://docs.noctalia.dev/noctalia/plugins/development/>.
-- **Waybar**: `waybar/config.json` runs `rogctl watch --format waybar`. Waybar hides a custom
+- **Waybar**: `waybar/config.json` has a module per device, `rogctl watch --format waybar
+  --device mouse` and `--device keyboard`; a Waybar module shows one device, so `--format
+  waybar` refuses `--device all`. Waybar hides a custom
   module only when its formatted output is empty, and `"{icon} {text}"` never is, so
   `config.json` sets `hide-empty-text`: rogctl's empty `text` for "disconnected" then hides it.
 - **Quickshell**: no plugin system; `configure` copies the three `.qml` files into the user's

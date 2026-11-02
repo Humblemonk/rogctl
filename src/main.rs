@@ -7,20 +7,23 @@ mod tui;
 mod ui;
 mod waybar;
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use device::Device;
+use device::{Device, Kind};
 use protocol::PowerOff;
 
 const USAGE: &str = "\
-rogctl - battery status and settings for ASUS mice
+rogctl - battery levels for ASUS mice and keyboards, and settings for the mice
 
 Examples:
-  rogctl                                 Show the mouse's battery level
+  rogctl                                 Show the mouse's battery level (a
+                                         keyboard's if there's no mouse)
+  rogctl --device all                    Show every mouse's and keyboard's level
   rogctl settings                        View and change DPI, polling rate and more
   rogctl settings --demo                 Try the settings screen without a mouse
   rogctl configure kde                   Add the battery widget to KDE Plasma
@@ -29,7 +32,8 @@ Usage:
   rogctl [battery] [OPTIONS]             Print the battery status once
   rogctl watch [--interval SECS] [OPTIONS]
                                          Print the status every SECS seconds (default 60)
-  rogctl list                            List detected devices and their hidraw nodes
+  rogctl list                            List detected mice and keyboards and their
+                                         hidraw nodes
   rogctl refresh PID                     Make the `rogctl watch` with this PID read now
   rogctl stop PID                        Stop the `rogctl watch` with this PID
   rogctl settings [--demo [MODEL]]       View and change the mouse's settings (DPI,
@@ -41,24 +45,29 @@ Usage:
                                          remove it. Without DESKTOP, lists them
 
 Options:
+  --device DEVICE        mouse, keyboard, or all (one status each). Without it:
+                         the mouse, or a keyboard if there's no mouse
   --json                 Same as --format json
   --format FORMAT        text (default), json, or waybar (a Waybar custom module)
   --low-threshold PCT    Level at or below which the battery counts as low
                          (default 20, 0 turns it off)
 
-Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 mouse asleep.
-`watch` reads the mouse right away when sent SIGUSR1, which `refresh` sends.
+Exit status of `battery`: 0 connected, 1 error, 2 no device, 3 asleep. With
+--device all, the best of the devices': connected, then asleep, then error.
+`watch` reads the devices right away when sent SIGUSR1, which `refresh` sends.
 `refresh` and `stop` signal only a `rogctl watch`; widgets use them with the
 `pid` from its output.
 ";
 
-/// What the bar sees. `battery` stays at the last known level while the mouse
-/// sleeps, since the receiver stops reporting it.
+/// What the bar sees. `battery` stays at the last known level while the
+/// device sleeps, since the receiver stops reporting it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct Status {
     state: State,
     #[serde(skip_serializing_if = "Option::is_none")]
     device: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<Kind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wireless: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,7 +81,7 @@ struct Status {
     hidraw: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    /// Unix seconds when `battery` was last read from the mouse.
+    /// Unix seconds when `battery` was last read from the device.
     #[serde(skip_serializing_if = "Option::is_none")]
     battery_updated: Option<u64>,
     /// At or below `--low-threshold` and not charging.
@@ -84,7 +93,7 @@ struct Status {
     /// The `watch` process, for `rogctl refresh` and `rogctl stop`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
-    /// The smallest change in `battery` the mouse reports: 25 for mice that
+    /// The smallest change in `battery` the device reports: 25 for mice that
     /// report quarters, else 1.
     #[serde(skip)]
     battery_step: u8,
@@ -109,6 +118,7 @@ impl Status {
         Self {
             state,
             device: None,
+            kind: None,
             wireless: None,
             battery: None,
             charging: false,
@@ -127,6 +137,7 @@ impl Status {
     fn for_device(state: State, dev: &Device) -> Self {
         Self {
             device: Some(dev.model.name),
+            kind: Some(dev.model.kind),
             wireless: Some(dev.model.wireless),
             hidraw: Some(dev.hidraw.display().to_string()),
             battery_step: dev.model.battery.step(),
@@ -135,12 +146,103 @@ impl Status {
     }
 }
 
-/// Reads the first device that reports a battery level. When the cable and
-/// receiver are both plugged in, only one of them usually has live data.
-fn poll() -> Status {
+/// Which devices `battery` and `watch` report: `--device`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Selection {
+    /// One device: a mouse, or a keyboard if no mouse is plugged in.
+    First,
+    Mouse,
+    Keyboard,
+    /// Every device, a status each.
+    All,
+}
+
+impl Selection {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "mouse" => Some(Self::Mouse),
+            "keyboard" => Some(Self::Keyboard),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    fn nothing_found(self) -> &'static str {
+        match self {
+            Self::First | Self::All => "No supported mouse or keyboard found",
+            Self::Mouse => "No supported mouse found",
+            Self::Keyboard => "No supported keyboard found",
+        }
+    }
+}
+
+/// Splits `devices` (in `discover` order) into the groups to report, one
+/// status each. A group is the ways in to one device, or for `First`, `Mouse`
+/// and `Keyboard` to any device of that kind: the first that answers is shown.
+fn groups(selection: Selection, devices: &[Device]) -> Vec<Vec<&Device>> {
+    let of_kind =
+        |kind: Kind| -> Vec<&Device> { devices.iter().filter(|d| d.model.kind == kind).collect() };
+    fn one(group: Vec<&Device>) -> Vec<Vec<&Device>> {
+        if group.is_empty() {
+            Vec::new()
+        } else {
+            vec![group]
+        }
+    }
+    match selection {
+        Selection::Mouse => one(of_kind(Kind::Mouse)),
+        Selection::Keyboard => one(of_kind(Kind::Keyboard)),
+        Selection::First => {
+            let mice = of_kind(Kind::Mouse);
+            one(if mice.is_empty() {
+                of_kind(Kind::Keyboard)
+            } else {
+                mice
+            })
+        }
+        // By name: a receiver and a cable for the same model are one device.
+        // Two of the same model show as one, the first that answers.
+        Selection::All => {
+            let mut grouped: Vec<Vec<&Device>> = Vec::new();
+            for dev in devices {
+                let same = |g: &&mut Vec<&Device>| {
+                    g.first().is_some_and(|f| {
+                        (f.model.kind, f.model.name) == (dev.model.kind, dev.model.name)
+                    })
+                };
+                match grouped.iter_mut().find(same) {
+                    Some(group) => group.push(dev),
+                    None => grouped.push(vec![dev]),
+                }
+            }
+            grouped
+        }
+    }
+}
+
+/// Reads the devices `selection` asks for.
+fn poll(selection: Selection) -> Vec<Status> {
     let devices = device::discover();
+    let statuses = groups(selection, &devices)
+        .iter()
+        .map(|group| read_first(group))
+        .collect();
+    or_disconnected(statuses, selection)
+}
+
+/// Not `All`: always one status, "disconnected" if there's nothing to read.
+fn or_disconnected(mut statuses: Vec<Status>, selection: Selection) -> Vec<Status> {
+    if statuses.is_empty() && selection != Selection::All {
+        statuses.push(Status::empty(State::Disconnected));
+    }
+    statuses
+}
+
+/// Reads the first of `devices` that reports a battery level. When the cable
+/// and receiver are both plugged in, only one of them usually has live data.
+fn read_first(devices: &[&Device]) -> Status {
     let mut fallback: Option<Status> = None;
-    for dev in &devices {
+    for &dev in devices {
         let status = match dev.read_battery() {
             Ok(r) if !r.is_asleep() => {
                 return Status {
@@ -175,11 +277,11 @@ fn now() -> u64 {
 
 /// Returns the error `println!` would panic on when stdout is closed, as in
 /// `rogctl watch | head -1`.
-fn print_human(s: &Status) -> io::Result<()> {
-    let name = s.device.unwrap_or("mouse");
+fn print_human(s: &Status, nothing_found: &str) -> io::Result<()> {
+    let name = s.device.unwrap_or("device");
     let mut out = io::stdout().lock();
     match s.state {
-        State::Disconnected => writeln!(out, "No supported mouse found"),
+        State::Disconnected => writeln!(out, "{nothing_found}"),
         State::Error => writeln!(out, "{name}: {}", s.error.as_deref().unwrap_or("error")),
         State::Asleep => writeln!(out, "{name}: asleep or out of range"),
         State::Connected => {
@@ -219,35 +321,77 @@ impl Format {
 struct Output {
     format: Format,
     low_threshold: u8,
+    selection: Selection,
+}
+
+/// `--device all`'s JSON: every device's status, and `watch`'s pid once.
+#[derive(Debug, Serialize)]
+struct Report<'a> {
+    devices: &'a [Status],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
 }
 
 impl Output {
-    fn print(self, s: &Status) -> io::Result<()> {
-        match self.format {
-            Format::Text => print_human(s),
-            Format::Json => print_json(s),
-            Format::Waybar => print_json(&waybar::line(s)),
+    /// Prints `statuses` as `poll(self.selection)` returned them, with
+    /// `watch`'s `pid`.
+    fn print(self, statuses: &mut [Status], pid: Option<u32>) -> io::Result<()> {
+        let nothing_found = self.selection.nothing_found();
+        if self.selection == Selection::All {
+            return match self.format {
+                Format::Json => print_json(&Report {
+                    devices: statuses,
+                    pid,
+                }),
+                Format::Text if statuses.is_empty() => {
+                    print_human(&Status::empty(State::Disconnected), nothing_found)
+                }
+                // Refused when parsing the arguments; one line per device.
+                Format::Text | Format::Waybar => statuses
+                    .iter()
+                    .try_for_each(|s| print_human(s, nothing_found)),
+            };
         }
+        let Some(s) = statuses.first_mut() else {
+            return print_human(&Status::empty(State::Disconnected), nothing_found);
+        };
+        s.pid = pid;
+        match self.format {
+            Format::Text => print_human(s, nothing_found),
+            Format::Json => print_json(s),
+            Format::Waybar => print_json(&waybar::line(s, nothing_found)),
+        }
+    }
+}
+
+/// `battery`'s exit code for the statuses read: the best state among them.
+fn exit_code(statuses: &[Status]) -> u8 {
+    let any = |state: State| statuses.iter().any(|s| s.state == state);
+    if any(State::Connected) {
+        0
+    } else if any(State::Asleep) {
+        3
+    } else if any(State::Error) {
+        1
+    } else {
+        2
     }
 }
 
 fn cmd_battery(output: Output) -> ExitCode {
     // The Plasma widget runs `battery`, not `watch`.
     configure::notify_if_outdated();
-    let mut status = poll();
-    status.low = is_low(&status, output.low_threshold);
-    if output.print(&status).is_err() {
+    let mut statuses = poll(output.selection);
+    for status in &mut statuses {
+        status.low = is_low(status, output.low_threshold);
+    }
+    if output.print(&mut statuses, None).is_err() {
         return ExitCode::FAILURE;
     }
-    ExitCode::from(match status.state {
-        State::Connected => 0,
-        State::Error => 1,
-        State::Disconnected => 2,
-        State::Asleep => 3,
-    })
+    ExitCode::from(exit_code(&statuses))
 }
 
-/// Remembers the last reading, and fills it back in while the same mouse
+/// Remembers the last reading, and fills it back in while the same device
 /// sleeps so the bar keeps showing its level.
 fn carry_over(status: &mut Status, last_known: &mut Option<Status>) {
     match status.state {
@@ -270,7 +414,7 @@ fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
-/// The word for a mouse that's awake, as every widget and the TUI show it:
+/// The word for a device that's awake, as every widget and the TUI show it:
 /// "Battery: 79% (discharging)". The kernel's and desktops' words, not
 /// Solaar's "recharging".
 fn charge_word(charging: bool, battery: Option<u8>) -> &'static str {
@@ -329,14 +473,15 @@ fn block_refresh_signal() -> libc::sigset_t {
     }
 }
 
-/// Sleeps for `wait`, returning early if SIGUSR1 arrives: a widget asking to
-/// read the mouse now. Several signals during one wait count as one.
-fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
+/// Sleeps for `wait`, returning early, with true, if SIGUSR1 arrives: a
+/// widget asking to read the devices now. Several signals during one wait
+/// count as one.
+fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return;
+            return false;
         }
         let timeout = libc::timespec {
             tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
@@ -345,22 +490,22 @@ fn wait_or_refresh(set: &libc::sigset_t, wait: Duration) {
         // SAFETY: `set` is a valid sigset_t and `timeout` outlives the call.
         let got = unsafe { libc::sigtimedwait(set, std::ptr::null_mut(), &timeout) };
         if got == libc::SIGUSR1 {
-            return;
+            return true;
         }
         // EAGAIN means the time ran out; EINTR (another signal, e.g. SIGCONT)
         // means keep waiting.
         if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            return;
+            return false;
         }
     }
 }
 
-/// First retry after an error, which is often brief: a wired mouse rejecting a
-/// query, or its node going away for a moment. (A receiver rejecting a query
-/// means the mouse is asleep; see `ASLEEP_RETRY`.)
+/// First retry after an error, which is often brief: a device on a cable
+/// rejecting a query, or its node going away for a moment. (A receiver
+/// rejecting a query means the device is asleep; see `ASLEEP_RETRY`.)
 const ERROR_RETRY: Duration = Duration::from_secs(5);
 
-/// How often to read a sleeping mouse (in the TUI, a failed one too), so one
+/// How often to read a sleeping device (in the TUI, a failed mouse too), so one
 /// that wakes shows its level within about 10 s rather than a whole interval
 /// later. OpenRazer's battery notifier (`battery_notifier.py`) retries as often.
 const ASLEEP_RETRY: Duration = Duration::from_secs(10);
@@ -368,17 +513,19 @@ const ASLEEP_RETRY: Duration = Duration::from_secs(10);
 /// A day. Far larger values would overflow the deadline in `wait_or_refresh`.
 const MAX_INTERVAL_SECS: u64 = 86_400;
 
-/// How long to wait before the next poll: the interval; after errors a retry
-/// that doubles each time up to the interval; while asleep `ASLEEP_RETRY`.
+/// How long until a device is read again: the interval; after an error a
+/// retry that doubles each time up to the interval; while asleep
+/// `ASLEEP_RETRY`.
 fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration {
     match state {
         State::Error => {
-            let wait = (*retry).min(interval);
+            let wait = interval.min(*retry);
             *retry = retry.saturating_mul(2);
             wait
         }
-        // Leaves the error backoff alone, so errors between sleeps still back off.
-        State::Asleep => ASLEEP_RETRY.min(interval),
+        // Sleeping leaves the error backoff alone, so errors between sleeps
+        // still back off.
+        State::Asleep => interval.min(ASLEEP_RETRY),
         State::Connected | State::Disconnected => {
             *retry = ERROR_RETRY;
             interval
@@ -386,24 +533,144 @@ fn next_wait(state: State, interval: Duration, retry: &mut Duration) -> Duration
     }
 }
 
+/// A device, as `watch` keeps track of it: its kind and model name.
+type DeviceKey = (Option<Kind>, Option<&'static str>);
+
+/// What `watch` remembers about one device between reads.
+#[derive(Debug, Default)]
+struct Tracked {
+    last_known: Option<Status>,
+    low_warning: LowWarning,
+}
+
+/// Carries each device's level over while it sleeps and decides its
+/// low-battery notification, keyed by device so each has its own.
+fn track(statuses: &mut [Status], tracked: &mut HashMap<DeviceKey, Tracked>, low_threshold: u8) {
+    for status in statuses {
+        let t = tracked.entry((status.kind, status.device)).or_default();
+        carry_over(status, &mut t.last_known);
+        t.low_warning.update(status, low_threshold);
+    }
+}
+
+/// Devices due within this of each other are read together, so they share a
+/// line rather than printing two a moment apart.
+const DUE_SLACK: Duration = Duration::from_secs(1);
+
+/// When `watch` next reads one device, and what it read last.
+#[derive(Debug)]
+struct Due {
+    at: Instant,
+    retry: Duration,
+    status: Status,
+}
+
+/// `watch`'s state: each device is read on its own schedule, so one that's
+/// asleep or failing is retried often without reading the others as often.
+struct Watch {
+    interval: Duration,
+    low_threshold: u8,
+    tracked: HashMap<DeviceKey, Tracked>,
+    due: HashMap<DeviceKey, Due>,
+}
+
+impl Watch {
+    fn new(interval: Duration, low_threshold: u8) -> Self {
+        Self {
+            interval,
+            low_threshold,
+            tracked: HashMap::new(),
+            due: HashMap::new(),
+        }
+    }
+
+    /// One pass over the devices `keys` names: reads each one that's due, or
+    /// every one on a refresh, with `read(index)`, and repeats the others'
+    /// last status (without its notification). A device not seen on the last
+    /// pass is read at once. Returns the statuses and the wait until the next
+    /// one is due: the interval with no devices.
+    fn step(
+        &mut self,
+        keys: &[DeviceKey],
+        mut read: impl FnMut(usize) -> Status,
+        now: Instant,
+        refresh: bool,
+    ) -> (Vec<Status>, Duration) {
+        self.due.retain(|key, _| keys.contains(key));
+        let mut statuses = Vec::with_capacity(keys.len());
+        for (index, key) in keys.iter().enumerate() {
+            let waiting = self
+                .due
+                .get(key)
+                .filter(|due| !refresh && due.at > now + DUE_SLACK);
+            if let Some(due) = waiting {
+                statuses.push(Status {
+                    notify_low: false,
+                    ..due.status.clone()
+                });
+                continue;
+            }
+            let mut status = read(index);
+            track(
+                std::slice::from_mut(&mut status),
+                &mut self.tracked,
+                self.low_threshold,
+            );
+            let mut retry = self.due.get(key).map_or(ERROR_RETRY, |due| due.retry);
+            let wait = next_wait(status.state, self.interval, &mut retry);
+            self.due.insert(
+                *key,
+                Due {
+                    at: now + wait,
+                    retry,
+                    status: status.clone(),
+                },
+            );
+            statuses.push(status);
+        }
+        let wait = self
+            .due
+            .values()
+            .map(|due| due.at.saturating_duration_since(now))
+            .min()
+            .unwrap_or(self.interval);
+        (statuses, wait)
+    }
+}
+
 fn cmd_watch(interval: Duration, output: Output) -> ExitCode {
     // Before the first line: a widget only learns the pid from that, and
     // SIGUSR1 would kill the process until it's blocked.
-    let refresh = block_refresh_signal();
+    let signals = block_refresh_signal();
     configure::notify_if_outdated();
-    let mut last_known: Option<Status> = None;
-    let mut low_warning = LowWarning::default();
-    let mut retry = ERROR_RETRY;
+    let mut watch = Watch::new(interval, output.low_threshold);
+    let mut refresh = false;
     loop {
-        let mut status = poll();
-        carry_over(&mut status, &mut last_known);
-        low_warning.update(&mut status, output.low_threshold);
-        status.pid = Some(std::process::id());
+        let devices = device::discover();
+        let groups = groups(output.selection, &devices);
+        let keys: Vec<DeviceKey> = groups
+            .iter()
+            .map(|group| {
+                let model = group.first().map(|d| d.model);
+                (model.map(|m| m.kind), model.map(|m| m.name))
+            })
+            .collect();
+        let read = |i: usize| {
+            groups.get(i).map_or_else(
+                || Status::empty(State::Disconnected),
+                |group| read_first(group),
+            )
+        };
+        let (statuses, wait) = watch.step(&keys, read, Instant::now(), refresh);
+        let mut statuses = or_disconnected(statuses, output.selection);
         // stdout closed: the bar (or pipe reader) went away, so stop.
-        if output.print(&status).is_err() {
+        if output
+            .print(&mut statuses, Some(std::process::id()))
+            .is_err()
+        {
             return ExitCode::SUCCESS;
         }
-        wait_or_refresh(&refresh, next_wait(status.state, interval, &mut retry));
+        refresh = wait_or_refresh(&signals, wait);
     }
 }
 
@@ -444,7 +711,7 @@ fn cmd_list() -> ExitCode {
     let devices = device::discover();
     let mut out = io::stdout().lock();
     if devices.is_empty() {
-        let _ = writeln!(out, "No supported mouse found");
+        let _ = writeln!(out, "{}", Selection::All.nothing_found());
         return ExitCode::from(2);
     }
     for dev in devices {
@@ -453,9 +720,13 @@ fn cmd_list() -> ExitCode {
         } else {
             "wired"
         };
+        let kind = match dev.model.kind {
+            Kind::Mouse => "mouse",
+            Kind::Keyboard => "keyboard",
+        };
         let printed = writeln!(
             out,
-            "{}  {} ({link}, {:04x}:{:04x} interface {})",
+            "{}  {} ({kind}, {link}, {:04x}:{:04x} interface {})",
             dev.hidraw.display(),
             dev.model.name,
             device::ASUS_VID,
@@ -478,7 +749,9 @@ fn main() -> ExitCode {
     let mut output = Output {
         format: Format::Text,
         low_threshold: 20,
+        selection: Selection::First,
     };
+    let mut device_given = false;
     let mut interval = Duration::from_secs(60);
     let mut interval_given = false;
     // `Some(None)`: --demo without a model name.
@@ -497,6 +770,16 @@ fn main() -> ExitCode {
                 Some(format) => output.format = format,
                 None => {
                     eprintln!("--format needs one of: text, json, waybar");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--device" => match args.next().as_deref().and_then(Selection::parse) {
+                Some(selection) => {
+                    output.selection = selection;
+                    device_given = true;
+                }
+                None => {
+                    eprintln!("--device needs one of: mouse, keyboard, all");
                     return ExitCode::FAILURE;
                 }
             },
@@ -546,6 +829,17 @@ fn main() -> ExitCode {
     }
     if interval_given && command != "watch" {
         eprintln!("--interval only works with `rogctl watch`");
+        return ExitCode::FAILURE;
+    }
+    if device_given && !matches!(command.as_str(), "battery" | "watch") {
+        eprintln!("--device only works with `rogctl battery` and `rogctl watch`");
+        return ExitCode::FAILURE;
+    }
+    if output.selection == Selection::All && output.format == Format::Waybar {
+        eprintln!(
+            "Waybar shows one device per module: use a module with --device mouse \
+             and one with --device keyboard"
+        );
         return ExitCode::FAILURE;
     }
     if (remove || force) && command != "configure" {
@@ -742,13 +1036,13 @@ mod tests {
     fn sigusr1_ends_the_wait() {
         let set = block_refresh_signal();
         let start = Instant::now();
-        wait_or_refresh(&set, Duration::from_millis(50));
+        assert!(!wait_or_refresh(&set, Duration::from_millis(50)));
         assert!(start.elapsed() >= Duration::from_millis(50));
 
         // SAFETY: signals this thread, which has SIGUSR1 blocked.
         unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGUSR1) };
         let start = Instant::now();
-        wait_or_refresh(&set, Duration::from_secs(10));
+        assert!(wait_or_refresh(&set, Duration::from_secs(10)));
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
@@ -833,6 +1127,234 @@ mod tests {
         let short = Duration::from_secs(2);
         assert_eq!(next_wait(State::Error, short, &mut retry), short);
         assert_eq!(next_wait(State::Asleep, short, &mut retry), short);
+    }
+
+    /// A model as `discover` would find it on `hidraw`.
+    fn found(name: &str, pid: u16, hidraw: &str) -> Device {
+        Device {
+            model: models::all()
+                .find(|m| m.name == name && m.pid == pid)
+                .unwrap(),
+            hidraw: hidraw.into(),
+        }
+    }
+
+    fn names(groups: &[Vec<&Device>]) -> Vec<Vec<String>> {
+        groups
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .map(|d| format!("{} {}", d.model.name, d.hidraw.display()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A Harpe II Ace on its receiver and cable, and a Falchion RX Low
+    /// Profile on an Omni receiver and its cable, in `discover` order.
+    fn mouse_and_keyboard() -> Vec<Device> {
+        vec![
+            found("ROG Harpe II Ace", 0x1ad0, "/dev/hidraw8"),
+            found("ROG Harpe II Ace", 0x1c69, "/dev/hidraw3"),
+            found("ROG Falchion RX Low Profile", 0x1b04, "/dev/hidraw19"),
+            found(
+                "ROG Falchion RX Low Profile",
+                models::OMNI_PID,
+                "/dev/hidraw15",
+            ),
+        ]
+    }
+
+    #[test]
+    fn groups_each_device_by_name() {
+        let devices = mouse_and_keyboard();
+        assert_eq!(
+            names(&groups(Selection::All, &devices)),
+            [
+                vec![
+                    "ROG Harpe II Ace /dev/hidraw8",
+                    "ROG Harpe II Ace /dev/hidraw3"
+                ],
+                vec![
+                    "ROG Falchion RX Low Profile /dev/hidraw19",
+                    "ROG Falchion RX Low Profile /dev/hidraw15"
+                ],
+            ]
+        );
+        assert!(groups(Selection::All, &[]).is_empty());
+    }
+
+    /// Without `--device`, a keyboard is shown only when there's no mouse.
+    #[test]
+    fn shows_a_mouse_before_a_keyboard() {
+        let devices = mouse_and_keyboard();
+        let mice = names(&groups(Selection::Mouse, &devices));
+        assert_eq!(names(&groups(Selection::First, &devices)), mice);
+        assert_eq!(mice.len(), 1);
+        assert!(mice[0].iter().all(|n| n.starts_with("ROG Harpe II Ace")));
+
+        let keyboards = names(&groups(Selection::Keyboard, &devices));
+        assert_eq!(keyboards.len(), 1);
+        assert_eq!(names(&groups(Selection::First, &devices[2..])), keyboards);
+        assert!(groups(Selection::Keyboard, &devices[..2]).is_empty());
+        assert!(groups(Selection::Mouse, &devices[2..]).is_empty());
+    }
+
+    #[test]
+    fn exit_code_is_the_best_state() {
+        let error = Status::empty(State::Error);
+        assert_eq!(exit_code(&[asleep("Mouse"), connected("Keyboard", 52)]), 0);
+        assert_eq!(exit_code(&[error.clone(), asleep("Keyboard")]), 3);
+        assert_eq!(exit_code(&[error]), 1);
+        assert_eq!(exit_code(&[Status::empty(State::Disconnected)]), 2);
+        assert_eq!(exit_code(&[]), 2);
+    }
+
+    /// `--device all`: one object holding each status, the pid once.
+    #[test]
+    fn all_devices_json() {
+        let mut keyboard = connected("ROG Falchion RX Low Profile", 52);
+        keyboard.kind = Some(Kind::Keyboard);
+        let devices = [connected("ROG Harpe II Ace", 80), keyboard];
+        let json = serde_json::to_value(Report {
+            devices: &devices,
+            pid: Some(42),
+        })
+        .unwrap();
+        assert_eq!(json["pid"], 42);
+        assert_eq!(json["devices"][1]["kind"], "keyboard");
+        assert_eq!(json["devices"][1]["battery"], 52);
+        assert!(json["devices"][0].get("pid").is_none());
+        let json = serde_json::to_value(Report {
+            devices: &[],
+            pid: None,
+        })
+        .unwrap();
+        assert_eq!(json.to_string(), r#"{"devices":[]}"#);
+    }
+
+    /// Each device keeps its own level while asleep and gets its own
+    /// low-battery notification.
+    #[test]
+    fn tracks_each_device() {
+        let mut tracked = HashMap::new();
+        let mut first = [connected("Mouse", 80), connected("Keyboard", 15)];
+        track(&mut first, &mut tracked, 20);
+        assert!(!first[0].notify_low && first[1].notify_low);
+
+        let mut next = [connected("Mouse", 18), asleep("Keyboard")];
+        track(&mut next, &mut tracked, 20);
+        assert!(next[0].notify_low);
+        assert_eq!(next[1].battery, Some(15));
+        assert!(next[1].low && !next[1].notify_low);
+
+        let mut again = [connected("Mouse", 17), connected("Keyboard", 14)];
+        track(&mut again, &mut tracked, 20);
+        assert!(
+            !again[0].notify_low && !again[1].notify_low,
+            "once per drop"
+        );
+    }
+
+    const MOUSE: DeviceKey = (Some(Kind::Mouse), Some("Mouse"));
+    const KEYBOARD: DeviceKey = (Some(Kind::Keyboard), Some("Keyboard"));
+
+    /// Runs one `Watch::step` at `at` seconds, reading device i as
+    /// `reads[i]`, and returns which devices it read, the levels shown and the
+    /// wait in seconds.
+    fn step(
+        watch: &mut Watch,
+        start: Instant,
+        at: u64,
+        keys: &[DeviceKey],
+        reads: &[Status],
+        refresh: bool,
+    ) -> (Vec<usize>, Vec<Option<u8>>, u64) {
+        let mut read = Vec::new();
+        let (statuses, wait) = watch.step(
+            keys,
+            |i| {
+                read.push(i);
+                reads[i].clone()
+            },
+            start + Duration::from_secs(at),
+            refresh,
+        );
+        let levels = statuses.iter().map(|s| s.battery).collect();
+        (read, levels, wait.as_secs())
+    }
+
+    /// A sleeping keyboard is read every 10 s without reading the awake mouse
+    /// that often: each device has its own schedule.
+    #[test]
+    fn reads_each_device_when_it_is_due() {
+        let mut watch = Watch::new(Duration::from_secs(60), 20);
+        let start = Instant::now();
+        let keys = [MOUSE, KEYBOARD];
+        let reads = [connected("Mouse", 80), asleep("Keyboard")];
+        assert_eq!(
+            step(&mut watch, start, 0, &keys, &reads, false),
+            (vec![0, 1], vec![Some(80), None], 10)
+        );
+        for at in [10, 20, 30, 40, 50] {
+            let (read, levels, wait) = step(&mut watch, start, at, &keys, &reads, false);
+            assert_eq!((read, wait), (vec![1], 10), "at {at} s");
+            assert_eq!(levels, [Some(80), None], "the mouse's last level");
+        }
+        let (read, _, _) = step(&mut watch, start, 60, &keys, &reads, false);
+        assert_eq!(read, [0, 1], "both due at 60 s");
+
+        // A refresh reads both at once.
+        let (read, _, _) = step(&mut watch, start, 61, &keys, &reads, true);
+        assert_eq!(read, [0, 1]);
+    }
+
+    /// Each device backs off its own errors, and with nothing plugged in the
+    /// wait is the interval.
+    #[test]
+    fn backs_off_each_device_on_its_own() {
+        let mut watch = Watch::new(Duration::from_secs(60), 20);
+        let start = Instant::now();
+        let keys = [MOUSE, KEYBOARD];
+        let failing = Status {
+            device: Some("Keyboard"),
+            ..Status::empty(State::Error)
+        };
+        let reads = [connected("Mouse", 80), failing];
+        let waits: Vec<u64> = [0, 5, 15]
+            .into_iter()
+            .map(|at| step(&mut watch, start, at, &keys, &reads, false).2)
+            .collect();
+        assert_eq!(waits, [5, 10, 20]);
+        assert_eq!(step(&mut watch, start, 100, &[], &[], false).2, 60);
+    }
+
+    /// A device that appears is read at once, and the repeated status of one
+    /// not yet due doesn't repeat its low-battery notification.
+    #[test]
+    fn notifies_once_and_reads_new_devices_at_once() {
+        let mut watch = Watch::new(Duration::from_secs(60), 20);
+        let start = Instant::now();
+        let mut low = connected("Mouse", 15);
+        low.kind = Some(Kind::Mouse);
+        let (statuses, _) = watch.step(&[MOUSE], |_| low.clone(), start, false);
+        assert!(statuses[0].notify_low);
+
+        let mut keyboard = connected("Keyboard", 52);
+        keyboard.kind = Some(Kind::Keyboard);
+        let reads = [low, keyboard];
+        let mut read = Vec::new();
+        let (statuses, _) = watch.step(
+            &[MOUSE, KEYBOARD],
+            |i| {
+                read.push(i);
+                reads[i].clone()
+            },
+            start + Duration::from_secs(5),
+            false,
+        );
+        assert_eq!(read, [1], "only the new keyboard");
+        assert!(statuses[0].low && !statuses[0].notify_low);
     }
 
     #[test]

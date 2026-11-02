@@ -1,26 +1,27 @@
 //! Supported mice, transcribed from G-Helper's `app/Peripherals/Mouse/Models/`
 //! and `PeripheralsProvider.cs` (https://github.com/seerge/g-helper, 912cde3;
-//! settings from 54c5bd0). Models whose `HasBattery()` is false there are left
-//! out.
+//! settings from 54c5bd0), and keyboards, battery only, from its
+//! `app/Peripherals/Keyboard/` (the 2026-10-24 tree). Models whose
+//! `HasBattery()` is false there are left out.
 //!
-//! Each entry is one way a mouse shows up on USB: its own receiver, a cable,
+//! Each entry is one way a mouse or keyboard shows up on USB: its own receiver, a cable,
 //! or a shared receiver (SpeedNova, Omni). Names drop G-Helper's
 //! "(Wireless)"/"(Wired)"/"(OMNI)" suffix; `wireless` carries that instead.
 //! The `Features` constants are named after the G-Helper class they come from.
 
-use crate::device::{Match, Model};
+use crate::device::{Kind, Match, Model};
 use crate::protocol::{
     AngleTuning, Battery, Dpi, Features, Layout, LiftOffFormat, LightingZone, PollingRate,
     WarningRange,
 };
 
-/// ROG Omni receiver; the paired mouse is found by asking the receiver.
+/// ROG Omni receiver; the paired mouse and keyboard are found by asking it.
 pub const OMNI_PID: u16 = 0x1ace;
 
-/// An Omni receiver whose paired mouse couldn't be asked for, usually for
+/// An Omni receiver whose paired devices couldn't be asked for, usually for
 /// lack of permission. Every Omni entry shares these query parameters, so the
 /// battery read still works, or fails with the real reason. Not in `MODELS`.
-pub static OMNI_RECEIVER: Model = omni("ROG Omni receiver", &[], OMNI_UNKNOWN);
+pub static OMNI_RECEIVER: Model = omni("ROG Omni receiver", &[], BATTERY_ONLY);
 
 // G-Helper's `AsusMouse` defaults, which each class overrides.
 const DPI: Dpi = Dpi {
@@ -341,9 +342,9 @@ const STRIX_CARRY: Features = Features {
     power_off: Some(5),
     ..BASE
 };
-/// An Omni receiver whose mouse is unknown: battery only, so `rogctl
-/// settings` offers nothing to send to a mouse it couldn't identify.
-const OMNI_UNKNOWN: Features = Features {
+/// No settings, so `rogctl settings` offers nothing to send: for an Omni
+/// receiver whose mouse is unknown, and for keyboards.
+const BATTERY_ONLY: Features = Features {
     dpi: Dpi { stages: 0, ..DPI },
     ..BASE
 };
@@ -359,6 +360,7 @@ const fn usb(
 ) -> Model {
     Model {
         name,
+        kind: Kind::Mouse,
         pid,
         interface,
         report_id: 0x00,
@@ -402,6 +404,7 @@ const fn usb64(
 const fn omni(name: &'static str, paired: &'static [u16], features: Features) -> Model {
     Model {
         name,
+        kind: Kind::Mouse,
         pid: OMNI_PID,
         interface: 2,
         report_id: 0x03,
@@ -547,46 +550,157 @@ pub const MODELS: &[Model] = &[
     ),
 ];
 
+/// A keyboard on its own receiver or cable: G-Helper's `AsusKeyboard`
+/// defaults, interface 1 (`mi_01`), report ID 0, 65-byte packets. `byte` holds
+/// the battery percentage.
+const fn keyboard(name: &'static str, pid: u16, wireless: bool, byte: usize) -> Model {
+    Model {
+        name,
+        kind: Kind::Keyboard,
+        pid,
+        interface: 1,
+        report_id: 0x00,
+        packet_size: 65,
+        wireless,
+        battery: Battery::Keyboard { byte },
+        features: BATTERY_ONLY,
+        matches: Match::Any,
+    }
+}
+
+/// A keyboard on the Omni receiver: the same node as a mouse would use
+/// (`mi_02`), on its own report ID (`col02`).
+const fn omni_keyboard(name: &'static str, paired: &'static [u16], byte: usize) -> Model {
+    Model {
+        pid: OMNI_PID,
+        interface: 2,
+        report_id: 0x02,
+        packet_size: 64,
+        matches: Match::OmniPaired(paired),
+        ..keyboard(name, OMNI_PID, true, byte)
+    }
+}
+
+/// Where G-Helper's `ParseBattery` finds the percentage: byte 6 by default,
+/// 11 on the Falchion family (whose byte 6 G-Helper calls a 0-10 gauge).
+const PERCENT: usize = 6;
+const FALCHION_PERCENT: usize = 11;
+
+/// Battery-powered keyboards, after every mouse so `rogctl battery` shows a
+/// mouse first. Names drop G-Helper's "(Wireless)"/"(OMNI)"; its classes
+/// without that suffix are taken as the cable. Left out until their interface
+/// is known (G-Helper finds it from the report descriptor): the Claymore II
+/// (`196b`) and Strix Scope RX TKL Wireless (`1a07`).
+pub const KEYBOARDS: &[Model] = &[
+    keyboard("ROG Azoth", 0x1a83, false, PERCENT),
+    keyboard("ROG Azoth", 0x1a85, true, PERCENT),
+    omni_keyboard("ROG Azoth", &[0x1a85], PERCENT),
+    keyboard("ROG Azoth Extreme", 0x1b3f, false, PERCENT),
+    omni_keyboard("ROG Azoth Extreme", &[0x1b42], PERCENT),
+    keyboard("ROG Azoth Extreme SE", 0x1cef, false, PERCENT),
+    omni_keyboard("ROG Azoth Extreme SE", &[0x1cf1], PERCENT),
+    keyboard("ROG Azoth X", 0x1c24, false, PERCENT),
+    keyboard("ROG Azoth X", 0x1c25, true, PERCENT),
+    keyboard("ROG Strix Scope II 96", 0x1aae, false, PERCENT),
+    omni_keyboard("ROG Strix Scope II 96", &[0x1ab0], PERCENT),
+    keyboard("ROG Strix Scope II 96 RX", 0x1b78, false, PERCENT),
+    omni_keyboard("ROG Strix Scope II 96 RX", &[0x1b7a], PERCENT),
+    keyboard("ROG Falchion", 0x193c, false, FALCHION_PERCENT),
+    keyboard("ROG Falchion", 0x193e, true, FALCHION_PERCENT),
+    // G-Helper's "Falchion RX" (`1b04`) and "Falchion RX LP (OMNI)": the cable
+    // names itself "ROG FALCHION RX LOW PROFILE" (captured).
+    keyboard(
+        "ROG Falchion RX Low Profile",
+        0x1b04,
+        false,
+        FALCHION_PERCENT,
+    ),
+    omni_keyboard("ROG Falchion RX Low Profile", &[0x1b06], FALCHION_PERCENT),
+];
+
+/// Every supported model: the mice, then the keyboards.
+pub fn all() -> impl Iterator<Item = &'static Model> {
+    MODELS.iter().chain(KEYBOARDS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Every product ID in the table needs a udev rule, or the mouse is
-    /// found but can't be opened without root.
+    /// Every product ID in the table needs a udev rule, or the device is
+    /// found but can't be opened without root. Each rule opens only the
+    /// interface rogctl uses: the others carry keystrokes and pointer input.
     #[test]
-    fn udev_rules_cover_every_model() {
-        let rules = include_str!("../udev/70-rogctl.rules");
-        for m in MODELS {
-            let needle = format!("ATTRS{{idProduct}}==\"{:04x}\"", m.pid);
-            assert!(
-                rules.contains(&needle),
-                "udev rule missing for {} ({:04x})",
-                m.name,
-                m.pid
-            );
-        }
+    fn udev_rules_match_every_model_interface() {
+        use std::collections::BTreeSet;
+        let rules: BTreeSet<&str> = include_str!("../udev/70-rogctl.rules")
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let wanted: BTreeSet<String> = all()
+            .map(|m| {
+                format!(
+                    "KERNEL==\"hidraw*\", ATTRS{{modalias}}==\"usb:v0B05p{:04X}*in{:02X}\", TAG+=\"uaccess\"",
+                    m.pid, m.interface
+                )
+            })
+            .collect();
+        let wanted: BTreeSet<&str> = wanted.iter().map(String::as_str).collect();
+        assert_eq!(rules, wanted);
     }
 
-    /// The README's Supported mice list names every mouse.
+    /// The README's Supported mice and Supported keyboards lists name every
+    /// model.
     #[test]
     fn readme_lists_every_model() {
         let readme = include_str!("../README.md");
-        let section = &readme[readme.find("## Supported mice").expect("section missing")..];
-        for m in MODELS {
-            let item = format!("- {}", m.name);
-            assert!(
-                section.lines().any(|l| l == item),
-                "README doesn't list {}",
-                m.name
-            );
+        for (heading, models) in [
+            ("## Supported mice", MODELS),
+            ("## Supported keyboards", KEYBOARDS),
+        ] {
+            let start = readme.find(heading).expect("section missing") + heading.len();
+            let section = &readme[start..];
+            let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+            for m in models {
+                let item = format!("- {}", m.name);
+                assert!(
+                    section.lines().any(|l| l == item),
+                    "README's {heading} doesn't list {}",
+                    m.name
+                );
+            }
+        }
+    }
+
+    /// Keyboards are only read: no settings, the keyboard power read, and
+    /// G-Helper's interfaces.
+    #[test]
+    fn keyboards_are_battery_only() {
+        assert!(MODELS.iter().all(|m| m.kind == Kind::Mouse));
+        for m in KEYBOARDS {
+            assert_eq!(m.kind, Kind::Keyboard, "{}", m.name);
+            assert_eq!(m.features, BATTERY_ONLY, "{}", m.name);
+            assert!(crate::protocol::settings_queries(&m.features).is_empty());
+            assert!(matches!(m.battery, Battery::Keyboard { .. }), "{}", m.name);
+            let omni = (OMNI_PID, 2, 0x02, 64, true);
+            let usb = (m.pid, 1, 0x00, 65);
+            if m.pid == OMNI_PID {
+                assert_eq!(
+                    (m.pid, m.interface, m.report_id, m.packet_size, m.wireless),
+                    omni
+                );
+            } else {
+                assert_eq!((m.pid, m.interface, m.report_id, m.packet_size), usb);
+            }
         }
     }
 
     /// Two entries for the same USB interface must be told apart by `matches`.
     #[test]
     fn entries_are_unambiguous() {
-        for (i, a) in MODELS.iter().enumerate() {
-            for b in &MODELS[i + 1..] {
+        let every: Vec<&Model> = all().collect();
+        for (i, a) in every.iter().enumerate() {
+            for b in &every[i + 1..] {
                 if a.pid == b.pid && a.interface == b.interface {
                     assert!(
                         !matches!(a.matches, Match::Any),

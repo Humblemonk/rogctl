@@ -1,9 +1,9 @@
 [package]
 name = "rogctl"
-version = "2.6.1"
+version = "2.7.0"
 edition = "2024"
 rust-version = "1.88"
-description = "rogctl - Battery status and settings for ASUS mice on Linux"
+description = "rogctl - Battery levels for ASUS mice and keyboards, and settings for the mice"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Humblemonk/rogctl"
 keywords = ["asus", "rog", "mouse", "battery", "widget"]

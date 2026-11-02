@@ -283,7 +283,7 @@ impl Session {
     fn load(&mut self, app: &mut App, prefer: &[PathBuf]) {
         // Nodes first: one plugged in between the two is caught next tick.
         self.nodes = device::candidate_nodes();
-        self.devices = device::discover();
+        self.devices = device::discover_mice();
         self.last_check = Some(Instant::now());
         self.last_battery = self.last_check;
         app.devices = self.devices.len();

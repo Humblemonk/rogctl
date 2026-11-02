@@ -1,12 +1,12 @@
 id           = "humblemonk/rog-mouse-battery"
-name         = "ASUS Mouse Battery"
-version      = "2.6.1"
+name         = "ASUS Peripheral Battery"
+version      = "2.7.0"
 plugin_api   = 24
 author       = "humblemonk"
 license      = "AGPL-3.0-or-later"
 icon         = "mouse"
-description  = "Battery level for ASUS mice, read through rogctl."
-tags         = ["bar", "battery", "hardware", "mouse"]
+description  = "Battery level for ASUS mice and keyboards, read through rogctl."
+tags         = ["bar", "battery", "hardware", "mouse", "keyboard"]
 dependencies = ["rogctl"]
 
 [[setting]]
@@ -15,6 +15,18 @@ type            = "string"
 label_key       = "settings.binary.label"
 description_key = "settings.binary.description"
 default         = "rogctl"
+
+[[setting]]
+key             = "device"
+type            = "select"
+label_key       = "settings.device.label"
+description_key = "settings.device.description"
+default         = "all"
+options         = [
+  { value = "all", label_key = "settings.device.all" },
+  { value = "mouse", label_key = "settings.device.mouse" },
+  { value = "keyboard", label_key = "settings.device.keyboard" },
+]
 
 [[setting]]
 key             = "interval"
@@ -48,7 +60,7 @@ entry = "widget.luau"
   label_key = "settings.icon.label"
   default   = "mouse"
   options   = [
-    { value = "mouse", label_key = "settings.icon.mouse" },
+    { value = "mouse", label_key = "settings.icon.device" },
     { value = "battery", label_key = "settings.icon.battery" },
   ]
 

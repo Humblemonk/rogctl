@@ -1,12 +1,13 @@
-//! Every byte rogctl sends to a mouse or reads back: request builders, reply
-//! parsers and the value types they use. Transcribed from G-Helper's
-//! `app/Peripherals/Mouse/AsusMouse.cs` and its model overrides
+//! Every byte rogctl sends to a mouse or keyboard or reads back: request
+//! builders, reply parsers and the value types they use. Transcribed from
+//! G-Helper's `app/Peripherals/Mouse/AsusMouse.cs`,
+//! `app/Peripherals/Keyboard/AsusKeyboard.cs` and their model overrides
 //! (https://github.com/seerge/g-helper). What each model supports is in
-//! `models.rs`; the I/O is in `device.rs`.
+//! `models.rs`; the I/O is in `device.rs`. Keyboards are only read.
 //!
 //! A request is `[report_id, command, …]`, zero-padded to the model's packet
 //! size. The reply echoes the request's first bytes, or is `FF AA` in bytes 1-2
-//! when the mouse rejects it. Changes (`SET`) are stored on the mouse only after
+//! when the device rejects it. Changes (`SET`) are stored on the mouse only after
 //! a `SAVE`.
 
 use crate::device::QueryError;
@@ -18,11 +19,18 @@ const PROFILE: u8 = 0x50;
 
 /// Byte 2 of a `GET`: what to read.
 const GET_PROFILE: u8 = 0x00;
+/// A keyboard's power page: battery, charging and sleep settings.
+const GET_KEYBOARD_POWER: u8 = 0x01;
 const GET_LIGHTING: u8 = 0x03;
 const GET_CONFIG: u8 = 0x04;
 const GET_LIFT_OFF: u8 = 0x06;
 const GET_BATTERY: u8 = 0x07;
 const GET_POWER_SAVING: u8 = 0x15;
+
+/// Byte of a mouse's battery reply that is non-zero while charging.
+const MOUSE_CHARGING: usize = 10;
+/// Byte of a keyboard's power reply that is 1 while charging.
+const KEYBOARD_CHARGING: usize = 9;
 
 /// Byte 3 of `GET_CONFIG`: which page.
 const PAGE_MAIN: u8 = 0x00;
@@ -124,22 +132,34 @@ pub fn check_reply(reply: &[u8]) -> Result<(), QueryError> {
 // What a model supports
 // ---------------------------------------------------------------------------
 
-/// Where the battery level sits in the battery reply.
+/// How to ask for the battery level, and where it sits in the reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Battery {
-    /// Byte 5 is the percentage.
+    /// A mouse's `12 07`; byte 5 is the percentage.
     Percent,
-    /// `byte` is a 0-4 level, reported as multiples of 25%.
+    /// A mouse's `12 07`; `byte` is a 0-4 level, reported as multiples of 25%.
     Quarters { byte: usize },
+    /// A keyboard's power page, `12 01`; `byte` is the percentage (11 on the
+    /// Falchion family, which has a 0-10 gauge in byte 6 per G-Helper).
+    Keyboard { byte: usize },
 }
 
 impl Battery {
-    /// The smallest change in the level the mouse reports, in percent.
+    /// The smallest change in the level the device reports, in percent.
     pub fn step(self) -> u8 {
         match self {
-            Self::Percent => 1,
+            Self::Percent | Self::Keyboard { .. } => 1,
             Self::Quarters { .. } => 25,
         }
+    }
+
+    /// The battery read. Only ever a `GET`: it changes nothing.
+    pub fn request(self, report_id: u8) -> Request {
+        let what = match self {
+            Self::Percent | Self::Quarters { .. } => GET_BATTERY,
+            Self::Keyboard { .. } => GET_KEYBOARD_POWER,
+        };
+        Request::new(&[report_id, GET, what], 3)
     }
 }
 
@@ -467,7 +487,7 @@ impl std::fmt::Display for PowerOff {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
-    /// Percent. 0 can mean the mouse is asleep: see [`Reading::is_asleep`].
+    /// Percent. 0 can mean the device is asleep: see [`Reading::is_asleep`].
     pub battery: u8,
     pub charging: bool,
     pub power_off: Option<PowerOff>,
@@ -476,8 +496,8 @@ pub struct Reading {
 }
 
 impl Reading {
-    /// As G-Helper decides: a receiver whose mouse sleeps or is out of range
-    /// still answers, with 0% and not charging. An empty mouse on its cable
+    /// As G-Helper decides: a receiver whose device sleeps or is out of range
+    /// still answers, with 0% and not charging. An empty device on its cable
     /// reports 0% while charging.
     pub fn is_asleep(&self) -> bool {
         self.battery == 0 && !self.charging
@@ -527,7 +547,6 @@ pub struct DpiStage {
 /// The reads that make up a full settings readback, after the battery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Query {
-    Battery,
     /// Active DPI stage and, on some mice, how many stages are in use.
     Profile,
     /// DPI stages from the X/Y page; other mice have them in `Config`.
@@ -544,7 +563,6 @@ pub enum Query {
 impl Query {
     pub fn request(self, report_id: u8) -> Request {
         match self {
-            Self::Battery => Request::new(&[report_id, GET, GET_BATTERY], 3),
             Self::Profile => Request::new(&[report_id, GET, GET_PROFILE, 0], 4),
             Self::XyDpi => Request::new(&[report_id, GET, GET_CONFIG, PAGE_XY_DPI], 4),
             Self::DpiColors => Request::new(&[report_id, GET, GET_CONFIG, PAGE_DPI_COLORS], 4),
@@ -558,7 +576,7 @@ impl Query {
     }
 }
 
-/// The queries after `Battery` that read every setting `f` has, in order:
+/// The queries after the battery read that read every setting `f` has, in order:
 /// `Profile` first, since it says how many DPI stages there are.
 pub fn settings_queries(f: &Features) -> Vec<Query> {
     let mut queries = Vec::new();
@@ -596,13 +614,17 @@ pub fn settings_queries(f: &Features) -> Vec<Query> {
 /// Decodes a battery reply whose byte 0 is the report ID.
 pub fn parse_battery(battery: Battery, f: &Features, reply: &[u8]) -> Result<Reading, QueryError> {
     check_reply(reply)?;
-    let level = match battery {
-        Battery::Percent => byte(reply, 5),
-        Battery::Quarters { byte: at } => byte(reply, at).saturating_mul(25),
+    let (level, charging) = match battery {
+        Battery::Percent => (byte(reply, 5), byte(reply, MOUSE_CHARGING) > 0),
+        Battery::Quarters { byte: at } => (
+            byte(reply, at).saturating_mul(25),
+            byte(reply, MOUSE_CHARGING) > 0,
+        ),
+        Battery::Keyboard { byte: at } => (byte(reply, at), byte(reply, KEYBOARD_CHARGING) == 1),
     };
     Ok(Reading {
         battery: level.min(100),
-        charging: byte(reply, 10) > 0,
+        charging,
         power_off: f.power_off.map(|at| PowerOff(byte(reply, at))),
         low_battery_warning: f.low_battery_warning.map(|w| {
             let raw = byte(reply, 7);
@@ -620,7 +642,6 @@ pub fn parse_battery(battery: Battery, f: &Features, reply: &[u8]) -> Result<Rea
 pub fn parse_settings(query: Query, f: &Features, reply: &[u8], s: &mut MouseSettings) {
     let dpi = &f.dpi;
     match query {
-        Query::Battery => {}
         Query::Profile => {
             let count = byte(reply, 19);
             let count = if dpi.variable_stages && (2..=dpi.stages).contains(&count) {
@@ -940,6 +961,76 @@ mod tests {
         assert!(!reading.charging);
         assert_eq!(reading.power_off.and_then(PowerOff::minutes), Some(3));
         assert_eq!(reading.low_battery_warning, Some(20));
+    }
+
+    /// A keyboard's: no settings.
+    fn keyboard_features() -> &'static Features {
+        &crate::models::KEYBOARDS[0].features
+    }
+
+    /// A keyboard's battery read is `12 01`, on its own report ID.
+    #[test]
+    fn keyboard_battery_request() {
+        let falchion = Battery::Keyboard { byte: 11 };
+        assert_eq!(falchion.request(0x02).bytes(), [0x02, 0x12, 0x01]);
+        assert_eq!(falchion.request(0x00).bytes(), [0x00, 0x12, 0x01]);
+        assert_eq!(Battery::Percent.request(0x03).bytes(), [0x03, 0x12, 0x07]);
+    }
+
+    /// Captured from a Falchion RX Low Profile, 2026-11-01: through its Omni
+    /// receiver (report 2), on battery, then on the cable in 2.4 GHz mode,
+    /// then over the cable in wired mode (report 0, which hidraw leaves out;
+    /// put back here). Bytes 6 and 11 both read 52 on this keyboard.
+    #[test]
+    fn parses_captured_keyboard_battery() {
+        let falchion = Battery::Keyboard { byte: 11 };
+        let read =
+            |bytes: &[u8]| parse_battery(falchion, keyboard_features(), &reply(bytes)).unwrap();
+        let omni = [
+            0x02, 0x12, 0x01, 0, 0, 0, 0x34, 0x02, 0x01, 0x00, 0x14, 0x34, 0xff, 0x0e,
+        ];
+        let r = read(&omni);
+        assert_eq!((r.battery, r.charging), (52, false));
+        assert_eq!((r.power_off, r.low_battery_warning), (None, None));
+
+        let charging = [
+            0x02, 0x12, 0x01, 0, 0, 0, 0x34, 0x02, 0x01, 0x01, 0x14, 0x34, 0x65, 0x0f,
+        ];
+        let r = read(&charging);
+        assert_eq!((r.battery, r.charging), (52, true));
+
+        let wired = [
+            0x00, 0x12, 0x01, 0, 0, 0, 0x34, 0x02, 0x01, 0x01, 0x14, 0x34, 0x84, 0x0f,
+        ];
+        let r = read(&wired);
+        assert_eq!((r.battery, r.charging), (52, true));
+    }
+
+    /// Captured with the Falchion RX Low Profile switched off: its Omni
+    /// receiver rejects the read, which means asleep (`means_asleep`).
+    #[test]
+    fn keyboard_off_is_rejected() {
+        let off = reply(&[0x02, 0xff, 0xaa]);
+        let request = Battery::Keyboard { byte: 11 }.request(0x02);
+        assert!(request.answered_by(&off));
+        assert!(matches!(
+            parse_battery(Battery::Keyboard { byte: 11 }, keyboard_features(), &off),
+            Err(QueryError::Rejected)
+        ));
+    }
+
+    /// G-Helper's other keyboards keep the percentage in byte 6, and charging
+    /// is byte 9 being exactly 1.
+    #[test]
+    fn parses_keyboard_battery_in_byte_6() {
+        let r = reply(&[0x00, 0x12, 0x01, 0, 0, 0, 0x4d, 0, 0, 0x01]);
+        let reading =
+            parse_battery(Battery::Keyboard { byte: 6 }, keyboard_features(), &r).unwrap();
+        assert_eq!((reading.battery, reading.charging), (77, true));
+        let r = reply(&[0x00, 0x12, 0x01, 0, 0, 0, 0xff, 0, 0, 0x02]);
+        let reading =
+            parse_battery(Battery::Keyboard { byte: 6 }, keyboard_features(), &r).unwrap();
+        assert_eq!((reading.battery, reading.charging), (100, false));
     }
 
     #[test]

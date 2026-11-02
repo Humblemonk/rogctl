@@ -7,6 +7,9 @@
     <entry name="binary" type="String">
       <default>rogctl</default>
     </entry>
+    <entry name="device" type="String">
+      <default>all</default>
+    </entry>
     <entry name="interval" type="Int">
       <default>60</default>
       <min>5</min>

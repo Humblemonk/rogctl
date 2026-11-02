@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// What every widget is called in its desktop's widget picker.
-const WIDGET_NAME: &str = "ASUS Mouse Battery";
+const WIDGET_NAME: &str = "ASUS Peripheral Battery";
 const NOCTALIA_ID: &str = "humblemonk/rog-mouse-battery";
 const KDE_ID: &str = "com.github.humblemonk.rogmousebattery";
 const GNOME_UUID: &str = "rog-mouse-battery@humblemonk.github.io";
@@ -355,10 +355,10 @@ fn uninstall(desktop: Desktop, force: bool) -> Result<()> {
         Desktop::Noctalia => remove_noctalia(force),
         Desktop::Waybar => {
             say!(
-                "rogctl doesn't edit your Waybar config. To remove the module, take \
-                 \"custom/rog-mouse\" out of your modules list, delete the module and the \
-                 #custom-rog-mouse rules from style.css, then reload Waybar: \
-                 pkill -SIGUSR2 waybar"
+                "rogctl doesn't edit your Waybar config. To remove the modules, take \
+                 \"custom/rog-mouse\" and \"custom/rog-keyboard\" out of your modules list, \
+                 delete the modules and their #custom-rog-mouse and #custom-rog-keyboard \
+                 rules from style.css, then reload Waybar: pkill -SIGUSR2 waybar"
             );
             Ok(())
         }
@@ -418,9 +418,11 @@ fn print_waybar_module() {
         return;
     };
     say!(
-        "rogctl doesn't edit your Waybar config. To add the module:\n\n\
-         1. Add this module to your Waybar config:\n\n{}\n\
-         2. Add \"custom/rog-mouse\" to modules-left, modules-center or modules-right.\n\n\
+        "rogctl doesn't edit your Waybar config. To add the modules:\n\n\
+         1. Add these modules to your Waybar config, one for the mouse and one for the \
+         keyboard (leave out either one):\n\n{}\n\
+         2. Add \"custom/rog-mouse\" and \"custom/rog-keyboard\" to modules-left, \
+         modules-center or modules-right. Each hides while its device isn't plugged in.\n\n\
          3. Add this to your Waybar style.css:\n\n{}\n\
          4. Reload Waybar: pkill -SIGUSR2 waybar\n\n\
          The icons need a Nerd Font.",
@@ -627,7 +629,7 @@ fn print_binary_hint(desktop: Desktop) {
         Desktop::Quickshell => {
             say!("If it says rogctl wasn't found, set binary in RogMouseSettings.qml to {exe}")
         }
-        Desktop::Waybar => say!("If Waybar can't find rogctl, put {exe} in the exec line."),
+        Desktop::Waybar => say!("If Waybar can't find rogctl, put {exe} in each exec line."),
     }
 }
 

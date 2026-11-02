@@ -21,6 +21,9 @@ paths:
   redraw.
 - After every change `apply_action()` reads the settings back, so the screen shows what the
   mouse has, not what was asked for.
+- Mice only: `Session::load()` uses `device::discover_mice()`, so a keyboard is never shown
+  or written to (and `Connection::apply()` refuses one). `--demo` takes only names in
+  `MODELS`.
 - `--demo` runs with no device: `App::simulate()` stands in for the write and read-back.
   Demo mode must stay fully navigable for every model in `MODELS`.
 - `Session::tick()` notices a mouse plugged in or out every 2 s by rescanning sysfs

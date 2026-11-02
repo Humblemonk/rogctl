@@ -1,5 +1,5 @@
-//! Finding supported mice over Linux hidraw, and talking to them. Each
-//! exchange writes one request and waits, with a deadline, for the reply that
+//! Finding supported mice and keyboards over Linux hidraw, and talking to
+//! them. Each exchange writes one request and waits, with a deadline, for the reply that
 //! echoes it. The bytes are in `protocol.rs`.
 
 use std::fs::{self, File, OpenOptions};
@@ -9,7 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::models::{MODELS, OMNI_PID, OMNI_RECEIVER};
+use crate::models::{self, OMNI_PID, OMNI_RECEIVER};
 use crate::protocol::{
     self, Battery, Change, Features, MouseSettings, OMNI_REPORT_ID, Query, Reading, Request,
 };
@@ -27,17 +27,26 @@ const HIDRAW_QUEUE: usize = 64;
 /// A reply, normalized so byte 0 is the report ID.
 type Reply = [u8; MAX_PACKET + 1];
 
-/// One way a supported mouse shows up on USB: a product ID and the HID
-/// interface that answers vendor commands on it.
+/// What a device is. Keyboards are only read: their battery level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Mouse,
+    Keyboard,
+}
+
+/// One way a supported mouse or keyboard shows up on USB: a product ID and
+/// the HID interface that answers vendor commands on it.
 #[derive(Debug)]
 pub struct Model {
     pub name: &'static str,
+    pub kind: Kind,
     pub pid: u16,
     pub interface: u8,
     pub report_id: u8,
     /// Bytes written per command, including the report ID byte.
     pub packet_size: usize,
-    /// How the mouse is connected: receiver (true) or cable (false).
+    /// How the device is connected: receiver (true) or cable (false).
     pub wireless: bool,
     pub battery: Battery,
     pub features: Features,
@@ -60,7 +69,7 @@ pub struct Device {
     pub hidraw: PathBuf,
 }
 
-/// A hidraw node whose product ID and interface are in `MODELS`.
+/// A hidraw node whose product ID and interface are in `models::all()`.
 struct Candidate {
     sys: PathBuf,
     hidraw: PathBuf,
@@ -79,9 +88,7 @@ fn candidates() -> Vec<Candidate> {
             let sys = entry.path();
             let (_, pid) = hid_ids(&sys).filter(|&(vid, _)| vid == ASUS_VID)?;
             let interface = interface_number(&sys)?;
-            let known = MODELS
-                .iter()
-                .any(|m| m.pid == pid && m.interface == interface);
+            let known = models::all().any(|m| m.pid == pid && m.interface == interface);
             known.then(|| Candidate {
                 sys,
                 hidraw: Path::new("/dev").join(entry.file_name()),
@@ -95,19 +102,21 @@ fn candidates() -> Vec<Candidate> {
 }
 
 /// The nodes `discover` looks at, found from sysfs alone: cheap enough to
-/// poll for mice being plugged in or out.
+/// poll for devices being plugged in or out.
 pub fn candidate_nodes() -> Vec<PathBuf> {
     candidates().into_iter().map(|c| c.hidraw).collect()
 }
 
-/// Finds connected supported mice, in `MODELS` order.
+/// Finds connected supported mice and keyboards, in `models::all()` order:
+/// every mouse before any keyboard. An Omni receiver can yield one of each,
+/// on the same node.
 pub fn discover() -> Vec<Device> {
     let mut found: Vec<Device> = Vec::new();
     for c in candidates() {
-        if let Some(model) = identify(&c) {
+        for model in identify(&c) {
             found.push(Device {
                 model,
-                hidraw: c.hidraw,
+                hidraw: c.hidraw.clone(),
             });
         }
     }
@@ -115,14 +124,21 @@ pub fn discover() -> Vec<Device> {
     found
 }
 
-/// Which model a candidate node is, asking an Omni receiver which mouse is
-/// paired (read-only).
-fn identify(c: &Candidate) -> Option<&'static Model> {
+/// The connected mice alone: all `rogctl settings` may open.
+pub fn discover_mice() -> Vec<Device> {
+    let mut found = discover();
+    found.retain(|d| d.model.kind == Kind::Mouse);
+    found
+}
+
+/// Which models a candidate node holds, asking an Omni receiver what is
+/// paired (read-only): at most one of each kind.
+fn identify(c: &Candidate) -> Vec<&'static Model> {
     if c.pid == OMNI_PID {
-        omni_model(omni_paired(&c.hidraw))
+        omni_models(omni_paired(&c.hidraw))
     } else {
         let product = usb_product(&c.sys).unwrap_or_default();
-        select_model(c.pid, c.interface, &product, &[])
+        select_models(c.pid, c.interface, &product, &[])
     }
 }
 
@@ -132,45 +148,50 @@ fn key(m: &Model) -> (u16, u8, &'static str) {
     (m.pid, m.interface, m.name)
 }
 
-/// Where `model` is in `MODELS`. OMNI_RECEIVER isn't there; it goes last.
-/// Found by value (`key`): a `const` has no one address to compare.
+/// Where `model` is in `models::all()`. OMNI_RECEIVER isn't there; it goes
+/// last. Found by value (`key`): a `const` has no one address to compare.
 fn rank(model: &Model) -> usize {
-    MODELS
-        .iter()
+    models::all()
         .position(|m| key(m) == key(model))
         .unwrap_or(usize::MAX)
 }
 
-/// Picks the model for an Omni receiver from its pairing reply. If the
+/// Picks the models for an Omni receiver from its pairing reply. If the
 /// receiver couldn't be opened or written to, keep it so the battery read
 /// reports why (e.g. no udev rule) instead of it looking unplugged. One that
-/// didn't answer is left out, as one with no supported mouse paired is: a
+/// didn't answer is left out, as one with nothing supported paired is: a
 /// receiver answers within milliseconds even then (protocol.md).
-fn omni_model(paired: Result<Vec<u16>, QueryError>) -> Option<&'static Model> {
+fn omni_models(paired: Result<Vec<u16>, QueryError>) -> Vec<&'static Model> {
     match paired {
-        Ok(paired) => select_model(OMNI_PID, OMNI_RECEIVER.interface, "", &paired),
-        Err(QueryError::Io(_)) => Some(&OMNI_RECEIVER),
+        Ok(paired) => select_models(OMNI_PID, OMNI_RECEIVER.interface, "", &paired),
+        Err(QueryError::Io(_)) => vec![&OMNI_RECEIVER],
         Err(
             QueryError::Timeout
             | QueryError::Rejected
             | QueryError::Empty
             | QueryError::Unsupported,
-        ) => None,
+        ) => Vec::new(),
     }
 }
 
-/// Picks the model for a USB interface. `product` is the device's USB product
-/// name and `paired` the Omni receiver's paired product IDs, if any.
-fn select_model(pid: u16, interface: u8, product: &str, paired: &[u16]) -> Option<&'static Model> {
+/// Picks the models for a USB interface: the first match of each kind, mouse
+/// first. `product` is the device's USB product name and `paired` the Omni
+/// receiver's paired product IDs, if any.
+fn select_models(pid: u16, interface: u8, product: &str, paired: &[u16]) -> Vec<&'static Model> {
     let product = product.to_uppercase();
-    MODELS
-        .iter()
-        .filter(|m| m.pid == pid && m.interface == interface)
-        .find(|m| match m.matches {
-            Match::Any => true,
-            Match::Product(s) => product.contains(s),
-            Match::OmniPaired(pids) => pids.iter().any(|p| paired.contains(p)),
-        })
+    let matching = || {
+        models::all()
+            .filter(|m| m.pid == pid && m.interface == interface)
+            .filter(|m| match m.matches {
+                Match::Any => true,
+                Match::Product(s) => product.contains(s),
+                Match::OmniPaired(pids) => pids.iter().any(|p| paired.contains(p)),
+            })
+    };
+    [Kind::Mouse, Kind::Keyboard]
+        .into_iter()
+        .filter_map(|kind| matching().find(|m| m.kind == kind))
+        .collect()
 }
 
 /// Parses `HID_ID=0003:00000B05:00001AD0` from the hidraw node's uevent.
@@ -218,17 +239,17 @@ fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
 pub enum QueryError {
     Io(io::Error),
     Timeout,
-    /// The mouse answered with an error (`FF AA`).
+    /// The device answered with an error (`FF AA`).
     Rejected,
-    /// The receiver answered with an all-zero packet; the mouse is unreachable.
+    /// The receiver answered with an all-zero packet; the device is unreachable.
     Empty,
     /// The model doesn't have the setting a change was for.
     Unsupported,
 }
 
 impl QueryError {
-    /// Whether this means the mouse is asleep or out of range rather than
-    /// broken. A receiver answers for a sleeping mouse with an empty reply, no
+    /// Whether this means the device is asleep or out of range rather than
+    /// broken. A receiver answers for a sleeping device with an empty reply, no
     /// reply, or a rejection (`FF AA`); over a cable a rejection is a real error.
     pub fn means_asleep(&self, wireless: bool) -> bool {
         match self {
@@ -267,8 +288,7 @@ impl Device {
         candidates()
             .iter()
             .find(|c| c.hidraw == self.hidraw)
-            .and_then(identify)
-            .is_some_and(|m| key(m) == key(self.model))
+            .is_some_and(|c| identify(c).iter().any(|m| key(m) == key(self.model)))
     }
 
     pub fn connect(&self) -> io::Result<Connection> {
@@ -336,7 +356,7 @@ impl Connection {
 
     pub fn read_battery(&mut self) -> Result<Reading, QueryError> {
         let model = self.model;
-        let reply = self.exchange(&Query::Battery.request(model.report_id))?;
+        let reply = self.exchange(&model.battery.request(model.report_id))?;
         protocol::parse_battery(model.battery, &model.features, &reply)
     }
 
@@ -382,9 +402,14 @@ impl Connection {
     }
 
     /// Changes one setting and saves it on the mouse. The only code that
-    /// writes settings; only `tui::apply_action` calls it.
+    /// writes settings; only `tui::apply_action` calls it. Never writes to a
+    /// keyboard.
     pub fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
         let model = self.model;
+        match model.kind {
+            Kind::Mouse => {}
+            Kind::Keyboard => return Err(ApplyError::NotChanged(QueryError::Unsupported)),
+        }
         let request = protocol::change_request(model.report_id, &model.features, change)
             .ok_or(ApplyError::NotChanged(QueryError::Unsupported))?;
         self.write(&request).map_err(ApplyError::NotChanged)?;
@@ -430,8 +455,12 @@ fn drain(file: &mut File) {
     }
 }
 
-/// Reads input reports until `accept` matches one, normalized so byte 0 is
-/// always the report ID: hidraw omits it for devices without numbered reports.
+/// Reads input reports until `accept` matches one on `report_id`, normalized
+/// so byte 0 is always the report ID: hidraw omits it for devices without
+/// numbered reports. The report ID tells apart the devices sharing an Omni
+/// receiver's node (mouse 3, keyboard 2): every open file gets a copy of each
+/// report, and a rejection (`FF AA`) or empty reply carries no other sign of
+/// which request it answers.
 fn read_packet(
     file: &mut File,
     report_id: u8,
@@ -454,7 +483,7 @@ fn read_packet(
         }
         buf.fill(0);
         match file.read(&mut buf[offset..]) {
-            Ok(n) if n + offset >= 11 && accept(&buf) => return Ok(buf),
+            Ok(n) if n + offset >= 11 && buf[0] == report_id && accept(&buf) => return Ok(buf),
             Ok(_) => continue,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
             Err(e) => return Err(e.into()),
@@ -485,11 +514,18 @@ fn poll_readable(file: &File, timeout: Duration) -> io::Result<bool> {
 mod tests {
     use super::*;
 
+    /// The first model `select_models` finds: the mouse, if there is one.
+    fn one(pid: u16, interface: u8, product: &str, paired: &[u16]) -> Option<&'static Model> {
+        select_models(pid, interface, product, paired)
+            .first()
+            .copied()
+    }
+
     #[test]
     fn tells_speednova_mice_apart_by_product_name() {
-        let ace = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let ace = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
         assert_eq!(ace.name, "ROG Harpe II Ace");
-        let extreme = select_model(0x1ad0, 2, "ROG Harpe II Extreme Receiver", &[]).unwrap();
+        let extreme = one(0x1ad0, 2, "ROG Harpe II Extreme Receiver", &[]).unwrap();
         assert_eq!(extreme.name, "Harpe II Extreme Edition 20");
     }
 
@@ -502,16 +538,16 @@ mod tests {
             0x03, 0x12, 0x07, 0, 0, 0x50, 0x02, 0x14, 0xd8, 0x0f, 0, 0, 0x01,
         ]);
         let parse = |m: &Model| protocol::parse_battery(m.battery, &m.features, &r).unwrap();
-        let ace = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
-        let extreme = select_model(0x1ad0, 2, "EXTREME", &[]).unwrap();
+        let ace = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let extreme = one(0x1ad0, 2, "EXTREME", &[]).unwrap();
         assert_eq!(parse(extreme), parse(ace));
     }
 
     /// `discover` lists the receiver before the cable, as `MODELS` does.
     #[test]
     fn devices_sort_in_models_order() {
-        let receiver = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
-        let cable = select_model(0x1c69, 0, "", &[]).unwrap();
+        let receiver = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let cable = one(0x1c69, 0, "", &[]).unwrap();
         assert!(rank(receiver) < rank(cable));
         assert!(rank(cable) < rank(&OMNI_RECEIVER));
     }
@@ -520,49 +556,126 @@ mod tests {
     /// without its path changing.
     #[test]
     fn tells_apart_models_sharing_a_node() {
-        let ace = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
-        let extreme = select_model(0x1ad0, 2, "EXTREME", &[]).unwrap();
+        let ace = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let extreme = one(0x1ad0, 2, "EXTREME", &[]).unwrap();
         assert_ne!(key(ace), key(extreme));
-        let mini = select_model(OMNI_PID, 2, "", &[0x1b65]).unwrap();
-        let keris = select_model(OMNI_PID, 2, "", &[0x1b1a]).unwrap();
+        let mini = one(OMNI_PID, 2, "", &[0x1b65]).unwrap();
+        let keris = one(OMNI_PID, 2, "", &[0x1b1a]).unwrap();
         assert_ne!(key(mini), key(keris));
-        assert_eq!(
-            key(ace),
-            key(select_model(0x1ad0, 2, "SPEEDNOVA", &[]).unwrap())
-        );
+        assert_eq!(key(ace), key(one(0x1ad0, 2, "SPEEDNOVA", &[]).unwrap()));
     }
 
     #[test]
     fn identifies_omni_mouse_by_paired_id() {
         // A keyboard (unknown ID) paired first, then a Harpe Ace Mini.
-        let m = select_model(OMNI_PID, 2, "", &[0x1234, 0x1b65]).unwrap();
+        let m = one(OMNI_PID, 2, "", &[0x1234, 0x1b65]).unwrap();
         assert_eq!(m.name, "Harpe Ace Mini");
-        assert!(select_model(OMNI_PID, 2, "", &[]).is_none());
+        assert!(one(OMNI_PID, 2, "", &[]).is_none());
     }
 
     #[test]
     fn keeps_omni_receiver_it_cannot_query() {
         let denied = io::Error::from(io::ErrorKind::PermissionDenied);
-        let m = omni_model(Err(QueryError::Io(denied))).unwrap();
+        let found = omni_models(Err(QueryError::Io(denied)));
+        assert_eq!(found.len(), 1);
+        let m = found[0];
         assert!(std::ptr::eq(m, &OMNI_RECEIVER));
         // Battery only: nothing to change on a mouse it couldn't identify.
         let f = m.features;
         assert_eq!(f.dpi.stages, 0);
         assert_eq!((f.power_off, f.low_battery_warning), (None, None));
-        // No answer, or no supported mouse paired, such as the captured reply
-        // with only a Falchion RX Low Profile keyboard: nothing to report.
+        // No answer, or nothing supported paired: nothing to report.
         for e in [QueryError::Timeout, QueryError::Rejected, QueryError::Empty] {
-            assert!(omni_model(Err(e)).is_none());
+            assert!(omni_models(Err(e)).is_empty());
         }
-        assert!(omni_model(Ok(vec![0x1b06])).is_none());
-        assert!(omni_model(Ok(vec![0x1234])).is_none());
-        assert_eq!(omni_model(Ok(vec![0x1b65])).unwrap().name, "Harpe Ace Mini");
+        assert!(omni_models(Ok(vec![0x1234])).is_empty());
+        let names = |paired: Vec<u16>| -> Vec<&str> {
+            omni_models(Ok(paired)).iter().map(|m| m.name).collect()
+        };
+        assert_eq!(names(vec![0x1b65]), ["Harpe Ace Mini"]);
+    }
+
+    /// Captured from a Falchion RX Low Profile, the only device paired with
+    /// its Omni receiver: `01 a0 00 01 00 06 1b 02 04`.
+    #[test]
+    fn finds_omni_keyboard() {
+        let found = omni_models(Ok(vec![0x1b06]));
+        assert_eq!(found.len(), 1);
+        let kb = found[0];
+        assert_eq!(kb.name, "ROG Falchion RX Low Profile");
+        assert_eq!(kb.kind, Kind::Keyboard);
+        assert_eq!((kb.interface, kb.report_id, kb.packet_size), (2, 0x02, 64));
+    }
+
+    /// A mouse and a keyboard paired with one receiver share its node, on
+    /// report IDs 3 and 2; the mouse comes first whatever the slot order.
+    #[test]
+    fn finds_omni_mouse_and_keyboard() {
+        let found = omni_models(Ok(vec![0x1b06, 0x1b65]));
+        let found: Vec<(&str, Kind, u8)> = found
+            .iter()
+            .map(|m| (m.name, m.kind, m.report_id))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("Harpe Ace Mini", Kind::Mouse, 0x03),
+                ("ROG Falchion RX Low Profile", Kind::Keyboard, 0x02),
+            ]
+        );
+    }
+
+    /// In wired mode the Falchion RX Low Profile answers on interface 1 of
+    /// `0b05:1b04` (captured), the only one on the vendor page `FF00`.
+    #[test]
+    fn finds_wired_keyboard() {
+        let found = select_models(0x1b04, 1, "ROG FALCHION RX LOW PROFILE", &[]);
+        let names: Vec<&str> = found.iter().map(|m| m.name).collect();
+        assert_eq!(names, ["ROG Falchion RX Low Profile"]);
+        assert!(!found[0].wireless);
+        assert!(select_models(0x1b04, 0, "", &[]).is_empty());
+    }
+
+    /// Every mouse ranks before every keyboard, so a mouse is reported first.
+    #[test]
+    fn mice_rank_before_keyboards() {
+        let last_mouse = models::all()
+            .filter(|m| m.kind == Kind::Mouse)
+            .map(rank)
+            .max()
+            .unwrap();
+        assert!(
+            models::all()
+                .filter(|m| m.kind == Kind::Keyboard)
+                .all(|m| rank(m) > last_mouse)
+        );
+    }
+
+    /// The last guard on the write path: nothing reaches a keyboard, even if
+    /// a change were asked for.
+    #[test]
+    fn never_writes_to_a_keyboard() {
+        use std::os::unix::net::UnixDatagram;
+
+        let (keyboard, ours) = UnixDatagram::pair().unwrap();
+        keyboard.set_nonblocking(true).unwrap();
+        let mut conn = Connection {
+            model: one(0x1b04, 1, "", &[]).unwrap(),
+            file: File::from(std::os::fd::OwnedFd::from(ours)),
+        };
+        let result = conn.apply(&Change::ActiveStage(0));
+        assert!(matches!(
+            result,
+            Err(ApplyError::NotChanged(QueryError::Unsupported))
+        ));
+        let mut buf = [0u8; 128];
+        assert!(keyboard.recv(&mut buf).is_err(), "something was sent");
     }
 
     #[test]
     fn ignores_unsupported_interfaces() {
-        assert!(select_model(0x1ad0, 0, "", &[]).is_none());
-        assert!(select_model(0xffff, 0, "", &[]).is_none());
+        assert!(one(0x1ad0, 0, "", &[]).is_none());
+        assert!(one(0xffff, 0, "", &[]).is_none());
     }
 
     /// A datagram socket keeps packet boundaries, like hidraw. Most mice use
@@ -574,7 +687,7 @@ mod tests {
         let (mouse, ours) = UnixDatagram::pair().unwrap();
         ours.set_nonblocking(true).unwrap();
         let mut file = File::from(std::os::fd::OwnedFd::from(ours));
-        let request = Query::Battery.request(0);
+        let request = Battery::Percent.request(0);
         let read = |file: &mut File| {
             let deadline = Instant::now() + Duration::from_millis(50);
             read_packet(file, 0, deadline, |r| request.answered_by(r))
@@ -593,6 +706,45 @@ mod tests {
         let start = Instant::now();
         assert!(matches!(read(&mut file), Err(QueryError::Timeout)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    /// On an Omni receiver's node, another process reading the keyboard (report
+    /// 2) can draw its rejection, captured as `02 ff aa` with the keyboard off,
+    /// while a mouse read (report 3) waits: it must not count as the mouse's.
+    #[test]
+    fn read_packet_ignores_another_report_ids_rejection() {
+        use std::os::unix::net::UnixDatagram;
+
+        let (receiver, ours) = UnixDatagram::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let mut file = File::from(std::os::fd::OwnedFd::from(ours));
+        let request = Battery::Percent.request(0x03);
+        let mut keyboard_off = [0u8; 64];
+        keyboard_off[..3].copy_from_slice(&[0x02, 0xff, 0xaa]);
+        let mut mouse_empty = [0u8; 64];
+        mouse_empty[0] = 0x02;
+        let mut battery = [0u8; 64];
+        battery[..6].copy_from_slice(&[0x03, 0x12, 0x07, 0, 0, 0x50]);
+        receiver.send(&keyboard_off).unwrap();
+        receiver.send(&mouse_empty).unwrap();
+        receiver.send(&battery).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let reply = read_packet(&mut file, 0x03, deadline, |r| request.answered_by(r)).unwrap();
+        assert_eq!(reply[..6], [0x03, 0x12, 0x07, 0, 0, 0x50]);
+
+        // Its own report ID's rejection still counts: `03 ff aa`, captured
+        // 2026-11-01 from the SpeedNova receiver (Harpe II Ace) with the mouse
+        // switched off. Each receiver answered on the request's report ID
+        // (SpeedNova 03, Omni 02).
+        let mut rejected = [0u8; 64];
+        rejected[..3].copy_from_slice(&[0x03, 0xff, 0xaa]);
+        receiver.send(&rejected).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let reply = read_packet(&mut file, 0x03, deadline, |r| request.answered_by(r)).unwrap();
+        assert!(matches!(
+            protocol::check_reply(&reply),
+            Err(QueryError::Rejected)
+        ));
     }
 
     /// A signal during the wait, as crossterm's resize handler sends in the
@@ -620,7 +772,7 @@ mod tests {
             mouse.send(&battery).unwrap();
             mouse
         });
-        let request = Query::Battery.request(0);
+        let request = Battery::Percent.request(0);
         let deadline = Instant::now() + Duration::from_secs(2);
         let reply = read_packet(&mut file, 0, deadline, |r| request.answered_by(r));
         fake.join().unwrap();
@@ -647,7 +799,7 @@ mod tests {
         mouse
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let model = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let model = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
         let mut conn = Connection {
             model,
             file: File::from(std::os::fd::OwnedFd::from(ours)),
@@ -727,7 +879,7 @@ mod tests {
     /// the lighting rows are left out.
     #[test]
     fn a_failed_lighting_read_keeps_the_other_settings() {
-        let model = select_model(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let model = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
         let queries = protocol::settings_queries(&model.features);
         assert_eq!(queries.last(), Some(&Query::Lighting));
         let mut answers: Vec<Vec<Answer>> = queries.iter().map(|_| vec![Answer::Echo]).collect();

@@ -1,8 +1,9 @@
-// Panel widget: reads `rogctl battery --json` every refresh interval. The
-// executable data engine only returns output once a command exits, so this
-// polls instead of streaming `rogctl watch`. That's also why it keeps the two
-// bits of state `rogctl watch` keeps for the other widgets: the last level
-// while the mouse sleeps, and whether the low-battery notification was sent.
+// Panel widget: reads `rogctl battery --json --device ...` every refresh
+// interval. The executable data engine only returns output once a command
+// exits, so this polls instead of streaming `rogctl watch`. That's also why it
+// keeps, for each device, the two bits of state `rogctl watch` keeps for the
+// other widgets: the last level while it sleeps, and whether the low-battery
+// notification was sent.
 
 import QtQuick
 import QtQuick.Layouts
@@ -18,22 +19,27 @@ PlasmoidItem {
     id: root
 
     readonly property string binary: Plasmoid.configuration.binary || "rogctl"
+    // Passed to `--device`: all, mouse or keyboard.
+    readonly property string device: ["mouse", "keyboard"].includes(Plasmoid.configuration.device) ? Plasmoid.configuration.device : "all"
     readonly property int interval: Plasmoid.configuration.interval
     readonly property int lowThreshold: Plasmoid.configuration.lowThreshold
 
-    // The last status line: state, device, battery, charging, error, ...
-    property var status: null
-    // The last status read while connected: its level shows once the mouse
-    // sleeps, even after an error in between.
-    property var lastConnected: null
-    property bool lowNotified: false
+    // The last read as `{ devices }` (or `error`): one status per device to
+    // show (state, device, kind, battery, charging, low, error, ...), empty
+    // while nothing is connected.
+    property var report: null
+    readonly property var devices: report?.devices ?? []
+    readonly property string errorText: report?.error ?? ""
+    // Per device (kind and name, as `rogctl watch` keys them): the last status
+    // read while connected, whose level shows once it sleeps even after an
+    // error in between, and whether the low-battery notification was sent.
+    property var lastConnected: ({})
+    property var lowNotified: ({})
 
-    // Not `state`: Item already has one, for QML states.
-    readonly property string mouseState: status?.state ?? ""
-    readonly property bool hasLevel: status?.battery !== undefined
+    readonly property bool failed: errorText !== "" || devices.some(s => s.state === "error")
     // At or below the threshold and not charging; rogctl decides.
-    readonly property bool low: status?.low ?? false
-    readonly property bool hidden: Plasmoid.configuration.hideWhenDisconnected && mouseState === "disconnected"
+    readonly property bool low: devices.some(s => s.low)
+    readonly property bool hidden: Plasmoid.configuration.hideWhenDisconnected && report !== null && errorText === "" && devices.length === 0
 
     // The shared wording, as in the other rogctl widgets.
     function statusWord(s) {
@@ -48,32 +54,53 @@ PlasmoidItem {
         return i18n("%1% (%2)", s.battery, s.state === "connected" ? statusWord(s) : i18n("offline"));
     }
 
+    function deviceName(s) {
+        return s.device || (s.kind === "keyboard" ? i18n("Keyboard") : i18n("Mouse"));
+    }
+
+    function detail(s) {
+        if (s.state === "error")
+            return i18n("Error: %1", s.error || "");
+        return i18n("Battery: %1", batteryValue(s));
+    }
+
+    // One device: its battery line. Several: a name and line for each.
     readonly property string detailText: {
-        if (!status)
+        if (!report)
             return i18n("Waiting for rogctl…");
-        if (mouseState === "error")
-            return i18n("Error: %1", status.error || "");
-        return i18n("Battery: %1", batteryValue(status));
+        if (errorText !== "")
+            return i18n("Error: %1", errorText);
+        if (devices.length === 0)
+            return i18n("Battery: %1", i18n("unknown"));
+        if (devices.length === 1)
+            return detail(devices[0]);
+        return devices.map(s => deviceName(s) + "\n" + detail(s)).join("\n\n");
     }
 
-    readonly property string iconName: {
-        if (mouseState === "error" || mouseState === "disconnected")
+    readonly property string headingText: {
+        if (devices.length === 1)
+            return deviceName(devices[0]);
+        return devices.length === 0 ? i18n("Not connected") : i18n("ASUS devices");
+    }
+
+    function iconFor(s) {
+        if (s.state === "error")
             return "dialog-warning";
-        if (status?.charging && hasLevel)
-            return "battery-" + String(Math.round(status.battery / 10) * 10).padStart(3, "0") + "-charging";
-        return "input-mouse";
+        if (s.charging && s.battery !== undefined)
+            return "battery-" + String(Math.round(s.battery / 10) * 10).padStart(3, "0") + "-charging";
+        return s.kind === "keyboard" ? "input-keyboard" : "input-mouse";
     }
 
-    Plasmoid.icon: iconName
+    Plasmoid.icon: devices.length > 0 ? iconFor(devices[0]) : "dialog-warning"
     Plasmoid.status: {
         if (hidden)
             return PlasmaCore.Types.HiddenStatus;
-        if (low || mouseState === "error")
+        if (low || failed)
             return PlasmaCore.Types.NeedsAttentionStatus;
         return PlasmaCore.Types.ActiveStatus;
     }
 
-    toolTipMainText: status?.device || i18n("ASUS Mouse Battery")
+    toolTipMainText: devices.length === 1 ? deviceName(devices[0]) : i18n("ASUS Peripheral Battery")
     toolTipSubText: detailText
 
     function shellQuote(value) {
@@ -81,52 +108,66 @@ PlasmoidItem {
     }
 
     function refresh() {
-        executable.connectSource(shellQuote(binary) + " battery --json --low-threshold " + lowThreshold);
+        executable.connectSource(shellQuote(binary) + " battery --json --device " + device + " --low-threshold " + lowThreshold);
     }
 
     function handleOutput(exitCode, stdout) {
-        let s;
+        let r;
         try {
-            s = JSON.parse(stdout.trim());
+            r = JSON.parse(stdout.trim());
         } catch (e) {
             // No JSON: rogctl is missing or crashed. 127 is the shell's "not found".
-            s = {
-                state: "error",
-                charging: false,
+            r = {
+                devices: [],
                 error: exitCode === 127 ? i18n("%1 not found on PATH", binary) : i18n("%1 exited with status %2", binary, exitCode)
             };
         }
-        // A one-shot read forgets the level once the mouse sleeps; keep showing
-        // the last one, as `rogctl watch` does.
-        if (s.state === "connected") {
-            lastConnected = s;
-        } else if (s.state === "asleep" && s.battery === undefined && lastConnected?.device === s.device) {
-            s.battery = lastConnected.battery;
-            s.battery_updated = lastConnected.battery_updated;
-            s.low = lastConnected.low;
+        // `--device mouse` or `keyboard` print one status, left out while
+        // disconnected.
+        if (r.devices === undefined)
+            r = {
+                devices: r.state === "disconnected" ? [] : [r]
+            };
+        for (const s of r.devices) {
+            const key = (s.kind || "") + "\n" + (s.device || "");
+            // A one-shot read forgets the level once the device sleeps; keep
+            // showing the last one, as `rogctl watch` does.
+            const last = lastConnected[key];
+            if (s.state === "connected") {
+                lastConnected[key] = s;
+            } else if (s.state === "asleep" && s.battery === undefined && last) {
+                s.battery = last.battery;
+                s.battery_updated = last.battery_updated;
+                s.low = last.low;
+            }
+            checkLowBattery(key, s);
         }
-        status = s;
-        checkLowBattery(s);
-        // Retry an error sooner, since it's often brief. Read a sleeping mouse
+        report = r;
+        // Retry an error sooner, since it's often brief. Read a sleeping device
         // every 10 s, as `rogctl watch` does, so one that wakes shows up within
         // 10 s.
-        const retry = s.state === "asleep" || s.state === "error" ? 10 : interval;
-        pollTimer.interval = Math.min(retry, interval) * 1000;
+        const urgent = r.error !== undefined || r.devices.some(s => s.state === "asleep" || s.state === "error");
+        pollTimer.interval = Math.min(urgent ? 10 : interval, interval) * 1000;
         pollTimer.restart();
     }
 
     // Once per drop to the threshold, re-armed by charging or climbing 5%
     // above it, as `rogctl watch` decides for the other widgets.
-    function checkLowBattery(s) {
+    function checkLowBattery(key, s) {
         if (lowThreshold <= 0 || s.battery === undefined || s.state !== "connected")
             return;
         if (s.charging || s.battery > lowThreshold + 5) {
-            lowNotified = false;
-        } else if (s.low && !lowNotified) {
-            lowNotified = true;
-            lowNotification.title = s.device || i18n("Mouse");
-            lowNotification.text = i18n("Battery: %1% (%2)", s.battery, statusWord(s));
-            lowNotification.sendEvent();
+            lowNotified[key] = false;
+        } else if (s.low && !lowNotified[key]) {
+            lowNotified[key] = true;
+            // A notification each: a mouse and a keyboard can go low on the
+            // same read, and reusing one object would replace the first.
+            // `?.`: a throw here would stop the panel updating.
+            lowNotification.createObject(root, {
+                title: deviceName(s),
+                text: i18n("Battery: %1% (%2)", s.battery, statusWord(s)),
+                iconName: s.kind === "keyboard" ? "input-keyboard" : "input-mouse"
+            })?.sendEvent();
         }
     }
 
@@ -135,6 +176,7 @@ PlasmoidItem {
         pollTimer.restart();
     }
     onBinaryChanged: refresh()
+    onDeviceChanged: refresh()
     onLowThresholdChanged: refresh()
     Component.onCompleted: refresh()
 
@@ -157,18 +199,20 @@ PlasmoidItem {
         }
     }
 
-    Notification {
+    // Deleted once closed (QML notifications aren't by default).
+    Component {
         id: lowNotification
-        componentName: "plasma_workspace"
-        eventId: "notification"
-        iconName: "input-mouse"
+        Notification {
+            componentName: "plasma_workspace"
+            eventId: "notification"
+            autoDelete: true
+        }
     }
 
     compactRepresentation: MouseArea {
         id: compact
 
         readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
-        readonly property color color: root.low || root.mouseState === "error" ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
 
         visible: !root.hidden
         Layout.minimumWidth: root.hidden ? 0 : (vertical ? -1 : row.implicitWidth)
@@ -185,24 +229,52 @@ PlasmoidItem {
             id: row
             anchors.centerIn: parent
             flow: compact.vertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
-            columnSpacing: Kirigami.Units.smallSpacing
-            rowSpacing: 0
-            // Asleep or gone: the level shown is the last one read.
-            opacity: root.mouseState === "connected" || root.mouseState === "error" ? 1 : 0.6
+            columnSpacing: Kirigami.Units.largeSpacing
+            rowSpacing: Kirigami.Units.smallSpacing
 
+            // Waiting, rogctl failing, or nothing connected.
             Kirigami.Icon {
-                source: root.iconName
-                color: compact.color
+                visible: root.devices.length === 0
+                source: "dialog-warning"
+                color: root.errorText !== "" ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
+                opacity: root.errorText !== "" ? 1 : 0.6
                 Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                 Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
                 Layout.alignment: Qt.AlignCenter
             }
 
-            PlasmaComponents.Label {
-                visible: Plasmoid.configuration.showPercent && root.hasLevel
-                text: root.hasLevel ? (compact.vertical ? String(root.status.battery) : root.status.battery + "%") : ""
-                color: compact.color
-                Layout.alignment: Qt.AlignCenter
+            Repeater {
+                model: root.devices
+
+                GridLayout {
+                    id: entry
+
+                    required property var modelData
+                    readonly property bool hasLevel: modelData.battery !== undefined
+                    readonly property color color: modelData.low || modelData.state === "error" ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
+
+                    flow: compact.vertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
+                    columnSpacing: Kirigami.Units.smallSpacing
+                    rowSpacing: 0
+                    // Asleep: the level shown is the last one read.
+                    opacity: modelData.state === "connected" || modelData.state === "error" ? 1 : 0.6
+                    Layout.alignment: Qt.AlignCenter
+
+                    Kirigami.Icon {
+                        source: root.iconFor(entry.modelData)
+                        color: entry.color
+                        Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                        Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                        Layout.alignment: Qt.AlignCenter
+                    }
+
+                    PlasmaComponents.Label {
+                        visible: Plasmoid.configuration.showPercent && entry.hasLevel
+                        text: entry.hasLevel ? (compact.vertical ? String(entry.modelData.battery) : entry.modelData.battery + "%") : ""
+                        color: entry.color
+                        Layout.alignment: Qt.AlignCenter
+                    }
+                }
             }
         }
     }
@@ -217,7 +289,7 @@ PlasmoidItem {
 
             Kirigami.Heading {
                 level: 3
-                text: root.status?.device || i18n("Not connected")
+                text: root.headingText
                 Layout.fillWidth: true
                 elide: Text.ElideRight
             }

@@ -1,84 +1,114 @@
-# Let the logged-in user talk to supported ASUS mice over hidraw (for rogctl).
-# One line per USB product ID in src/models.rs; `cargo test` checks they match.
+# Let the logged-in user talk to supported ASUS mice and keyboards over hidraw
+# (for rogctl).
+# Only the one USB interface rogctl uses on each (the "inNN" at the end of the
+# interface's modalias, which also holds the vendor and product IDs): the
+# others can carry keystrokes and pointer input, which rogctl never reads. udev
+# needs every ATTRS key to match on one parent device, and only the interface's
+# modalias holds all three.
+# One line per USB product ID in src/models.rs, with its interface; `cargo test`
+# checks they match.
 # ASUS Mouse MD200: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a24", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A24*in02", TAG+="uaccess"
 # Gladius II Wireless: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18a0", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p18A0*in02", TAG+="uaccess"
 # Harpe Ace Mini: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b63", TAG+="uaccess"
-# Omni receiver (paired mice listed in src/models.rs)
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1ace", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B63*in00", TAG+="uaccess"
+# Omni receiver (paired mice and keyboards listed in src/models.rs)
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1ACE*in02", TAG+="uaccess"
 # ROG Chakram: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18e3", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p18E3*in00", TAG+="uaccess"
 # ROG Chakram: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18e5", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p18E5*in00", TAG+="uaccess"
 # ROG Chakram X: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a18", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A18*in00", TAG+="uaccess"
 # ROG Chakram X: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a1a", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A1A*in00", TAG+="uaccess"
 # ROG Gladius III Aimpoint: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a70", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A70*in00", TAG+="uaccess"
 # ROG Gladius III Aimpoint: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a72", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A72*in00", TAG+="uaccess"
 # ROG Gladius III Eva 2: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b0a", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B0A*in00", TAG+="uaccess"
 # ROG Gladius III Eva 2: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b0c", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B0C*in00", TAG+="uaccess"
 # ROG Gladius III Wireless: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="197d", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p197D*in00", TAG+="uaccess"
 # ROG Gladius III Wireless: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="197f", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p197F*in00", TAG+="uaccess"
 # ROG Harpe Ace Aim Lab Edition: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a92", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A92*in00", TAG+="uaccess"
 # ROG Harpe Ace Aim Lab Edition: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a94", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A94*in00", TAG+="uaccess"
 # ROG Harpe Ace Extreme: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b67", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B67*in00", TAG+="uaccess"
 # ROG Harpe II Ace: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c69", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1C69*in00", TAG+="uaccess"
 # ROG Keris EVA Edition: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a57", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A57*in00", TAG+="uaccess"
 # ROG Keris EVA Edition: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a59", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A59*in00", TAG+="uaccess"
 # ROG Keris II Ace: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b16", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B16*in00", TAG+="uaccess"
 # ROG Keris II Origin: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c0c", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1C0C*in00", TAG+="uaccess"
 # ROG Keris II Origin KJP: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1d4c", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1D4C*in00", TAG+="uaccess"
 # ROG Keris Wireless: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="195e", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p195E*in00", TAG+="uaccess"
 # ROG Keris Wireless: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1960", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1960*in00", TAG+="uaccess"
 # ROG Keris Wireless Aimpoint: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a66", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A66*in00", TAG+="uaccess"
 # ROG Keris Wireless Aimpoint: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a68", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A68*in00", TAG+="uaccess"
 # ROG Pugio II: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1906", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1906*in00", TAG+="uaccess"
 # ROG Pugio II: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1908", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1908*in00", TAG+="uaccess"
 # ROG Spatha X: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1977", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1977*in00", TAG+="uaccess"
 # ROG Spatha X: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1979", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1979*in00", TAG+="uaccess"
 # ROG SpeedNova 8K receiver (Harpe II Ace, Harpe II Extreme Edition 20)
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1ad0", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1AD0*in02", TAG+="uaccess"
 # ROG Strix Carry: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="18b4", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p18B4*in01", TAG+="uaccess"
 # ROG Strix Impact II Wireless: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1947", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1947*in00", TAG+="uaccess"
 # ROG Strix Impact II Wireless: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1949", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1949*in00", TAG+="uaccess"
 # TUF GAMING M4 Wireless: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="19f4", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p19F4*in00", TAG+="uaccess"
 # TUF GAMING Mini Miku Edition: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c56", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1C56*in00", TAG+="uaccess"
 # TUF GAMING Mini Miku Edition: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1c57", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1C57*in00", TAG+="uaccess"
 # TX GAMING MOUSE: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a8d", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A8D*in00", TAG+="uaccess"
 # TX GAMING MOUSE Mini: cable
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1af3", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1AF3*in00", TAG+="uaccess"
 # TX GAMING MOUSE Mini: receiver
-KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1af5", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1AF5*in00", TAG+="uaccess"
+# Keyboards (battery only)
+# ROG Azoth: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A83*in01", TAG+="uaccess"
+# ROG Azoth: receiver
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1A85*in01", TAG+="uaccess"
+# ROG Azoth Extreme: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B3F*in01", TAG+="uaccess"
+# ROG Azoth Extreme SE: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1CEF*in01", TAG+="uaccess"
+# ROG Azoth X: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1C24*in01", TAG+="uaccess"
+# ROG Azoth X: receiver
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1C25*in01", TAG+="uaccess"
+# ROG Falchion: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p193C*in01", TAG+="uaccess"
+# ROG Falchion: receiver
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p193E*in01", TAG+="uaccess"
+# ROG Falchion RX Low Profile: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B04*in01", TAG+="uaccess"
+# ROG Strix Scope II 96: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1AAE*in01", TAG+="uaccess"
+# ROG Strix Scope II 96 RX: cable
+KERNEL=="hidraw*", ATTRS{modalias}=="usb:v0B05p1B78*in01", TAG+="uaccess"
