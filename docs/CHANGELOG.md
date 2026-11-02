@@ -6,7 +6,7 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## 2.8.0
+## 2.8.0 — 2026-11-02
 
 Settings from the command line.
 
