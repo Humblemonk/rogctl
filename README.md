@@ -98,9 +98,9 @@ nothing.
 
 To change settings from a script or a keybinding instead, use `rogctl settings set`, such as
 `rogctl settings set polling-rate=1000 dpi-2=1600`; `rogctl settings get` lists the settings
-and their names. `rogctl settings export FILE` saves them all to a file, and
-`rogctl settings import FILE` puts them back, on the same model, changing only what differs.
-See [the command reference](docs/cli.md#settings-from-the-command-line).
+and their names. `rogctl settings export FILE` saves them to a file (all but the active DPI
+stage), and `rogctl settings import FILE` puts them back, on the same model, changing only
+what differs. See [the command reference](docs/cli.md#settings-from-the-command-line).
 
 The settings screen needs a terminal of at least 80×24. In a smaller one it shows the size it
 needs, and only `q` and `Ctrl+C` work.

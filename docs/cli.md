@@ -80,8 +80,10 @@ earlier change altered on the mouse is set back too. Only then can a setting be 
 others were changed: `set` stops there, with 1, and says how many changes it made, and
 `import` skips a locked one with a note.
 
-`export` writes every setting `get` shows, as JSON, and `get --json` prints the same on one
-line:
+`get --json` prints every setting `get` shows, as JSON on one line, and `export` writes the
+same but `active-stage`. The active stage is left out of the file because the mouse's DPI
+button changes it: importing it would change the mouse whenever you'd pressed the button
+since. A file of your own can still have it.
 
 ```json
 {
@@ -102,13 +104,16 @@ rogctl can't name, such as an unknown code another program set, is left out.
 
 `import` changes each setting in the file that differs from the mouse, so importing a file
 the mouse already matches sends nothing. It only takes a file made from the same model, and
-refuses one with a setting the mouse doesn't have or a value it doesn't take before changing
-anything. It skips, with a note, a setting that can't be changed now: a locked one, or the
-Rainbow, Comet or Off effect, which rogctl shows but doesn't send.
+refuses one with a setting the model doesn't have, a value it doesn't take or a setting
+given twice before changing anything. It skips, with a note, a setting that can't be changed
+now: a locked one, the Rainbow, Comet or Off effect, which rogctl shows but doesn't send, or
+one the mouse didn't report this time, such as lighting that didn't read.
 
-As with the settings screen, each change is saved on the mouse. If the mouse doesn't confirm
-the save, rogctl says so and carries on: the change was made, but may not last a power
-cycle.
+After each change rogctl checks that the mouse reads it back. If the mouse took the change
+but reads back another value, rogctl says so and stops with 1. If the mouse can't be read
+back, or leaves the setting out, rogctl says it couldn't check it. As with the settings
+screen, each change is saved on the mouse. If the mouse doesn't confirm the save, rogctl says
+so and carries on: the change was made, but may not last a power cycle.
 
 `--demo [MODEL]` runs any of them without a mouse, changing nothing.
 
@@ -170,7 +175,8 @@ any is asleep, then 1 on an error, otherwise 2.
 `rogctl settings get`, `set`, `export` and `import` exit with the same codes as `battery`
 for the mouse: 0 done, 1 an error (a refused setting or value included), 2 no mouse, 3 asleep
 or out of range. A change whose save the mouse didn't confirm still exits with 0. If `set` or
-`import` stops partway, it says how many changes it made. It stops when a change fails, when
+`import` stops partway, it says how many changes it made. It stops when a change fails or
+the mouse reads back another value than the one set (1), when
 the mouse goes to sleep (3) or can't be read back (1) with a change still to make, and when
 the mouse leaves a setting still to change out of what it reads back (1), as can happen to
 the lighting on a mouse whose lighting doesn't read. If the mouse goes to sleep or can't be

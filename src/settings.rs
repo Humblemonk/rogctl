@@ -7,7 +7,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
-use serde::{Serialize, Serializer};
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as Json;
 
 use crate::app::{self, App, Control, Link, Planned, Refusal, Value};
@@ -53,18 +54,21 @@ pub fn run(command: Command, demo: Option<Option<&str>>, dry_run: bool) -> u8 {
             print!("{}", get_text(&app));
             Ok(0)
         }
-        Command::Get { json: true } => to_json(&app, false).map(|text| {
+        Command::Get { json: true } => to_json(&app, Form::Line).map(|text| {
             println!("{text}");
             0
         }),
         Command::Export(file) => {
-            to_json(&app, true).and_then(|text| export(&app, file, &text).map(|()| 0))
+            to_json(&app, Form::File).and_then(|text| export(&app, file, &text).map(|()| 0))
         }
         Command::Set(args) => parse_args(&app, &args)
-            .map(|wanted| apply_all(&mut app, send(device.as_ref()), wanted, dry_run, false)),
+            .map(|wanted| apply_all(&mut app, send(device.as_ref()), wanted, dry_run, Kind::Set)),
         Command::Import(file) => read_file(&file)
             .and_then(|text| parse_file(&app, &file, &text))
-            .map(|wanted| apply_all(&mut app, send(device.as_ref()), wanted, dry_run, true)),
+            .map(|(wanted, skipped)| {
+                let kind = Kind::Import { skipped };
+                apply_all(&mut app, send(device.as_ref()), wanted, dry_run, kind)
+            }),
     };
     result.unwrap_or_else(|text| {
         eprintln!("{text}");
@@ -164,21 +168,48 @@ fn settings_of(app: &App) -> Vec<(Setting, Option<&'static str>)> {
 
 /// The setting called `key` on this mouse, or why there's none.
 fn find(app: &App, key: &str) -> Result<Setting, String> {
-    if let Some(&(setting, _)) = settings_of(app).iter().find(|(s, _)| s.key() == key) {
+    if let Some(setting) = lookup(app, key) {
         return Ok(setting);
     }
-    let known = key == ACTIVE_STAGE
-        || Control::FIXED.iter().any(|c| c.key() == key)
-        || key
-            .strip_prefix("dpi-")
-            .and_then(|n| n.parse::<usize>().ok())
-            .is_some_and(|n| n >= 1);
     let name = app.model.map_or("mouse", |m| m.name);
-    Err(if known {
+    Err(if model_has(app, key) {
+        format!("The {name} didn't report {key} this time: try again")
+    } else if is_known_key(key) {
         format!("This {name} doesn't have {key}")
     } else {
         format!("Unknown setting {key}: `rogctl settings get` lists this mouse's")
     })
+}
+
+/// The setting called `key` among those the mouse reported.
+fn lookup(app: &App, key: &str) -> Option<Setting> {
+    settings_of(app)
+        .into_iter()
+        .map(|(s, _)| s)
+        .find(|s| s.key() == key)
+}
+
+/// Whether the mouse's model has the setting `key`, read or not: its demo
+/// settings show everything its `Features` have
+/// (`demo_shows_every_setting_the_model_has`).
+fn model_has(app: &App, key: &str) -> bool {
+    let Some(model) = app.model else {
+        return false;
+    };
+    let (reading, settings) = app::demo_state(&model.features);
+    let mut full = App::new(true);
+    full.show(Some(model), Link::Connected, Some(reading), settings);
+    lookup(&full, key).is_some()
+}
+
+/// Whether `key` names a setting some mouse has.
+fn is_known_key(key: &str) -> bool {
+    key == ACTIVE_STAGE
+        || Control::FIXED.iter().any(|c| c.key() == key)
+        || key
+            .strip_prefix("dpi-")
+            .and_then(|n| n.parse::<usize>().ok())
+            .is_some_and(|n| n >= 1)
 }
 
 /// What `get` shows for `setting`: as the settings screen does.
@@ -370,15 +401,28 @@ struct File {
     settings: Ordered,
 }
 
-/// `get --json` (one line) and `export` (`pretty`): every setting rogctl can
-/// name, locked ones included.
-fn to_json(app: &App, pretty: bool) -> Result<String, String> {
+/// What [`to_json`] writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// `get --json`: one line, every setting.
+    Line,
+    /// `export`: indented, and without the active DPI stage. The mouse's
+    /// DPI button changes that all the time, so importing it would write to
+    /// the mouse at every import.
+    File,
+}
+
+/// Every setting rogctl can name, locked ones included, as JSON.
+fn to_json(app: &App, form: Form) -> Result<String, String> {
     let settings = settings_of(app)
         .into_iter()
         .filter_map(|(setting, _)| {
             let json = match setting {
                 Setting::Control(control) => app.value(control).and_then(json_value),
-                Setting::ActiveStage => app.settings.active_stage.map(|i| (i + 1).into()),
+                Setting::ActiveStage if form == Form::Line => {
+                    app.settings.active_stage.map(|i| (i + 1).into())
+                }
+                Setting::ActiveStage => None,
             }?;
             Some((setting.key(), json))
         })
@@ -388,10 +432,9 @@ fn to_json(app: &App, pretty: bool) -> Result<String, String> {
         model: app.model.map_or("", |m| m.name),
         settings: Ordered(settings),
     };
-    let text = if pretty {
-        serde_json::to_string_pretty(&file)
-    } else {
-        serde_json::to_string(&file)
+    let text = match form {
+        Form::File => serde_json::to_string_pretty(&file),
+        Form::Line => serde_json::to_string(&file),
     };
     text.map_err(|e| e.to_string())
 }
@@ -427,25 +470,57 @@ fn read_file(path: &str) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("Couldn't read {path}: {e}"))
 }
 
+/// A file's `settings` in the order written, with any key given twice, which
+/// serde_json's own map would quietly drop.
+struct Entries(Vec<(String, Json)>);
+
+impl<'de> Deserialize<'de> for Entries {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> Visitor<'de> for Visit {
+            type Value = Entries;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of settings")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Entries, M::Error> {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(Entries(entries))
+            }
+        }
+        deserializer.deserialize_map(Visit)
+    }
+}
+
+/// What `import` reads; anything else in the file is ignored.
+#[derive(Deserialize)]
+struct Imported {
+    version: Option<u64>,
+    model: Option<String>,
+    settings: Option<Entries>,
+}
+
 /// An exported file's settings, checked for form before anything is sent:
-/// the same model, and only settings it has, as `set` would take them.
-fn parse_file(app: &App, path: &str, text: &str) -> Result<Vec<(Setting, Wanted)>, String> {
+/// the same model, and only settings it has, as `set` would take them. A
+/// setting this model has but the mouse didn't report now (lighting that
+/// didn't read) is skipped with a note: true if one was.
+fn parse_file(app: &App, path: &str, text: &str) -> Result<(Vec<(Setting, Wanted)>, bool), String> {
     let path = if path == "-" { "stdin" } else { path };
     let not_ours = || format!("{path} isn't a file from `rogctl settings export`");
-    let json: Json = serde_json::from_str(text).map_err(|e| format!("{path}: {e}"))?;
-    let version = json
-        .get("version")
-        .and_then(Json::as_u64)
-        .ok_or_else(not_ours)?;
-    if version != FORMAT_VERSION {
-        return Err(format!(
-            "{path} is in format {version}, from a newer rogctl; this one reads {FORMAT_VERSION}"
-        ));
+    let file: Imported = serde_json::from_str(text).map_err(|e| format!("{path}: {e}"))?;
+    match file.version {
+        Some(FORMAT_VERSION) => {}
+        Some(version) if version > FORMAT_VERSION => {
+            return Err(format!(
+                "{path} is in format {version}, from a newer rogctl; this one reads \
+                 {FORMAT_VERSION}"
+            ));
+        }
+        Some(_) | None => return Err(not_ours()),
     }
-    let model = json
-        .get("model")
-        .and_then(Json::as_str)
-        .ok_or_else(not_ours)?;
+    let model = file.model.ok_or_else(not_ours)?;
     let name = app.model.map_or("", |m| m.name);
     if model != name {
         return Err(format!(
@@ -453,15 +528,21 @@ fn parse_file(app: &App, path: &str, text: &str) -> Result<Vec<(Setting, Wanted)
              settings onto the same model"
         ));
     }
-    let settings = json
-        .get("settings")
-        .and_then(Json::as_object)
-        .ok_or_else(not_ours)?;
     let mut wanted = Vec::new();
-    for (key, value) in settings {
-        let setting = find(app, key).map_err(|e| format!("{path}: {e}"))?;
-        let text = match value {
-            Json::String(_) | Json::Number(_) | Json::Bool(_) => json_text(value),
+    let mut skipped = false;
+    for (key, value) in file.settings.ok_or_else(not_ours)?.0 {
+        let setting = match find(app, &key) {
+            Ok(setting) => setting,
+            // The model has it, so the mouse just didn't report it.
+            Err(_) if model_has(app, &key) => {
+                eprintln!("Skipped: {key}: the {name} didn't report it this time");
+                skipped = true;
+                continue;
+            }
+            Err(e) => return Err(format!("{path}: {e}")),
+        };
+        let text = match &value {
+            Json::String(_) | Json::Number(_) | Json::Bool(_) => json_text(&value),
             Json::Null | Json::Array(_) | Json::Object(_) => {
                 return Err(format!("{path}: {key} isn't a number or name"));
             }
@@ -469,7 +550,8 @@ fn parse_file(app: &App, path: &str, text: &str) -> Result<Vec<(Setting, Wanted)
         let value = parse_value(app, setting, &text).map_err(|e| format!("{path}: {e}"))?;
         wanted.push((setting, value));
     }
-    in_order(app, wanted).map_err(|e| format!("{path}: {e}"))
+    let wanted = in_order(app, wanted).map_err(|e| format!("{path}: {e}"))?;
+    Ok((wanted, skipped))
 }
 
 // ---------------------------------------------------------------------------
@@ -492,18 +574,23 @@ fn plan(app: &App, wanted: Wanted) -> Result<Planned, Refusal> {
 /// back, so one an earlier change altered is set back. A setting refused only
 /// then stops `set` (exit 1) and is skipped by `import`; one the read-back
 /// left out (lighting that didn't read) stops either if it was due, else is
-/// noted. If the mouse stops answering, a change still due stops it (3
+/// noted. After each change the mouse must read back what was asked, or it
+/// stops with 1. If the mouse stops answering, a change still due stops it (3
 /// asleep, 1 a read error); with only settings already right left, it notes
 /// they couldn't be checked again and exits 0. Exits as `rogctl battery`
 /// does; a change made but whose save the mouse didn't confirm still exits
 /// 0, with a warning. `send` makes one change: `send()` below.
 fn apply_all(
     app: &mut App,
-    mut send: impl FnMut(&mut App, &Planned) -> Result<(), u8>,
+    mut send: impl FnMut(&mut App, &Planned) -> Result<Option<String>, u8>,
     wanted: Vec<(Setting, Wanted)>,
     dry_run: bool,
-    import: bool,
+    kind: Kind,
 ) -> u8 {
+    let (import, skipped_before) = match kind {
+        Kind::Set => (false, false),
+        Kind::Import { skipped } => (true, skipped),
+    };
     let mut trial = app.clone();
     let mut checks = Vec::new();
     for &(setting, w) in &wanted {
@@ -535,7 +622,7 @@ fn apply_all(
         });
     }
     if !checks.contains(&Check::Due) {
-        if import && !checks.contains(&Check::Skipped) {
+        if import && !skipped_before && !checks.contains(&Check::Skipped) {
             println!("Nothing to change: the mouse already has these settings");
         }
         return 0;
@@ -554,13 +641,7 @@ fn apply_all(
         // Each is planned again from what the last change read back, which
         // needs the mouse: a change can change another setting with it.
         if app.link != Link::Connected {
-            let (why, code) = match &app.link {
-                Link::Error(e) => (format!("couldn't read the mouse back: {e}"), EXIT_ERROR),
-                Link::Asleep | Link::Disconnected | Link::Connected => (
-                    "the mouse went to sleep or out of range".to_owned(),
-                    EXIT_ASLEEP,
-                ),
-            };
+            let (why, code) = lost(&app.link);
             if checks[i..].contains(&Check::Due) {
                 eprintln!("Stopped: {why}");
                 return stopped(made, code);
@@ -603,12 +684,53 @@ fn apply_all(
                 return stopped(made, EXIT_ERROR);
             }
         };
-        if let Err(code) = send(app, &planned) {
-            return stopped(made, code);
-        }
+        let unsaved = match send(app, &planned) {
+            Ok(unsaved) => unsaved,
+            Err(code) => return stopped(made, code),
+        };
+        // The mouse echoed the change; check it has it, as the settings
+        // screen shows what's read back. An encoding rogctl has wrong for a
+        // mouse (untested ones) shows up here.
+        // Has a value for it: the active stage can be unknown.
+        let reported = shown(app, setting).is_some();
         made += 1;
+        if app.link == Link::Connected
+            && reported
+            && !matches!(plan(app, w), Err(Refusal::Unchanged(_)))
+        {
+            let now = shown(app, setting).unwrap_or_default();
+            let unconfirmed = if unsaved.is_some() {
+                " (and didn't confirm saving it)"
+            } else {
+                ""
+            };
+            eprintln!("The mouse took the change{unconfirmed}, but {key} reads back {now}");
+            return stopped(made, EXIT_ERROR);
+        }
+        let demo = if app.demo { "Demo: " } else { "" };
+        match &unsaved {
+            Some(warning) => eprintln!("{demo}{warning}"),
+            None => println!("{demo}{}", planned.done),
+        }
+        // An unsaved warning already says the mouse went to sleep.
+        if app.link != Link::Connected && !(unsaved.is_some() && app.link == Link::Asleep) {
+            let (why, _) = lost(&app.link);
+            eprintln!("Couldn't check {key} after the change: {why}");
+        } else if app.link == Link::Connected && !reported {
+            eprintln!("Couldn't check {key}: the mouse didn't report it after the change");
+        }
     }
     0
+}
+
+/// Which command `apply_all` runs for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Set,
+    /// `skipped`: reading the file skipped a setting, and said so.
+    Import {
+        skipped: bool,
+    },
 }
 
 /// What checking a wanted value against a copy of the settings found.
@@ -618,6 +740,17 @@ enum Check {
     AlreadySet,
     /// `import` only: it can't be changed now, and said so.
     Skipped,
+}
+
+/// Why the mouse can't be read, and the exit code for it.
+fn lost(link: &Link) -> (String, u8) {
+    match link {
+        Link::Error(e) => (format!("couldn't read the mouse back: {e}"), EXIT_ERROR),
+        Link::Asleep | Link::Disconnected | Link::Connected => (
+            "the mouse went to sleep or out of range".to_owned(),
+            EXIT_ASLEEP,
+        ),
+    }
 }
 
 fn stopped(made: usize, code: u8) -> u8 {
@@ -630,21 +763,23 @@ fn stopped(made: usize, code: u8) -> u8 {
 }
 
 /// How `apply_all` makes a change: on the mouse, or in demo mode (no
-/// device) only in `app`.
-fn send(device: Option<&Device>) -> impl FnMut(&mut App, &Planned) -> Result<(), u8> + '_ {
+/// device) only in `app`. Ok with the warning to give if the mouse didn't
+/// confirm saving it; Err with the exit code if it wasn't made.
+fn send(
+    device: Option<&Device>,
+) -> impl FnMut(&mut App, &Planned) -> Result<Option<String>, u8> + '_ {
     move |app, planned| match device {
         Some(device) => apply_one(app, device, planned),
         None => {
             app.simulate(&planned.change);
-            println!("Demo: {}", planned.done);
-            Ok(())
+            Ok(None)
         }
     }
 }
 
-/// Sends one change, then shows what the mouse read back in `app`. Err with
-/// the exit code if it wasn't made.
-fn apply_one(app: &mut App, device: &Device, planned: &Planned) -> Result<(), u8> {
+/// Sends one change, then shows what the mouse read back in `app`. As
+/// [`send`] returns.
+fn apply_one(app: &mut App, device: &Device, planned: &Planned) -> Result<Option<String>, u8> {
     let wireless = device.model.wireless;
     let applied = device.apply(&planned.change);
     let model = Some(device.model);
@@ -670,14 +805,13 @@ fn apply_one(app: &mut App, device: &Device, planned: &Planned) -> Result<(), u8
         &device.hidraw,
         asleep,
     ) {
-        Report::Done(text) => println!("{text}"),
-        Report::Unsaved(text) => eprintln!("{text}"),
+        Report::Done(_) => Ok(None),
+        Report::Unsaved(text) => Ok(Some(text)),
         Report::Failed { text, asleep } => {
             eprintln!("{text}");
-            return Err(if asleep { EXIT_ASLEEP } else { EXIT_ERROR });
+            Err(if asleep { EXIT_ASLEEP } else { EXIT_ERROR })
         }
     }
-    Ok(())
 }
 
 /// How a change went, in words, for the settings screen and the CLI alike.
@@ -825,6 +959,12 @@ mod tests {
                 .unwrap_err()
                 .starts_with("Unknown setting speed")
         );
+        let mut unlit = app.clone();
+        unlit.settings.lighting = None;
+        assert_eq!(
+            find(&unlit, "colour"),
+            Err("The ROG Harpe II Ace didn't report colour this time: try again".into())
+        );
         let keys: Vec<String> = settings_of(&app).iter().map(|(s, _)| s.key()).collect();
         assert_eq!(
             keys[..6],
@@ -862,13 +1002,13 @@ mod tests {
         let before = app.settings.clone();
         let list = wanted(&app, &["dpi-1=800", "dpi-2=99999"]).unwrap();
         assert_eq!(
-            apply_all(&mut app, send(None), list, false, false),
+            apply_all(&mut app, send(None), list, false, Kind::Set),
             EXIT_ERROR
         );
         assert_eq!(app.settings, before);
 
         let list = wanted(&app, &["power-saving-rate=250", "power-saving=on"]).unwrap();
-        assert_eq!(apply_all(&mut app, send(None), list, false, false), 0);
+        assert_eq!(apply_all(&mut app, send(None), list, false, Kind::Set), 0);
         let saving = app.settings.power_saving.unwrap();
         assert!(saving.on);
         assert_eq!(saving.rate, PollingRate::HZ_250);
@@ -879,7 +1019,7 @@ mod tests {
         let mut app = demo(app::DEMO_MODEL);
         let before = app.settings.clone();
         let list = wanted(&app, &["dpi-1=800", "polling-rate=500"]).unwrap();
-        assert_eq!(apply_all(&mut app, send(None), list, true, false), 0);
+        assert_eq!(apply_all(&mut app, send(None), list, true, Kind::Set), 0);
         assert_eq!(app.settings, before);
     }
 
@@ -888,9 +1028,14 @@ mod tests {
     fn every_model_imports_its_own_export() {
         for model in MODELS {
             let app = demo(model.name);
-            let text = to_json(&app, true).unwrap();
-            let list = parse_file(&app, "file", &text).unwrap();
-            assert_eq!(list.len(), settings_of(&app).len(), "{}", model.name);
+            let text = to_json(&app, Form::File).unwrap();
+            let (list, skipped) = parse_file(&app, "file", &text).unwrap();
+            assert!(!skipped);
+            let exported = settings_of(&app)
+                .iter()
+                .filter(|&&(s, _)| s != Setting::ActiveStage)
+                .count();
+            assert_eq!(list.len(), exported, "{}", model.name);
             for (setting, w) in list {
                 assert!(
                     matches!(plan(&app, w), Err(Refusal::Unchanged(_))),
@@ -921,8 +1066,24 @@ mod tests {
                 .contains("newer rogctl")
         );
         assert!(parse_file(&app, "f", &file(harpe, 1, r#""speed":1"#)).is_err());
+        assert!(
+            parse_file(&app, "f", &file(harpe, 1, r#""debounce":12"#))
+                .unwrap_err()
+                .contains("doesn't have debounce"),
+            "a setting the model lacks is refused, not skipped"
+        );
+        assert!(parse_file(&app, "f", &file(harpe, 1, r#""dpi-7":800"#)).is_err());
         assert!(parse_file(&app, "f", &file(harpe, 1, r#""dpi-1":[800]"#)).is_err());
         assert!(parse_file(&app, "f", r#"{"settings":{}}"#).is_err());
+        assert!(
+            parse_file(&app, "f", &file(harpe, 0, ""))
+                .unwrap_err()
+                .contains("isn't a file from")
+        );
+        assert_eq!(
+            parse_file(&app, "f", &file(harpe, 1, r#""dpi-1":800,"dpi-1":900"#)).unwrap_err(),
+            "f: dpi-1 is given twice"
+        );
         assert!(parse_file(&app, "f", "not json").is_err());
     }
 
@@ -930,8 +1091,17 @@ mod tests {
     fn import_skips_what_cant_change_now() {
         let mut app = demo(app::DEMO_MODEL);
         let text = file_with(&app, &[("effect", "\"rainbow\""), ("polling-rate", "500")]);
-        let list = parse_file(&app, "f", &text).unwrap();
-        assert_eq!(apply_all(&mut app, send(None), list, false, true), 0);
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
+        assert_eq!(
+            apply_all(
+                &mut app,
+                send(None),
+                list,
+                false,
+                Kind::Import { skipped: false }
+            ),
+            0
+        );
         assert_eq!(app.settings.polling_rate, Some(PollingRate::HZ_500));
     }
 
@@ -944,8 +1114,8 @@ mod tests {
             lighting.brightness = 35;
         }
         app.settings.low_battery_warning = Some(90);
-        let text = to_json(&app, false).unwrap();
-        let list = parse_file(&app, "f", &text).unwrap();
+        let text = to_json(&app, Form::File).unwrap();
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
         for (setting, w) in list {
             assert!(
                 matches!(plan(&app, w), Err(Refusal::Unchanged(_))),
@@ -972,12 +1142,74 @@ mod tests {
     /// A mouse that does what's sent, plus `side_effect` after each change.
     fn mouse(
         side_effect: impl Fn(&mut App, &Planned),
-    ) -> impl FnMut(&mut App, &Planned) -> Result<(), u8> {
+    ) -> impl FnMut(&mut App, &Planned) -> Result<Option<String>, u8> {
         move |app, planned| {
             app.simulate(&planned.change);
             side_effect(app, planned);
-            Ok(())
+            Ok(None)
         }
+    }
+
+    /// A mouse that echoes a change but doesn't make it: an encoding rogctl
+    /// has wrong. `set` says so and fails, and stops there.
+    #[test]
+    fn a_change_the_mouse_doesnt_read_back_fails() {
+        let mut app = demo(app::DEMO_MODEL);
+        let list = wanted(&app, &["polling-rate=500", "angle-snapping=on"]).unwrap();
+        let mut sent = 0;
+        let ignores = |_: &mut App, _: &Planned| {
+            sent += 1;
+            Ok(None)
+        };
+        assert_eq!(
+            apply_all(&mut app, ignores, list, false, Kind::Set),
+            EXIT_ERROR
+        );
+        assert_eq!(sent, 1, "stopped after the first");
+        assert_eq!(app.settings.polling_rate, Some(PollingRate::HZ_1000));
+    }
+
+    /// A reply naming no active stage, before and after picking one, can't
+    /// check the change: that's noted, not called a failure.
+    #[test]
+    fn an_active_stage_that_doesnt_read_back_is_noted() {
+        let mut app = demo(app::DEMO_MODEL);
+        app.settings.active_stage = None;
+        let list = wanted(&app, &["active-stage=2"]).unwrap();
+        let unread = mouse(|app, _| app.settings.active_stage = None);
+        assert_eq!(apply_all(&mut app, unread, list, false, Kind::Set), 0);
+    }
+
+    /// The DPI button changes the active stage, so `get --json` shows it but
+    /// `export` doesn't; a file with it imports it.
+    #[test]
+    fn the_active_stage_is_set_but_not_exported() {
+        let app = demo(app::DEMO_MODEL);
+        assert!(!to_json(&app, Form::File).unwrap().contains(ACTIVE_STAGE));
+        assert!(
+            to_json(&app, Form::Line)
+                .unwrap()
+                .contains(r#""active-stage":2"#)
+        );
+        assert!(get_text(&app).contains(ACTIVE_STAGE));
+        let text = file_with(&app, &[(ACTIVE_STAGE, "1")]);
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
+        assert!(list.iter().any(|&(s, _)| s == Setting::ActiveStage));
+    }
+
+    /// Lighting that didn't read this time is skipped, not the whole file.
+    #[test]
+    fn import_skips_a_setting_the_mouse_didnt_report() {
+        let mut app = demo(app::DEMO_MODEL);
+        let text = to_json(&app, Form::File).unwrap();
+        app.settings.lighting = None;
+        let (list, skipped) = parse_file(&app, "f", &text).unwrap();
+        assert!(skipped);
+        assert!(
+            !list
+                .iter()
+                .any(|&(s, _)| s == Setting::Control(Control::LightingEffect))
+        );
     }
 
     fn on_rate(planned: &Planned) -> bool {
@@ -994,7 +1226,7 @@ mod tests {
                 app.settings.angle_snapping = Some(true);
             }
         });
-        assert_eq!(apply_all(&mut app, flips, list, false, false), 0);
+        assert_eq!(apply_all(&mut app, flips, list, false, Kind::Set), 0);
         assert_eq!(app.settings.angle_snapping, Some(false));
     }
 
@@ -1013,15 +1245,24 @@ mod tests {
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=8000", "motion-sync=on"]).unwrap();
         assert_eq!(
-            apply_all(&mut app, syncless(), list, false, false),
+            apply_all(&mut app, syncless(), list, false, Kind::Set),
             EXIT_ERROR
         );
         assert_eq!(app.settings.polling_rate, Some(PollingRate::HZ_8000));
 
         let mut app = demo(app::DEMO_MODEL);
         let text = file_with(&app, &[("polling-rate", "8000")]);
-        let list = parse_file(&app, "f", &text).unwrap();
-        assert_eq!(apply_all(&mut app, syncless(), list, false, true), 0);
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
+        assert_eq!(
+            apply_all(
+                &mut app,
+                syncless(),
+                list,
+                false,
+                Kind::Import { skipped: false }
+            ),
+            0
+        );
     }
 
     /// Asleep after a change: stops if a change is still due, else says
@@ -1035,12 +1276,12 @@ mod tests {
         };
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=500", "angle-snapping=off"]).unwrap();
-        assert_eq!(apply_all(&mut app, sleeps(), list, false, false), 0);
+        assert_eq!(apply_all(&mut app, sleeps(), list, false, Kind::Set), 0);
 
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=500", "motion-sync=off"]).unwrap();
         assert_eq!(
-            apply_all(&mut app, sleeps(), list, false, false),
+            apply_all(&mut app, sleeps(), list, false, Kind::Set),
             EXIT_ASLEEP
         );
     }
@@ -1057,11 +1298,14 @@ mod tests {
         };
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=500", "angle-snapping=off"]).unwrap();
-        assert_eq!(apply_all(&mut app, fails(), list, false, false), 0);
+        assert_eq!(apply_all(&mut app, fails(), list, false, Kind::Set), 0);
 
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=500", "motion-sync=off"]).unwrap();
-        assert_eq!(apply_all(&mut app, fails(), list, false, false), EXIT_ERROR);
+        assert_eq!(
+            apply_all(&mut app, fails(), list, false, Kind::Set),
+            EXIT_ERROR
+        );
     }
 
     /// Lighting that didn't read back can't be changed or checked.
@@ -1076,11 +1320,14 @@ mod tests {
         };
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=500", "colour=red"]).unwrap();
-        assert_eq!(apply_all(&mut app, unlit(), list, false, false), 0);
+        assert_eq!(apply_all(&mut app, unlit(), list, false, Kind::Set), 0);
 
         let mut app = demo(app::DEMO_MODEL);
         let list = wanted(&app, &["polling-rate=500", "colour=blue"]).unwrap();
-        assert_eq!(apply_all(&mut app, unlit(), list, false, false), EXIT_ERROR);
+        assert_eq!(
+            apply_all(&mut app, unlit(), list, false, Kind::Set),
+            EXIT_ERROR
+        );
         assert_eq!(app.settings.lighting, None);
     }
 
@@ -1092,7 +1339,7 @@ mod tests {
             &app,
             &[("power-saving-rate", "250"), ("polling-rate", "500")],
         );
-        let list = parse_file(&app, "f", &text).unwrap();
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
         let unlocks = mouse(|app, p| {
             if on_rate(p)
                 && let Some(saving) = app.settings.power_saving.as_mut()
@@ -1100,14 +1347,23 @@ mod tests {
                 saving.on = true;
             }
         });
-        assert_eq!(apply_all(&mut app, unlocks, list, false, true), 0);
+        assert_eq!(
+            apply_all(
+                &mut app,
+                unlocks,
+                list,
+                false,
+                Kind::Import { skipped: false }
+            ),
+            0
+        );
         let saving = app.settings.power_saving.unwrap();
         assert_ne!(saving.rate, PollingRate::HZ_250);
     }
 
     /// The app's own export with some settings changed.
     fn file_with(app: &App, changes: &[(&str, &str)]) -> String {
-        let mut json: Json = serde_json::from_str(&to_json(app, false).unwrap()).unwrap();
+        let mut json: Json = serde_json::from_str(&to_json(app, Form::File).unwrap()).unwrap();
         for &(key, value) in changes {
             json["settings"][key] = serde_json::from_str(value).unwrap();
         }

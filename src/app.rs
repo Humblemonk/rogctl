@@ -1239,6 +1239,35 @@ mod tests {
         );
     }
 
+    /// `settings::model_has()` counts on this: every entry's demo shows
+    /// every setting its `Features` have.
+    #[test]
+    fn demo_shows_every_setting_the_model_has() {
+        for m in MODELS {
+            let f = &m.features;
+            let (_, s) = demo_state(f);
+            let name = m.name;
+            assert_eq!(s.stages.len(), usize::from(f.dpi.stages), "{name}");
+            assert_eq!(s.active_stage.is_some(), f.dpi.stages > 1, "{name}");
+            assert_eq!(
+                s.polling_rate.is_some(),
+                !f.polling_rates.is_empty(),
+                "{name}"
+            );
+            assert_eq!(s.debounce.is_some(), f.debounce, "{name}");
+            assert_eq!(s.angle_snapping.is_some(), f.angle_snapping, "{name}");
+            assert_eq!(s.angle_tuning.is_some(), f.angle_tuning.is_some(), "{name}");
+            assert_eq!(s.motion_sync.is_some(), f.motion_sync, "{name}");
+            assert_eq!(s.lift_off.is_some(), f.lift_off.is_some(), "{name}");
+            assert_eq!(s.power_off.is_some(), f.power_off.is_some(), "{name}");
+            let warning = f.low_battery_warning.is_some();
+            assert_eq!(s.low_battery_warning.is_some(), warning, "{name}");
+            let saving = !f.power_saving_rates.is_empty();
+            assert_eq!(s.power_saving.is_some(), saving, "{name}");
+            assert_eq!(s.lighting.is_some(), f.lighting.is_some(), "{name}");
+        }
+    }
+
     #[test]
     fn every_model_has_a_usable_demo() {
         for m in MODELS {

@@ -14,11 +14,12 @@ Settings from the command line.
 
 - `rogctl settings get`, `set`, `export` and `import`: read and change the mouse's settings
   without the settings screen, such as `rogctl settings set polling-rate=1000 dpi-2=1600`
-  from a script or a keybinding. `export` saves them all to a JSON file, and `import` puts
-  them back on the same model, changing only what differs, so importing at every login
-  doesn't write to the mouse each time. They check each value as the settings screen does,
-  and refuse a value the mouse doesn't take before changing anything. `--dry-run` shows what
-  would change. Keys and values are in the
+  from a script or a keybinding. `export` saves them to a JSON file (all but the active DPI
+  stage, which the DPI button changes), and `import` puts them back on the same model,
+  changing only what differs, so importing at every login doesn't write to the mouse each
+  time. They check each value as the settings screen does, refuse a value the mouse doesn't
+  take before changing anything, and check the mouse reads each change back. `--dry-run`
+  shows what would change. Keys and values are in the
   [command reference](cli.md#settings-from-the-command-line). Tested on a ROG Harpe II Ace.
 
 ### Changed
