@@ -19,8 +19,12 @@ paths:
   selects, the wheel steps like ←/→, a scale value sets the edit. Locked rows get no hit.
   Only clicks and the wheel are captured (`EnableClickCapture`), so pointer moves don't
   redraw.
-- After every change `apply_action()` reads the settings back, so the screen shows what the
+- After every change `Device::apply()` reads the settings back, so the screen shows what the
   mouse has, not what was asked for.
+- `App::change()` checks every value before it's sent, for Enter and clicks here and for
+  `rogctl settings set`/`import` (`settings.rs`): the model has the setting, the value is in
+  its range or `choices()`, the row isn't locked, the effect is one rogctl sends. A value
+  ←/→ can reach must always pass (`every_step_is_a_change_the_mouse_takes`).
 - Mice only: `Session::load()` uses `device::discover_mice()`, so a keyboard is never shown
   or written to (and `Connection::apply()` refuses one). `--demo` takes only names in
   `MODELS`.
@@ -34,7 +38,7 @@ paths:
   reads the battery (`12 07`) for the header and the active DPI stage (`12 00`), which the
   mouse's DPI button changes without telling rogctl, every 10 s, without dropping a pending
   edit; a mouse that went to sleep shows as asleep.
-- Since `tick()` compares only paths, `apply_action()` identifies the node again first
+- Since `tick()` compares only paths, `Device::apply()` identifies the node again first
   (`Device::is_unchanged()`: sysfs, and `01 A0` on an Omni receiver). If it isn't the model
   shown (a receiver swapped for one with the same product ID, another mouse paired, the
   node gone or not answering), nothing is sent and the mice are read again.
@@ -128,11 +132,15 @@ several models looks and behaves the same on all of them.
 2. `protocol.rs` tests: parse a hand-made or captured reply; check the exact request bytes.
 3. `models.rs`: fill the field for every G-Helper class that has it; extend
    `features_are_consistent()` if it has a range.
-4. `app.rs`: a `Control` (in its place in the row order) and `Value` variant, then `label()`,
-   `value()`, `rows()`, `step()`, `change_for()`, `choices()` if it's a short list, plus
-   `simulate()` and `demo_state()`. The compiler lists the matches to update.
+4. `app.rs`: a `Control` (in its place in the row order and in `Control::FIXED`) and `Value`
+   variant, then `label()`, `key()` (its name in `rogctl settings get`/`set` and exported
+   files; never rename one), `value()`, `rows()`, `step()`, `change_for()`, `checked()` if
+   its range isn't a `choices()` list, `choices()` if it's a short list or `named_values()`
+   if it takes names, plus `simulate()` and `demo_state()`. The compiler lists the matches
+   to update. `json_value()` in `settings.rs` too.
 5. `ui.rs`: usually nothing; rows draw through `row_line()`. If applying it does more than
    the value shows (lift-off also resets the sensor calibration), say so in the pending
    edit's hint there.
 6. README.md: the settings list, and the key table if a main key changes (the full list is
-   the `?` help). Say which mice have it.
+   the `?` help). Say which mice have it. `docs/cli.md`: its key and values in the table
+   under "Settings from the command line".

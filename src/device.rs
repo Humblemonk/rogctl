@@ -1,6 +1,6 @@
 //! Finding supported mice and keyboards over Linux hidraw, and talking to
-//! them. Each exchange writes one request and waits, with a deadline, for the reply that
-//! echoes it. The bytes are in `protocol.rs`.
+//! them. Each exchange writes one request and waits, with a deadline, for the
+//! reply that echoes it. The bytes are in `protocol.rs`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -227,10 +227,8 @@ fn omni_paired(hidraw: &Path) -> Result<Vec<u16>, QueryError> {
     packet[..bytes.len()].copy_from_slice(bytes);
     file.write_all(&packet)?;
     let deadline = Instant::now() + REPLY_TIMEOUT;
-    // The echo already has report ID 1; a rejection or empty packet doesn't,
-    // and another report on the interface could look empty.
     let reply = read_packet(&mut file, OMNI_REPORT_ID, deadline, |r| {
-        r[0] == OMNI_REPORT_ID && request.answered_by(r)
+        request.answered_by(r)
     })?;
     protocol::parse_omni_paired(&reply)
 }
@@ -301,6 +299,88 @@ impl Device {
     pub fn read_battery(&self) -> Result<Reading, QueryError> {
         self.connect()?.read_battery()
     }
+
+    /// The battery and, unless the mouse is asleep, every setting.
+    pub fn read(&self) -> Result<Outcome, QueryError> {
+        let mut conn = self.connect()?;
+        let reading = conn.read_battery()?;
+        if reading.is_asleep() {
+            return Ok(Outcome::Asleep);
+        }
+        let settings = conn.read_settings(&reading)?;
+        Ok(Outcome::Awake(reading, settings))
+    }
+
+    /// Changes one setting, saves it on the mouse, and reads everything
+    /// back. The only code that changes a mouse. Its callers are
+    /// `tui::apply_action`, on Enter, Space or a click, and
+    /// `settings::apply_all`, for `rogctl settings set` and `import`.
+    ///
+    /// `change` was made for this model's `Features`, so nothing is sent if
+    /// the node holds another mouse now (`is_unchanged`).
+    pub fn apply(&self, change: &Change) -> Applied {
+        if !self.is_unchanged() {
+            return Applied {
+                result: Err(ApplyError::Replaced),
+                read_back: None,
+            };
+        }
+        let mut conn = match self.connect() {
+            Ok(conn) => conn,
+            Err(e) => {
+                return Applied {
+                    result: Err(ApplyError::Open(e)),
+                    read_back: None,
+                };
+            }
+        };
+        let result = conn.apply(change);
+        drop(conn);
+        // Read back either way, so what's shown is what the mouse has.
+        Applied {
+            result,
+            read_back: Some(self.read()),
+        }
+    }
+}
+
+/// What reading a mouse found.
+#[derive(Debug)]
+pub enum Outcome {
+    Awake(Reading, MouseSettings),
+    Asleep,
+}
+
+/// What [`Device::apply`] did.
+#[derive(Debug)]
+pub struct Applied {
+    pub result: Result<(), ApplyError>,
+    /// The mouse read back after the change; None if nothing was sent.
+    pub read_back: Option<Result<Outcome, QueryError>>,
+}
+
+/// The device `order` puts first among those that answer, reading each in
+/// turn: the first awake, else the first asleep, else the first error. None
+/// with no devices.
+pub fn first_answering(
+    devices: &[Device],
+    order: impl IntoIterator<Item = usize>,
+) -> Option<(usize, Result<Outcome, QueryError>)> {
+    let mut fallback: Option<(usize, Result<Outcome, QueryError>)> = None;
+    for i in order {
+        let Some(device) = devices.get(i) else {
+            continue;
+        };
+        let outcome = device.read();
+        if matches!(outcome, Ok(Outcome::Awake(..))) {
+            return Some((i, outcome));
+        }
+        // Prefer a sleeping mouse over another node's error.
+        if fallback.as_ref().is_none_or(|(_, f)| f.is_err()) {
+            fallback = Some((i, outcome));
+        }
+    }
+    fallback
 }
 
 /// An open hidraw node, for several exchanges in a row.
@@ -402,9 +482,9 @@ impl Connection {
     }
 
     /// Changes one setting and saves it on the mouse. The only code that
-    /// writes settings; only `tui::apply_action` calls it. Never writes to a
+    /// writes settings; only `Device::apply` calls it. Never writes to a
     /// keyboard.
-    pub fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
+    fn apply(&mut self, change: &Change) -> Result<(), ApplyError> {
         let model = self.model;
         match model.kind {
             Kind::Mouse => {}
@@ -428,6 +508,10 @@ impl Connection {
 /// Which step of [`Connection::apply`] failed.
 #[derive(Debug)]
 pub enum ApplyError {
+    /// The node holds another mouse now, or doesn't answer: nothing was sent.
+    Replaced,
+    /// The node couldn't be opened: nothing was sent.
+    Open(io::Error),
     /// The mouse didn't take the change.
     NotChanged(QueryError),
     /// The mouse took the change, but the save failed, so it may be lost when
@@ -721,12 +805,12 @@ mod tests {
         let request = Battery::Percent.request(0x03);
         let mut keyboard_off = [0u8; 64];
         keyboard_off[..3].copy_from_slice(&[0x02, 0xff, 0xaa]);
-        let mut mouse_empty = [0u8; 64];
-        mouse_empty[0] = 0x02;
+        let mut keyboard_empty = [0u8; 64];
+        keyboard_empty[0] = 0x02;
         let mut battery = [0u8; 64];
         battery[..6].copy_from_slice(&[0x03, 0x12, 0x07, 0, 0, 0x50]);
         receiver.send(&keyboard_off).unwrap();
-        receiver.send(&mouse_empty).unwrap();
+        receiver.send(&keyboard_empty).unwrap();
         receiver.send(&battery).unwrap();
         let deadline = Instant::now() + Duration::from_millis(50);
         let reply = read_packet(&mut file, 0x03, deadline, |r| request.answered_by(r)).unwrap();
@@ -913,7 +997,11 @@ mod tests {
     }
 
     /// A rejection with no echo is asked once more; rejected again, it's
-    /// reported.
+    /// reported. The first half is what a Harpe II Ace on the SpeedNova did
+    /// just after it was turned on, captured read-only on 2026-11-02 during an
+    /// active-stage change: the change's echo, `03 ff aa` 7 ms later for the
+    /// save (on the mouse's report ID, so `read_packet` keeps it), no echo,
+    /// then the second save's echo 154 ms later.
     #[test]
     fn apply_asks_once_more_after_a_rejection() {
         let (result, got) = apply_to_fake(vec![

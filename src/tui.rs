@@ -1,5 +1,5 @@
-//! `rogctl settings`: the terminal, the event loop, and [`apply_action`], the only
-//! place that changes a mouse's settings.
+//! `rogctl settings`: the terminal, the event loop, and [`apply_action`], which
+//! changes a mouse's settings on Enter, Space or a click.
 
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
@@ -13,9 +13,9 @@ use ratatui::layout::Size;
 
 use crate::ASLEEP_RETRY;
 use crate::app::{self, Action, App, Link};
-use crate::device::{self, ApplyError, Device, QueryError};
-use crate::models::MODELS;
-use crate::protocol::{MouseSettings, Reading};
+use crate::device::{self, ApplyError, Device, Outcome, QueryError};
+use crate::protocol::MouseSettings;
+use crate::settings::{self, Report};
 use crate::ui::{self, ColorMode};
 
 /// How long to wait for a key before checking on the mouse.
@@ -29,23 +29,11 @@ const BATTERY_POLL: Duration = Duration::from_secs(10);
 
 /// `demo`: `Some` runs without a mouse, as the named model or the default.
 pub fn run(demo: Option<Option<String>>) -> ExitCode {
-    let demo_model = match demo {
-        Some(name) => {
-            let name = name.as_deref().unwrap_or(app::DEMO_MODEL);
-            let Some(model) = app::find_model(name) else {
-                let mut names: Vec<&str> = Vec::new();
-                for m in MODELS {
-                    if !names.contains(&m.name) {
-                        names.push(m.name);
-                    }
-                }
-                eprintln!("Unknown model {name:?}. --demo takes one of:");
-                for name in names {
-                    eprintln!("  {name}");
-                }
-                return ExitCode::FAILURE;
-            };
-            Some(model)
+    let demo_model = match demo.map(|name| app::demo_model(name.as_deref())) {
+        Some(Ok(model)) => Some(model),
+        Some(Err(e)) => {
+            eprint!("{e}");
+            return ExitCode::FAILURE;
         }
         None => None,
     };
@@ -170,8 +158,8 @@ fn draw(
     Ok((frame.area.as_size(), hits))
 }
 
-/// Carries out what a key or click asked for. The only caller of
-/// `Connection::apply`, so the only code that changes the mouse.
+/// Carries out what a key or click asked for. A change goes through
+/// `Device::apply`, the only code that changes the mouse.
 fn apply_action(app: &mut App, session: &mut Session, action: Action) {
     match action {
         Action::Refresh if app.demo => app.ok("Demo: nothing to read"),
@@ -197,10 +185,9 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                 app.error("No mouse connected");
                 return;
             };
-            // `tick()` only notices a node's path changing, so the mouse on it
-            // may not be the one shown, and `change` was made for that one's
-            // `Features`.
-            if !dev.is_unchanged() {
+            let (wireless, hidraw) = (dev.model.wireless, dev.hidraw.clone());
+            let applied = dev.apply(&change);
+            if matches!(applied.result, Err(ApplyError::Replaced)) {
                 let current = session.current_path();
                 session.load(app, current.as_slice());
                 app.error(
@@ -208,56 +195,16 @@ fn apply_action(app: &mut App, session: &mut Session, action: Action) {
                 );
                 return;
             }
-            let mut conn = match dev.connect() {
-                Ok(conn) => conn,
-                Err(e) => {
-                    app.error(format!("Couldn't open {}: {e}", dev.hidraw.display()));
-                    return;
-                }
-            };
-            let wireless = dev.model.wireless;
-            let applied = conn.apply(&change);
-            // Read back either way, so the screen shows what the mouse has.
-            let outcome = read(&mut conn);
-            drop(conn);
-            session.show_outcome(app, outcome);
-            match applied {
-                Ok(()) => app.ok(done),
-                Err(ApplyError::NotChanged(e)) if e.means_asleep(wireless) => {
-                    app.error(format!("No change made: the mouse didn't answer ({e})"));
-                }
-                Err(ApplyError::NotChanged(e)) => app.error(format!("No change made: {e}")),
-                // The read-back found the mouse asleep: that, not the save,
-                // is what the user can act on.
-                Err(ApplyError::NotSaved(_)) if app.link == Link::Asleep => app.error(format!(
-                    "{done}, but the mouse went to sleep or out of range before confirming \
-                     the save"
-                )),
-                // A Harpe II Ace keeps such a change (protocol.md); another
-                // mouse may not.
-                Err(ApplyError::NotSaved(QueryError::Rejected)) => app.error(format!(
-                    "{done}, but the mouse didn't confirm saving it: it may not last a power cycle"
-                )),
-                Err(ApplyError::NotSaved(e)) => {
-                    app.error(format!("{done}, but not saved on the mouse: {e}"));
-                }
+            if let Some(outcome) = applied.read_back {
+                session.show_outcome(app, outcome);
+            }
+            let asleep = app.link == Link::Asleep;
+            match settings::describe(&applied.result, &done, wireless, &hidraw, asleep) {
+                Report::Done(text) => app.ok(text),
+                Report::Unsaved(text) | Report::Failed { text, .. } => app.error(text),
             }
         }
     }
-}
-
-enum Outcome {
-    Awake(Reading, MouseSettings),
-    Asleep,
-}
-
-fn read(conn: &mut device::Connection) -> Result<Outcome, QueryError> {
-    let reading = conn.read_battery()?;
-    if reading.is_asleep() {
-        return Ok(Outcome::Asleep);
-    }
-    let settings = conn.read_settings(&reading)?;
-    Ok(Outcome::Awake(reading, settings))
 }
 
 #[derive(Default)]
@@ -299,23 +246,7 @@ impl Session {
                 .position(|p| *p == self.devices[i].hidraw)
                 .unwrap_or(usize::MAX)
         });
-        let mut fallback: Option<(usize, Result<Outcome, QueryError>)> = None;
-        for i in order {
-            let outcome = self.devices[i]
-                .connect()
-                .map_err(QueryError::from)
-                .and_then(|mut conn| read(&mut conn));
-            if matches!(outcome, Ok(Outcome::Awake(..))) {
-                self.current = i;
-                self.show_outcome(app, outcome);
-                return;
-            }
-            // Prefer showing a sleeping mouse over another node's error.
-            if fallback.as_ref().is_none_or(|(_, f)| f.is_err()) {
-                fallback = Some((i, outcome));
-            }
-        }
-        if let Some((i, outcome)) = fallback {
+        if let Some((i, outcome)) = device::first_answering(&self.devices, order) {
             self.current = i;
             self.show_outcome(app, outcome);
         }
@@ -326,10 +257,7 @@ impl Session {
         let Some(dev) = self.devices.get(self.current) else {
             return;
         };
-        let outcome = dev
-            .connect()
-            .map_err(QueryError::from)
-            .and_then(|mut conn| read(&mut conn));
+        let outcome = dev.read();
         self.show_outcome(app, outcome);
     }
 

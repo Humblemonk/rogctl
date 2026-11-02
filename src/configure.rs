@@ -202,18 +202,64 @@ fn color(stream: &impl IsTerminal) -> bool {
     stream.is_terminal() && !crate::no_color()
 }
 
+/// Whether a desktop's widget is installed, as the listing marks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Absent,
+    Installed,
+    Outdated,
+}
+
+impl Status {
+    fn of(desktop: Desktop) -> Self {
+        if is_outdated(desktop).unwrap_or(false) {
+            Self::Outdated
+        } else if is_installed(desktop).unwrap_or(false) {
+            Self::Installed
+        } else {
+            Self::Absent
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Absent => "",
+            Self::Installed => "installed",
+            Self::Outdated => "out of date",
+        }
+    }
+}
+
 fn choices(color: bool) -> String {
+    listing(&Desktop::ALL.map(|d| (d, Status::of(d))), color)
+}
+
+fn listing(statuses: &[(Desktop, Status)], color: bool) -> String {
     let mut text = "\
 Usage: rogctl configure DESKTOP [--remove] [--force]
 
 Installs the battery widget for DESKTOP, or with --remove removes it:
 "
     .to_owned();
-    for desktop in Desktop::ALL {
-        text += &format!("  {:<12}{}\n", desktop.name(), desktop.description());
+    let width = statuses
+        .iter()
+        .map(|(d, _)| d.description().chars().count())
+        .max()
+        .unwrap_or(0);
+    for &(desktop, status) in statuses {
+        let line = format!(
+            "  {:<12}{:<width$}  {}",
+            desktop.name(),
+            desktop.description(),
+            status.label()
+        );
+        text += line.trim_end();
+        text += "\n";
     }
-    for desktop in outdated() {
-        text += &format!("\n{}\n", outdated_message(desktop, color));
+    for &(desktop, status) in statuses {
+        if status == Status::Outdated {
+            text += &format!("\n{}\n", outdated_message(desktop, color));
+        }
     }
     text
 }
@@ -250,6 +296,19 @@ fn is_outdated(desktop: Desktop) -> Result<bool> {
         Desktop::Dms => dms()?.is_outdated(),
         Desktop::Kde => Ok(package_outdated(&kde_dir()?, &KDE, "/KPlugin/Version")),
         Desktop::Gnome => Ok(package_outdated(&gnome_dir()?, &GNOME, "/version-name")),
+    }
+}
+
+/// `false` for Waybar, whose config rogctl doesn't edit, and when rogctl
+/// can't tell.
+fn is_installed(desktop: Desktop) -> Result<bool> {
+    match desktop {
+        Desktop::Noctalia => noctalia()?.is_installed(),
+        Desktop::Waybar => Ok(false),
+        Desktop::Quickshell => quickshell()?.is_installed(),
+        Desktop::Dms => dms()?.is_installed(),
+        Desktop::Kde => kde_installed(),
+        Desktop::Gnome => gnome_installed(),
     }
 }
 
@@ -807,13 +866,14 @@ impl Copied {
 
     /// Whether rogctl installed this widget from an older version's bundle.
     /// Goes by the record, not the files, so the user's own edits don't count.
-    /// `false` with no record, or once every recorded file is gone.
+    /// `false` with no record, or once every recorded file but the user's
+    /// settings is gone.
     fn is_outdated(&self) -> Result<bool> {
         let Some(text) = self.read_record_text()? else {
             return Ok(false);
         };
         let mut record = parse_record(&text);
-        if !record.iter().any(|(path, _)| self.dir.join(path).exists()) {
+        if !self.any_present(&record) {
             return Ok(false);
         }
         let mut current = self.bundle_entries();
@@ -822,6 +882,21 @@ impl Copied {
         // Records written before rogctl recorded its version count as older.
         let version = text.lines().find_map(|l| l.strip_prefix("version "));
         Ok(record != current && is_older(version, env!("CARGO_PKG_VERSION")))
+    }
+
+    /// Whether any of the widget's files is there, by the record or, with
+    /// none, the bundle. The user's settings don't count: Quickshell's stay
+    /// after the widget is removed.
+    fn is_installed(&self) -> Result<bool> {
+        let entries = self.read_record()?.unwrap_or_else(|| self.bundle_entries());
+        Ok(self.any_present(&entries))
+    }
+
+    /// Whether any of `entries` but the user's settings is on disk.
+    fn any_present(&self, entries: &[Entry]) -> bool {
+        entries
+            .iter()
+            .any(|(path, _)| !self.bundle.is_users(path) && self.dir.join(path).exists())
     }
 
     fn bundle_entries(&self) -> Vec<Entry> {
@@ -1372,6 +1447,69 @@ mod tests {
             .iter()
             .fold(colored, |text, code| text.replace(code, ""));
         assert_eq!(stripped, plain);
+    }
+
+    #[test]
+    fn listing_marks_installed_widgets() {
+        let mut statuses = Desktop::ALL.map(|d| (d, Status::Absent));
+        let plain = listing(&statuses, false);
+        assert!(
+            plain.lines().all(|l| l == l.trim_end()),
+            "no trailing spaces"
+        );
+        assert!(!plain.contains("installed\n"));
+
+        statuses[0].1 = Status::Installed;
+        statuses[2].1 = Status::Outdated;
+        let text = listing(&statuses, false);
+        let lines: Vec<&str> = text.lines().collect();
+        let noctalia = lines.iter().find(|l| l.starts_with("  noctalia"));
+        let quickshell = lines.iter().find(|l| l.starts_with("  quickshell"));
+        assert!(noctalia.is_some_and(|l| l.ends_with("  installed")));
+        assert!(quickshell.is_some_and(|l| l.ends_with("  out of date")));
+        assert!(lines.contains(&"  dms         DankMaterialShell"));
+        assert_eq!(
+            noctalia.map(|l| l.rfind("  installed")),
+            quickshell.map(|l| l.rfind("  out of date")),
+            "the marks line up"
+        );
+        assert!(text.ends_with(&format!(
+            "\n\n{}\n",
+            outdated_message(Desktop::Quickshell, false)
+        )));
+        assert_eq!(text.matches("out of date. Run").count(), 1);
+    }
+
+    #[test]
+    fn installed_goes_by_the_widgets_own_files() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        assert_eq!(widget.is_installed(), Ok(false));
+        widget.install(false).unwrap();
+        assert_eq!(widget.is_installed(), Ok(true));
+        widget.remove(false).unwrap();
+        assert_eq!(widget.is_installed(), Ok(false));
+
+        // Quickshell's settings stay after a removal; they don't count.
+        let quickshell = Copied {
+            bundle: &QUICKSHELL,
+            ..copied(&temp, false)
+        };
+        write(quickshell.dir.join("RogMouseSettings.qml"), "edited");
+        assert_eq!(quickshell.is_installed(), Ok(false));
+        write(
+            quickshell.record.clone(),
+            &format!(
+                "version 2.6.0\n{:016x} RogMouse.qml\n{:016x} RogMouseSettings.qml\n",
+                checksum(b"old"),
+                checksum(b"old settings")
+            ),
+        );
+        assert_eq!(quickshell.is_installed(), Ok(false), "removed by hand");
+        assert_eq!(quickshell.is_outdated(), Ok(false), "removed by hand");
+        fs::remove_file(&quickshell.record).unwrap();
+        write(quickshell.dir.join("RogMouse.qml"), "by hand");
+        assert_eq!(quickshell.is_installed(), Ok(true), "no record");
     }
 
     #[test]

@@ -21,8 +21,8 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   the node (GearLink, a widget's `rogctl watch`) can cause a stray one. They do carry the
   request's report ID, rejections included (`03 ff aa` from the SpeedNova with the Harpe II
   Ace off, `02 ff aa` from the Omni receiver with the Falchion RX off), so `read_packet`
-  ignores a reply on another report ID. The report ID of the mouse's own rejection of a
-  first save (below) wasn't recorded.
+  ignores a reply on another report ID. The Harpe II Ace's own rejection of a first save
+  (below) comes on its report ID too: `03 ff aa` on the SpeedNova.
 - Battery (`12 07`): byte 10 = charging; the level is byte 5 as a percentage, or a 0-4 level
   ×25 in byte 5 or 7 on older mice (`Battery::Quarters`). `Features::power_off` names the
   power-off byte (usually 6); byte 7 is the low-battery warning.
@@ -151,7 +151,10 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 - The Harpe II Ace on the SpeedNova answers the first save (`50 03`) after it sat unused or
   was just turned on with `FF AA`, for active-stage and polling-rate changes alike, and
   sometimes sends the save's echo 1 ms later; the change survives a power cycle either way
-  (captured read-only, with only rogctl and its widget on the node). G-Helper logs such
+  (captured read-only, with only rogctl and its widget on the node). Captured again on
+  2026-11-02 just after power-on, for an active-stage change: the change's echo, `03 ff aa`
+  7 ms later, no echo, then the second save's echo 154 ms later, and the stage read back
+  changed (`apply_asks_once_more_after_a_rejection`). G-Helper logs such
   errors and carries on. `Connection::write()` keeps waiting up to 150 ms for the echo of a
   change or save after an `FF AA` (this mouse answers a read in about 5 ms, or 70 ms after
   sitting unused); with none, `Connection::apply()` asks for the save once more, which the
