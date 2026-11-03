@@ -1,0 +1,79 @@
+name: Release binaries
+
+# Builds rogctl for each Linux architecture and attaches the archives to the GitHub release.
+# Runs when a release is published; run it by hand to backfill an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build, e.g. v2.8.0"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux only: rogctl talks to the devices through /dev/hidraw.
+        # 22.04 for an older glibc (2.35), so the binary runs on more distros.
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # gh release upload
+
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TARGET: ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          persist-credentials: false
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::Tag $TAG doesn't match Cargo.toml version $VERSION"
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Package
+        id: pkg
+        run: |
+          NAME="rogctl-${TAG}-${TARGET}"
+          BIN="target/$TARGET/release/rogctl"
+          "$BIN" --version
+
+          # The rule stays under udev/, so the readme's install command works here too.
+          mkdir -p "$NAME/udev"
+          cp "$BIN" README.md LICENSE docs/CHANGELOG.md "$NAME/"
+          cp udev/70-rogctl.rules "$NAME/udev/"
+
+          ARCHIVE="$NAME.tar.gz"
+          tar -czf "$ARCHIVE" "$NAME"
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.pkg.outputs.archive }}
+        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber --repo "$GITHUB_REPOSITORY"
