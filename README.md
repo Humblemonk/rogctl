@@ -36,8 +36,20 @@ receiver, a USB cable, or the ROG SpeedNova 8K and ROG Omni receivers. See
    paru -S rogctl        # or: yay -S rogctl
    ```
 
-   Elsewhere, build it with a Rust toolchain (`cargo`; most distributions package it as `rust`
-   or `rustup`). This puts `rogctl` in `~/.cargo/bin`, which needs to be on your `PATH`.
+   Elsewhere, download a prebuilt binary from the
+   [latest release](https://github.com/humblemonk/rogctl/releases/latest): the `x86_64` archive
+   for most PCs, `aarch64` for ARM. It needs glibc 2.35 or newer. Unpack it and copy `rogctl`
+   to `~/.local/bin`, which needs to be on your `PATH`:
+
+   ```sh
+   sha256sum -c rogctl-*-x86_64-unknown-linux-gnu.tar.gz.sha256
+   tar -xzf rogctl-*-x86_64-unknown-linux-gnu.tar.gz
+   cd rogctl-*-x86_64-unknown-linux-gnu/
+   install -Dm755 rogctl ~/.local/bin/rogctl
+   ```
+
+   Or build it with a Rust toolchain (`cargo`; most distributions package it as `rust` or
+   `rustup`). This puts `rogctl` in `~/.cargo/bin`, which needs to be on your `PATH`.
 
    ```sh
    git clone https://github.com/humblemonk/rogctl.git
@@ -47,7 +59,7 @@ receiver, a USB cable, or the ROG SpeedNova 8K and ROG Omni receivers. See
 
 3. **Allow access to the mouse and keyboard without root.** Skip this if you installed from the AUR. This
    installs a udev rule for the supported USB IDs. It opens only the one interface rogctl
-   uses on each device:
+   uses on each device. Run it in the unpacked archive's folder or the clone:
 
    ```sh
    sudo cp udev/70-rogctl.rules /etc/udev/rules.d/
