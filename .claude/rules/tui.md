@@ -26,6 +26,9 @@ paths:
   `rogctl settings set`/`import` (`settings.rs`): the model has the setting, the value is in
   its range or `choices()`, the row isn't locked, the effect is one rogctl sends. A value
   ←/→ can reach must always pass (`every_step_is_a_change_the_mouse_takes`).
+- `rogctl settings get`/`set`/`export`/`import` (`settings.rs`) are described in
+  `docs/cli.md`: keys and values, `--dry-run`, the read-back check, what export leaves out
+  and import skips, the file format and exit codes. A change to them updates it too.
 - Mice only: `Session::load()` uses `device::discover_mice()`, so a keyboard is never shown
   or written to (and `Connection::apply()` refuses one). `--demo` takes only names in
   `MODELS`.
