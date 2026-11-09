@@ -3,6 +3,7 @@ paths:
   - "src/protocol.rs"
   - "src/device.rs"
   - "src/models.rs"
+  - "udev/**"
 ---
 
 # Hardware protocol
