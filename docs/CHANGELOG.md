@@ -6,6 +6,15 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## Unreleased
+
+### Added
+
+- Prebuilt binaries for x86_64 and aarch64 Linux (glibc 2.35 or newer) on each
+  [GitHub release](https://github.com/humblemonk/rogctl/releases), so you don't need a Rust
+  toolchain outside Arch. Each archive has the udev rule and a SHA-256 checksum; the readme
+  explains how to install it.
+
 ## 2.8.0 — 2026-11-02
 
 Settings from the command line.

@@ -156,7 +156,7 @@ Don't fix a P2 or P3 without asking.
   (`protocol.md` explains how, read-only, with ASUS GearLink).
 - Say in the commit or PR body which mice a change depends on, and whether and how it was
   tested on hardware. Only one mouse and one keyboard have been: see `protocol.md`.
-  CONTRIBUTING.md has the commit and pull request conventions.
+  CONTRIBUTING.md has the commit and pull request conventions, and the release steps.
 - Have a session that didn't write it review any change that could cause a P0 or P1 (see
   Review), and every release. Give it the diff, the intent and the hardware results,
   including which mice weren't tested, not the author's conclusions about whether the code
