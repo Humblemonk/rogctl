@@ -144,6 +144,20 @@ The widgets share `Cargo.toml`'s version; `cargo test` fails until every manifes
   supported mice and keyboards, [docs/cli.md](docs/cli.md) for commands, flags, exit codes and JSON fields,
   and the widget's own readme for widget setup.
 
+## Releasing
+
+For maintainers:
+
+1. Set the version in `Cargo.toml` and the four widget manifests (`cargo test` fails until
+   they match), and change the changelog's **Unreleased** heading to the version and date.
+2. Tag the release commit `vX.Y.Z`, the version in `Cargo.toml`, and push the tag.
+3. Publish a GitHub release for the tag. Publishing is what builds the binaries: the
+   *Release binaries* workflow (`.github/workflows/release.yml`) attaches the x86_64 and
+   aarch64 archives and their checksums. Pushing a tag alone builds nothing. The workflow
+   stops if the tag doesn't match `Cargo.toml`. To build for a release that has no archives,
+   run the workflow by hand from the Actions tab with its tag.
+4. Update the AUR package with `scripts/aur-release.fish`, which needs the tag on GitHub.
+
 ## Reporting a problem
 
 Include:
