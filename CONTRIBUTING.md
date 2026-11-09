@@ -156,7 +156,6 @@ For maintainers:
    aarch64 archives and their checksums. Pushing a tag alone builds nothing. The workflow
    stops if the tag doesn't match `Cargo.toml`. To build for a release that has no archives,
    run the workflow by hand from the Actions tab with its tag.
-4. Update the AUR package with `scripts/aur-release.fish`, which needs the tag on GitHub.
 
 ## Reporting a problem
 
