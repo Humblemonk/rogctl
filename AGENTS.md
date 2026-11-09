@@ -4,10 +4,11 @@ Guidance for AI coding agents working in this repository. Human-facing docs are 
 [README.md](README.md).
 
 Topic detail lives in `.claude/rules/`. Read the matching file before editing (Claude Code
-loads them automatically): `protocol.md` for `protocol.rs`/`device.rs`/`models.rs` (packets,
-per-model differences, capturing unknown commands), `tui.md` for `app.rs`/`ui.rs`/`tui.rs`
-(behaviour, same UI for every mouse, adding a setting), `widgets.md` for the panel widgets,
-`main.rs`, `waybar.rs` and `configure.rs` (the JSON contract, keeping widgets alike).
+loads them automatically): `protocol.md` for `protocol.rs`/`device.rs`/`models.rs` and the
+udev rule (packets, per-model differences, capturing unknown commands), `tui.md` for
+`app.rs`/`ui.rs`/`tui.rs`/`settings.rs` (behaviour, same UI for every mouse, adding a
+setting), `widgets.md` for the panel widgets, `main.rs`, `waybar.rs` and `configure.rs` (the
+JSON contract, keeping widgets alike).
 
 ## Project
 
@@ -46,9 +47,9 @@ cargo test
 noctalia plugins lint noctalia/rog-mouse-battery
 ```
 
-CI also runs super-linter on changed files. jscpd allows 3% duplication, SonarQube's default
-quality gate (`.github/linters/.jscpd.json`): fix a clone with a shared helper rather than
-raising it.
+Where `noctalia` isn't installed, say its lint wasn't run; don't install it. CI also runs
+super-linter on changed files. jscpd allows 3% duplication, SonarQube's default quality gate
+(`.github/linters/.jscpd.json`): fix a clone with a shared helper rather than raising it.
 textlint checks Markdown wording: its terminology rule wants a lowercase "readme" outside
 filenames.
 
@@ -155,23 +156,25 @@ Don't fix a P2 or P3 without asking.
   (`protocol.md` explains how, read-only, with ASUS GearLink).
 - Say in the commit or PR body which mice a change depends on, and whether and how it was
   tested on hardware. Only one mouse and one keyboard have been: see `protocol.md`.
+  CONTRIBUTING.md has the commit and pull request conventions.
 - Have a session that didn't write it review any change that could cause a P0 or P1 (see
   Review), and every release. Give it the diff, the intent and the hardware results,
   including which mice weren't tested, not the author's conclusions about whether the code
   is right. Docs- or test-only changes can skip this.
 - Set the reviewer's reasoning effort by the worst finding the change could cause (Review's
   P0 and P1 lists), not by its size or its files: a one-line change to `change_request()`
-  is a P0 risk. `high` for a P0 risk and for a release. A P0 risk is anything that decides
-  whether a `51`/`50` packet is sent, with what value, or to which model: key and mouse
-  handling and `App::change()` in `app.rs`, `tui.rs`, `settings.rs`'s parsing and
-  `apply_all()`, the write path to `save_request()`, `Features` in `models.rs`, discovery
-  and Omni pairing in `device.rs`. So are `configure`'s file writes
-  and anything that starts, restarts or stops `rogctl watch` or waits in its loop, widgets
-  included. A release is reviewed over the diff since the last release: its tag, or the
-  `Release x.y.z` commit if it wasn't tagged. `medium` for a P1 risk (reply parsing,
-  battery or settings display, JSON fields, exit codes, the rest of a widget); `low` for
-  anything else someone asks to have reviewed. When unsure, take the higher. Never go
-  above `high`.
+  is a P0 risk. When unsure, take the higher. Never go above `high`.
+  - `high`: a P0 risk, and every release. A P0 risk is anything that decides whether a
+    `51`/`50` packet is sent, with what value, or to which model: key and mouse handling
+    and `App::change()` in `app.rs`, `tui.rs`, `settings.rs`'s parsing and `apply_all()`,
+    the write path to `save_request()`, `Features` in `models.rs`, discovery and Omni
+    pairing in `device.rs`. So are `configure`'s file writes and anything that starts,
+    restarts or stops `rogctl watch` or waits in its loop, widgets included. A release is
+    reviewed over the diff since the last release: its tag, or the `Release x.y.z` commit
+    if it wasn't tagged.
+  - `medium`: a P1 risk (reply parsing, battery or settings display, JSON fields, exit
+    codes, the rest of a widget).
+  - `low`: anything else someone asks to have reviewed.
 
 ## Boundaries
 
@@ -183,11 +186,12 @@ Don't fix a P2 or P3 without asking.
   `set`/`import` with `--dry-run` against the real mouse, but never `set` or `import`
   without it. Test changes with `--demo` and unit tests.
 - **Don't change the user's system without asking first.** This includes `cargo install`,
-  `rogctl configure` (except against a scratch `HOME`, as `widgets.md` explains),
-  `noctalia msg plugins enable|disable`, editing anything under
-  `~/.config/noctalia` or `~/.local/state/noctalia`, installing udev rules, installing or
-  enabling any of the other widgets (`kpackagetool6`, `gnome-extensions`, DMS plugin links,
-  Waybar or Quickshell config edits), installing a desktop or shell to test with, and anything
-  needing `sudo`. Building and running from `target/` inside the repository is fine.
-- Don't commit or push unless asked. Public repository: <https://github.com/humblemonk/rogctl>,
-  branch `main`.
+  anything that downloads a Rust toolchain (`rustup`, `cargo +1.88 …`), `rogctl configure`
+  (except against a scratch `HOME`, as `widgets.md` explains),
+  `noctalia msg plugins enable|disable`, editing anything under `~/.config/noctalia` or
+  `~/.local/state/noctalia`, installing udev rules, installing or enabling any of the other
+  widgets (`kpackagetool6`, `gnome-extensions`, DMS plugin links, Waybar or Quickshell config
+  edits), installing a desktop or shell to test with, and anything needing `sudo`. Building
+  and running from `target/` inside the repository is fine.
+- Don't commit or push unless asked, and don't run `scripts/aur-release.fish`, which pushes
+  to the AUR. Public repository: <https://github.com/humblemonk/rogctl>, branch `main`.

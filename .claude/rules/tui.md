@@ -3,6 +3,7 @@ paths:
   - "src/app.rs"
   - "src/ui.rs"
   - "src/tui.rs"
+  - "src/settings.rs"
 ---
 
 # TUI
