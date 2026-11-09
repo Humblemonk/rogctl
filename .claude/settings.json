@@ -11,9 +11,6 @@
       "Bash(noctalia msg plugins *)",
       "Bash(kpackagetool6 *)",
       "Bash(gnome-extensions *)",
-      "Bash(scripts/aur-release.fish*)",
-      "Bash(./scripts/aur-release.fish*)",
-      "Bash(fish *aur-release.fish*)",
       "Edit(~/.config/noctalia/**)",
       "Edit(~/.local/state/noctalia/**)"
     ]
