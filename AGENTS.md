@@ -88,7 +88,7 @@ Control flow for a change: key → `App::handle_key()` → `App::change()` → `
   it). Its only callers are `tui::apply_action()` and `settings::apply_all()`.
 - `App::change()` (and `App::activate()` for the active stage) is the one check of a value
   for both: range, choices, locks. Don't check a value elsewhere or send one it refused.
-  `app.rs` and `ui.rs` never use `device`.
+  `app.rs` and `ui.rs` take only the `Model` type from `device`: no discovery or I/O.
 - Raw protocol bytes live only in `protocol.rs`, as named constants. `device.rs` moves bytes
   without knowing what they mean.
 - What a mouse supports lives in its `Features`. Code asks the features (or the settings read
@@ -193,5 +193,5 @@ Don't fix a P2 or P3 without asking.
   widgets (`kpackagetool6`, `gnome-extensions`, DMS plugin links, Waybar or Quickshell config
   edits), installing a desktop or shell to test with, and anything needing `sudo`. Building
   and running from `target/` inside the repository is fine.
-- Don't commit or push unless asked, and don't run `scripts/aur-release.fish`, which pushes
-  to the AUR. Public repository: <https://github.com/humblemonk/rogctl>, branch `main`.
+- Don't commit, push or publish a release or package unless asked. Public repository:
+  <https://github.com/humblemonk/rogctl>, branch `main`.
