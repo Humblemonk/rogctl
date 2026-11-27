@@ -1,6 +1,6 @@
 # Noctalia widget
 
-Shows your ASUS mouse's and keyboard's battery levels in the Noctalia bar. Needs Noctalia 5.1 or newer and
+Shows your ASUS mouse's and keyboard's battery levels in the Noctalia bar. Needs Noctalia 5.4 or newer and
 [rogctl installed](../README.md#getting-started).
 
 ## Install
@@ -26,7 +26,9 @@ widget's. A device that isn't plugged in is left out.
 
 ## Update or remove
 
-After updating rogctl, run `rogctl configure noctalia` again. To remove it:
+After updating rogctl, run `rogctl configure noctalia` again. If
+`~/.local/share/noctalia/plugins/rog-mouse-battery` is still a symbolic link to a checkout,
+from an old setup, rogctl leaves it alone: delete the link first. To remove it:
 
 ```sh
 rogctl configure noctalia --remove

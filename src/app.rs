@@ -10,7 +10,7 @@ use crate::device::Model;
 use crate::models::MODELS;
 use crate::protocol::{
     self, BRIGHTNESS_MAX, Change, Debounce, DpiStage, Effect, Features, LiftOff, Lighting,
-    MouseSettings, PollingRate, PowerOff, PowerSaving, Reading,
+    MouseSettings, PollingRate, PowerOff, PowerSaving, Reading, Warning,
 };
 
 /// GearLink's standard colours, offered for the lighting.
@@ -155,6 +155,9 @@ pub enum Value {
     LiftOff(LiftOff),
     PowerOff(PowerOff),
     Percent(u8),
+    /// A percentage's byte rogctl can't decode: a low-battery warning past
+    /// 100% (`protocol::Warning::percent()`), a brightness past 100%.
+    UnknownPercent(u8),
     Effect(Effect),
     Color([u8; 3]),
     Brightness(u8),
@@ -164,7 +167,8 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Dpi(dpi) => write!(f, "{dpi}"),
-            Self::PollingRate(rate) => write!(f, "{} Hz", rate.hz()),
+            Self::PollingRate(rate) if rate.is_known() => write!(f, "{} Hz", rate.hz()),
+            Self::PollingRate(rate) => write!(f, "Unknown ({:#04x})", rate.code()),
             Self::Debounce(d) if d.is_known() => write!(f, "{} ms", d.ms()),
             Self::Debounce(d) => write!(f, "Unknown ({:#04x})", d.code()),
             Self::Switch(true) => write!(f, "On"),
@@ -177,6 +181,7 @@ impl fmt::Display for Value {
             Self::PowerOff(p) => write!(f, "{p}"),
             Self::Percent(0) | Self::Brightness(0) => write!(f, "Off"),
             Self::Percent(pct) | Self::Brightness(pct) => write!(f, "{pct}%"),
+            Self::UnknownPercent(code) => write!(f, "Unknown ({code:#04x})"),
             Self::Effect(effect) => match effect {
                 Effect::Static => write!(f, "Static"),
                 Effect::Breathing => write!(f, "Breathing"),
@@ -316,6 +321,21 @@ impl App {
         self.reading = reading;
         self.settings = settings;
         self.edit = None;
+    }
+
+    /// Shows what a poll of a connected mouse read: the battery, the
+    /// power-off and warning that come with it, and the active `stage`
+    /// (None if it wasn't read). Keeps any pending edit. Another program
+    /// (GearLink) can change power-off or the warning, and changing one here
+    /// sends the other back as last read (`51 37`), so it must be this one.
+    pub fn polled(&mut self, reading: Reading, stage: Option<usize>) {
+        let s = &mut self.settings;
+        s.power_off = reading.power_off.or(s.power_off);
+        s.low_battery_warning = reading.low_battery_warning.or(s.low_battery_warning);
+        if let Some(stage) = stage.filter(|&i| i < s.stages.len()) {
+            s.active_stage = Some(stage);
+        }
+        self.reading = Some(reading);
     }
 
     pub fn ok(&mut self, text: impl Into<String>) {
@@ -471,12 +491,18 @@ impl App {
             Control::MotionSync => s.motion_sync.map(Value::Switch),
             Control::LiftOff => s.lift_off.map(Value::LiftOff),
             Control::PowerOff => s.power_off.map(Value::PowerOff),
-            Control::LowBatteryWarning => s.low_battery_warning.map(Value::Percent),
+            Control::LowBatteryWarning => s.low_battery_warning.map(|w| {
+                w.percent()
+                    .map_or(Value::UnknownPercent(w.code()), Value::Percent)
+            }),
             Control::PowerSaving => s.power_saving.map(|p| Value::Switch(p.on)),
             Control::PowerSavingRate => s.power_saving.map(|p| Value::PollingRate(p.rate)),
             Control::LightingEffect => s.lighting.map(|l| Value::Effect(l.effect)),
             Control::LightingColor => s.lighting.map(|l| Value::Color(l.color)),
-            Control::Brightness => s.lighting.map(|l| Value::Brightness(l.brightness)),
+            Control::Brightness => s.lighting.map(|l| match l.brightness {
+                pct @ 0..=BRIGHTNESS_MAX => Value::Brightness(pct),
+                code => Value::UnknownPercent(code),
+            }),
         }
     }
 
@@ -615,11 +641,7 @@ impl App {
         let Some(current) = self.shown(control) else {
             return;
         };
-        self.set_edit(
-            control,
-            step(f, rates(f, control), current, dir, big),
-            false,
-        );
+        self.set_edit(control, step(f, control, current, dir, big), false);
     }
 
     /// Whether ← and → would change what `control` shows, for drawing only
@@ -628,7 +650,7 @@ impl App {
         let (Some(f), Some(current)) = (self.features(), self.shown(control)) else {
             return (false, false);
         };
-        let moves = |dir| step(f, rates(f, control), current, dir, false) != current;
+        let moves = |dir| step(f, control, current, dir, false) != current;
         (moves(-1), moves(1))
     }
 
@@ -686,6 +708,7 @@ impl App {
                     | Value::LiftOff(_)
                     | Value::PowerOff(_)
                     | Value::Percent(_)
+                    | Value::UnknownPercent(_)
                     | Value::Effect(_)
                     | Value::Color(_)
                     | Value::Brightness(_),
@@ -826,6 +849,7 @@ impl App {
             Value::Effect(Effect::Unknown(_)) => {
                 Err(Refusal::Invalid(format!("{label}: unknown effect")))
             }
+            Value::UnknownPercent(_) => Err(Refusal::Invalid(format!("{label}: unknown value"))),
             Value::PollingRate(_)
             | Value::Debounce(_)
             | Value::Switch(_)
@@ -878,15 +902,19 @@ impl App {
             (Control::AngleTuning, Value::Degrees(d)) => Change::AngleTuning(d),
             (Control::MotionSync, Value::Switch(on)) => Change::MotionSync(on),
             (Control::LiftOff, Value::LiftOff(l)) => Change::LiftOff(l),
+            // The other half goes back as read, even a code rogctl doesn't
+            // offer, so it stays as the mouse had it (tui.md, "Unknown
+            // values show").
             (Control::PowerOff, Value::PowerOff(power_off)) => Change::Energy {
                 power_off,
-                low_battery_warning: s.low_battery_warning.unwrap_or(0),
+                low_battery_warning: s.low_battery_warning,
             },
-            // Power-off goes back as read, even an unknown code, so it stays as
-            // the mouse had it (tui.md, "Unknown values show").
-            (Control::LowBatteryWarning, Value::Percent(low_battery_warning)) => Change::Energy {
+            (Control::LowBatteryWarning, Value::Percent(percent)) => Change::Energy {
                 power_off: s.power_off.unwrap_or(PowerOff::NEVER),
-                low_battery_warning,
+                low_battery_warning: Some(Warning::from_percent(
+                    self.features()?.low_battery_warning?,
+                    percent,
+                )),
             },
             (Control::PowerSaving, Value::Switch(on)) => Change::PowerSaving(PowerSaving {
                 on,
@@ -956,7 +984,7 @@ impl App {
                 low_battery_warning,
             } => {
                 s.power_off = s.power_off.map(|_| power_off);
-                s.low_battery_warning = s.low_battery_warning.map(|_| low_battery_warning);
+                s.low_battery_warning = s.low_battery_warning.and(low_battery_warning);
             }
             Change::PowerSaving(p) => s.power_saving = Some(p),
             Change::Lighting(l) => s.lighting = Some(l),
@@ -984,10 +1012,11 @@ fn rates(f: &Features, control: Control) -> &'static [PollingRate] {
     }
 }
 
-/// The next value ←/→ gives. `big` (Shift, PgUp/PgDn) jumps further.
-/// `rates` are the polling rates the control offers.
-fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool) -> Value {
+/// The next value ←/→ gives `control`. `big` (Shift, PgUp/PgDn) jumps
+/// further.
+fn step(f: &Features, control: Control, current: Value, dir: i8, big: bool) -> Value {
     let up = dir > 0;
+    let rates = rates(f, control);
     match current {
         Value::Dpi(dpi) => {
             let by = f.dpi.step.max(50) * if big { 10 } else { 1 };
@@ -1036,6 +1065,15 @@ fn step(f: &Features, rates: &[PollingRate], current: Value, dir: i8, big: bool)
             Value::LiftOff(if up { LiftOff::High } else { LiftOff::Low })
         }
         Value::PowerOff(p) => Value::PowerOff(walk(&PowerOff::CHOICES, p, up, big)),
+        // As `walk()` steps from a value not among the choices.
+        Value::UnknownPercent(_) if control == Control::Brightness => {
+            Value::Brightness(if up { BRIGHTNESS_MAX } else { 0 })
+        }
+        Value::UnknownPercent(_) => match f.low_battery_warning {
+            Some(w) if up => Value::Percent(w.max),
+            Some(_) => Value::Percent(0),
+            None => current,
+        },
         Value::Percent(pct) => {
             let Some(w) = f.low_battery_warning else {
                 return current;
@@ -1129,7 +1167,9 @@ pub fn demo_state(f: &Features) -> (Reading, MouseSettings) {
         })
         .collect();
     let power_off = f.power_off.map(|_| PowerOff::from_code(4));
-    let low_battery_warning = f.low_battery_warning.map(|w| (20 / w.step).max(1) * w.step);
+    let low_battery_warning = f
+        .low_battery_warning
+        .map(|w| Warning::from_percent(w, (20 / w.step).max(1) * w.step));
     let reading = Reading {
         battery: 80,
         charging: false,
@@ -1203,6 +1243,29 @@ mod tests {
             Some(Action::Apply { change, .. }) => change,
             other => panic!("expected a change, got {other:?}"),
         }
+    }
+
+    /// The request bytes `change` sends on `app`'s mouse.
+    fn request(app: &App, change: &Change) -> Vec<u8> {
+        let model = app.model.unwrap();
+        protocol::change_request(model.report_id, &model.features, change)
+            .unwrap()
+            .bytes()
+            .to_vec()
+    }
+
+    /// Settings as read from a battery reply whose warning byte (7) is
+    /// `code`, and whose power-off byte is `power_off`.
+    fn read_energy(app: &mut App, power_off: u8, code: u8) {
+        let model = app.model.unwrap();
+        let mut reply = [0u8; 16];
+        reply[..3].copy_from_slice(&[model.report_id, 0x12, 0x07]);
+        reply[5] = 2;
+        reply[model.features.power_off.unwrap()] = power_off;
+        reply[7] = code;
+        let r = protocol::parse_battery(model.battery, &model.features, &reply).unwrap();
+        app.settings.power_off = r.power_off;
+        app.settings.low_battery_warning = r.low_battery_warning;
     }
 
     #[test]
@@ -1460,13 +1523,14 @@ mod tests {
     #[test]
     fn energy_changes_keep_the_other_value() {
         let mut app = demo("ROG Harpe II Ace");
+        let w = app.model.unwrap().features.low_battery_warning.unwrap();
         focus(&mut app, Control::LowBatteryWarning);
         press(&mut app, KeyCode::Right);
         assert_eq!(
             applied(press(&mut app, KeyCode::Enter)),
             Change::Energy {
                 power_off: PowerOff::from_code(4),
-                low_battery_warning: 30
+                low_battery_warning: Some(Warning::from_percent(w, 30))
             }
         );
 
@@ -1476,13 +1540,13 @@ mod tests {
             applied(press(&mut app, KeyCode::Enter)),
             Change::Energy {
                 power_off: PowerOff::NEVER,
-                low_battery_warning: 20
+                low_battery_warning: Some(Warning::from_percent(w, 20))
             }
         );
 
         // A warning above the model's max (set by other software) goes back
         // as it was; stepping it brings it within the max.
-        app.settings.low_battery_warning = Some(80);
+        app.settings.low_battery_warning = Some(Warning::from_percent(w, 80));
         focus(&mut app, Control::PowerOff);
         press(&mut app, KeyCode::Left);
         let Change::Energy {
@@ -1492,13 +1556,92 @@ mod tests {
         else {
             panic!("not an energy change");
         };
-        assert_eq!(low_battery_warning, 80);
+        assert_eq!(low_battery_warning, Some(Warning::from_percent(w, 80)));
         focus(&mut app, Control::LowBatteryWarning);
         assert_eq!(app.can_step(Control::LowBatteryWarning), (true, false));
         press(&mut app, KeyCode::Right);
         assert_eq!(app.edit, None, "→ doesn't lower it");
         press(&mut app, KeyCode::Left);
         assert_eq!(app.edit.map(|e| e.value), Some(Value::Percent(50)));
+    }
+
+    /// A power-off change sends the warning byte back exactly as read, past
+    /// the max or 100% (a quarters code of 5 or more) included, and a
+    /// warning change sends power-off back as read, an unknown code too.
+    #[test]
+    fn energy_changes_send_the_other_byte_back_as_read() {
+        for (name, code) in [
+            ("ROG Chakram", 5),
+            ("ROG Chakram", 0xff),
+            ("ROG Keris Wireless", 0x0b),
+            ("ROG Harpe II Ace", 150),
+            ("ROG Harpe II Ace", 0xff),
+        ] {
+            let mut app = demo(name);
+            read_energy(&mut app, 4, code);
+            focus(&mut app, Control::PowerOff);
+            press(&mut app, KeyCode::Right);
+            let change = applied(press(&mut app, KeyCode::Enter));
+            let report_id = app.model.unwrap().report_id;
+            assert_eq!(
+                request(&app, &change),
+                [report_id, 0x51, 0x37, 0, 0, 0xff, 0, code],
+                "{name} {code:#04x}"
+            );
+        }
+
+        // Quarters: 50% is code 2; the unknown power-off code goes back.
+        let mut app = demo("ROG Chakram");
+        read_energy(&mut app, 0x09, 1);
+        focus(&mut app, Control::LowBatteryWarning);
+        press(&mut app, KeyCode::Right);
+        let change = applied(press(&mut app, KeyCode::Enter));
+        assert_eq!(request(&app, &change), [0, 0x51, 0x37, 0, 0, 0x09, 0, 2]);
+    }
+
+    /// A warning byte past 100% reads as unknown, as an unknown power-off
+    /// code does, ←/→ pick a valid level from it, and it's never a choice.
+    #[test]
+    fn a_warning_past_100_percent_reads_unknown() {
+        for (name, code, max) in [
+            ("ROG Chakram", 5, 100),
+            ("ROG Keris Wireless", 0x0b, 50),
+            ("ROG Harpe II Ace", 150, 50),
+            ("ROG Harpe II Ace", 0xff, 50),
+        ] {
+            let mut app = demo(name);
+            read_energy(&mut app, 4, code);
+            let unknown = Value::UnknownPercent(code);
+            let what = format!("{name} {code:#04x}");
+            assert_eq!(
+                app.value(Control::LowBatteryWarning),
+                Some(unknown),
+                "{what}"
+            );
+            assert_eq!(unknown.to_string(), format!("Unknown ({code:#04x})"));
+            assert!(
+                matches!(
+                    app.change(Control::LowBatteryWarning, Value::UnknownPercent(code ^ 1)),
+                    Err(Refusal::Invalid(_))
+                ),
+                "{what}"
+            );
+            focus(&mut app, Control::LowBatteryWarning);
+            assert_eq!(app.can_step(Control::LowBatteryWarning), (true, true));
+            press(&mut app, KeyCode::Right);
+            assert_eq!(
+                app.edit.map(|e| e.value),
+                Some(Value::Percent(max)),
+                "{what}"
+            );
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Left);
+            assert_eq!(app.edit.map(|e| e.value), Some(Value::Percent(0)), "{what}");
+            assert!(
+                app.change(Control::LowBatteryWarning, Value::Percent(0))
+                    .is_ok()
+            );
+        }
     }
 
     #[test]
@@ -1593,13 +1736,9 @@ mod tests {
                     panic!("{} {control:?}", m.name);
                 };
                 assert!(choices.contains(&current), "{} {control:?}", m.name);
-                let rates = match control {
-                    Control::PowerSavingRate => f.power_saving_rates,
-                    _ => f.polling_rates,
-                };
                 let mut walked = vec![first];
                 while walked.len() <= choices.len() {
-                    let next = step(f, rates, *walked.last().unwrap(), 1, false);
+                    let next = step(f, control, *walked.last().unwrap(), 1, false);
                     if Some(&next) == walked.last() {
                         break;
                     }
@@ -1608,6 +1747,105 @@ mod tests {
                 assert_eq!(walked, choices, "{} {control:?}", m.name);
             }
         }
+    }
+
+    /// A brightness past 100% (another program's) shows as unknown, ←/→
+    /// pick a valid one, and a colour or effect change sends it back as
+    /// read rather than 100%.
+    #[test]
+    fn unknown_brightness_shows_and_goes_back_as_read() {
+        let mut app = demo("ROG Harpe II Ace");
+        if let Some(l) = app.settings.lighting.as_mut() {
+            l.brightness = 0xc8;
+        }
+        let unknown = Value::UnknownPercent(0xc8);
+        assert_eq!(app.value(Control::Brightness), Some(unknown));
+        assert_eq!(unknown.to_string(), "Unknown (0xc8)");
+        assert!(matches!(
+            app.change(Control::Brightness, Value::UnknownPercent(0xc9)),
+            Err(Refusal::Invalid(_))
+        ));
+
+        focus(&mut app, Control::LightingColor);
+        press(&mut app, KeyCode::Right);
+        let change = applied(press(&mut app, KeyCode::Enter));
+        // 51 28, zone 00, effect static, brightness c8 as read, then orange.
+        assert_eq!(
+            request(&app, &change),
+            [0x03, 0x51, 0x28, 0x00, 0x00, 0x00, 0xc8, 0xff, 0x80, 0x00]
+        );
+
+        focus(&mut app, Control::Brightness);
+        assert_eq!(app.can_step(Control::Brightness), (true, true));
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Brightness(100)));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.edit.map(|e| e.value), Some(Value::Brightness(0)));
+        let change = applied(press(&mut app, KeyCode::Enter));
+        assert_eq!(request(&app, &change)[6], 0x00);
+    }
+
+    /// A power-saving rate rogctl can't name shows as unknown, goes back as
+    /// read when power saving is toggled, and is never sent as a choice
+    /// (`an_unknown_rate_is_not_exported` covers export).
+    #[test]
+    fn unknown_power_saving_rate_shows_and_goes_back_as_read() {
+        let mut app = demo("ROG Harpe II Ace");
+        let rate = protocol::PollingRate::from_raw(0x0f);
+        app.settings.power_saving = Some(protocol::PowerSaving { on: false, rate });
+        let unknown = Value::PollingRate(rate);
+        assert_eq!(app.value(Control::PowerSavingRate), Some(unknown));
+        assert_eq!(unknown.to_string(), "Unknown (0x0f)");
+
+        focus(&mut app, Control::PowerSaving);
+        let change = applied(press(&mut app, KeyCode::Enter));
+        assert_eq!(request(&app, &change), [0x03, 0x51, 0x43, 0, 0, 0x01, 0x0f]);
+        // Never sent as a choice: the mouse has it, or it's refused.
+        assert!(app.change(Control::PowerSavingRate, unknown).is_err());
+    }
+
+    /// A poll brings in power-off and the warning as another program
+    /// (GearLink) left them, so changing one here sends the other back as
+    /// the mouse has it now, not as first read. A pending edit stays.
+    #[test]
+    fn polls_keep_power_off_and_the_warning_current() {
+        let mut app = demo("ROG Harpe II Ace");
+        let w = app.features().unwrap().low_battery_warning.unwrap();
+        focus(&mut app, Control::PowerOff);
+        press(&mut app, KeyCode::Right);
+        let edit = app.edit;
+        assert!(edit.is_some());
+        let mut reading = app.reading.unwrap();
+        reading.battery = 70;
+        reading.low_battery_warning = Some(Warning::from_percent(w, 50));
+        app.polled(reading, Some(0));
+        assert_eq!(app.edit, edit, "the edit stays");
+        assert_eq!(app.settings.active_stage, Some(0));
+        assert_eq!(app.reading.map(|r| r.battery), Some(70));
+        assert_eq!(
+            app.value(Control::LowBatteryWarning),
+            Some(Value::Percent(50))
+        );
+        let Change::Energy {
+            low_battery_warning,
+            ..
+        } = applied(press(&mut app, KeyCode::Enter))
+        else {
+            panic!("not an energy change");
+        };
+        assert_eq!(low_battery_warning, Some(Warning::from_percent(w, 50)));
+
+        // And the other way round.
+        let mut reading = app.reading.unwrap();
+        reading.power_off = Some(PowerOff::from_code(2));
+        app.polled(reading, None);
+        focus(&mut app, Control::LowBatteryWarning);
+        press(&mut app, KeyCode::Left);
+        let Change::Energy { power_off, .. } = applied(press(&mut app, KeyCode::Enter)) else {
+            panic!("not an energy change");
+        };
+        assert_eq!(power_off, PowerOff::from_code(2));
     }
 
     /// A value rogctl can't decode still shows, and ←/→ replace it.
@@ -1983,18 +2221,58 @@ mod tests {
     #[test]
     fn every_step_is_a_change_the_mouse_takes() {
         for model in MODELS {
-            let app = demo(model.name);
-            for control in app.controls() {
-                let Some(current) = app.value(control) else {
-                    continue;
-                };
+            let mut apps = vec![demo(model.name)];
+            // Every advanced power-saving state the `12 15` reply can hold:
+            // the switch either way, with any rate code, offered or not.
+            for (on, code) in (0..=7).flat_map(|code| [(0, code), (1, code)]) {
+                let mut app = demo(model.name);
+                let reply = [model.report_id, 0x12, 0x15, 0, 0, on, code];
+                let f = app.features().unwrap();
+                protocol::parse_settings(
+                    protocol::Query::PowerSaving,
+                    f,
+                    &reply,
+                    &mut app.settings,
+                );
+                apps.push(app);
+            }
+            // A warning byte past 100%, which reads as unknown.
+            if model.features.low_battery_warning.is_some() && model.features.power_off.is_some() {
+                let mut app = demo(model.name);
+                read_energy(&mut app, 4, 0xff);
+                apps.push(app);
+            }
+            // A brightness byte past 100%, which reads as unknown.
+            if model.features.lighting.is_some() {
+                let mut app = demo(model.name);
+                if let Some(l) = app.settings.lighting.as_mut() {
+                    l.brightness = 0xc8;
+                }
+                apps.push(app);
+            }
+            for app in apps {
                 // `demo()` shows the wireless entry of a model that has two.
                 let f = app.features().unwrap();
-                for (dir, big) in [(-1, false), (1, false), (-1, true), (1, true)] {
-                    let next = step(f, rates(f, control), current, dir, big);
-                    match app.change(control, next) {
-                        Ok(_) | Err(Refusal::Unchanged(_)) => {}
-                        Err(e) => panic!("{} {control:?} {next:?}: {e:?}", model.name),
+                let report_id = app.model.unwrap().report_id;
+                for control in app.controls() {
+                    let Some(current) = app.value(control) else {
+                        continue;
+                    };
+                    // ←/→ on a switch flips it, as Enter does.
+                    for (dir, big) in [(-1, false), (1, false), (-1, true), (1, true)] {
+                        let next = step(f, control, current, dir, big);
+                        let what = format!(
+                            "{} {control:?} {next:?} {:?}",
+                            model.name, app.settings.power_saving
+                        );
+                        match app.change(control, next) {
+                            Ok(planned) => assert!(
+                                protocol::change_request(report_id, f, &planned.change).is_some(),
+                                "{what}: not sent"
+                            ),
+                            Err(Refusal::Unchanged(_)) => {}
+                            Err(e) => panic!("{what}: {e:?}"),
+                        }
                     }
                 }
             }
@@ -2008,17 +2286,17 @@ mod tests {
             .map(|m| &m.features)
             .find(|f| f.angle_tuning.is_some_and(|t| t.step == 5))
             .unwrap();
-        let rates = f.polling_rates;
+        let control = Control::AngleTuning;
         assert_eq!(
-            step(f, rates, Value::Degrees(3), 1, false),
+            step(f, control, Value::Degrees(3), 1, false),
             Value::Degrees(5)
         );
         assert_eq!(
-            step(f, rates, Value::Degrees(3), -1, false),
+            step(f, control, Value::Degrees(3), -1, false),
             Value::Degrees(-5)
         );
         assert_eq!(
-            step(f, rates, Value::Degrees(0), -1, true),
+            step(f, control, Value::Degrees(0), -1, true),
             Value::Degrees(-20)
         );
     }

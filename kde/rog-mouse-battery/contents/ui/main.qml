@@ -34,6 +34,8 @@ PlasmoidItem {
     // read while connected, whose level shows once it sleeps even after an
     // error in between, and whether the low-battery notification was sent.
     property var lastConnected: ({})
+    // The threshold each kept status was read with, by the same key.
+    property var lastThreshold: ({})
     property var lowNotified: ({})
 
     readonly property bool failed: errorText !== "" || devices.some(s => s.state === "error")
@@ -107,8 +109,13 @@ PlasmoidItem {
         return "'" + String(value).replace(/'/g, "'\\''") + "'";
     }
 
+    // The last read started, built from the settings when it starts; one
+    // started before they changed is ignored when it finishes.
+    property string command: ""
+
     function refresh() {
-        executable.connectSource(shellQuote(binary) + " battery --json --device " + device + " --low-threshold " + lowThreshold);
+        command = shellQuote(binary) + " battery --json --device " + device + " --low-threshold " + lowThreshold;
+        executable.connectSource(command);
     }
 
     function handleOutput(exitCode, stdout) {
@@ -135,10 +142,15 @@ PlasmoidItem {
             const last = lastConnected[key];
             if (s.state === "connected") {
                 lastConnected[key] = s;
+                lastThreshold[key] = lowThreshold;
             } else if (s.state === "asleep" && s.battery === undefined && last) {
                 s.battery = last.battery;
                 s.battery_updated = last.battery_updated;
-                s.low = last.low;
+                // Low against the current threshold, as `rogctl watch`
+                // decides it. rogctl's own answer still holds while the
+                // threshold is unchanged: it knows a mouse that reports
+                // quarters is low at 25%.
+                s.low = lowThreshold > 0 && (last.battery <= lowThreshold || (last.low && lastThreshold[key] === lowThreshold));
             }
             checkLowBattery(key, s);
         }
@@ -171,16 +183,15 @@ PlasmoidItem {
         }
     }
 
-    onIntervalChanged: {
-        pollTimer.interval = interval * 1000;
-        pollTimer.restart();
-    }
+    // Read now; handleOutput then sets the timer, keeping the 10 s cadence
+    // for a sleeping or failed device.
+    onIntervalChanged: refresh()
     onBinaryChanged: refresh()
     onDeviceChanged: refresh()
     onLowThresholdChanged: refresh()
     Component.onCompleted: refresh()
 
-    // Set in handleOutput and onIntervalChanged, not bound: errors shorten it.
+    // Set in handleOutput, not bound: errors shorten it.
     Timer {
         id: pollTimer
         interval: 60000
@@ -195,7 +206,8 @@ PlasmoidItem {
         connectedSources: []
         onNewData: (source, data) => {
             disconnectSource(source);
-            root.handleOutput(data["exit code"], data["stdout"] || "");
+            if (source === root.command)
+                root.handleOutput(data["exit code"], data["stdout"] || "");
         }
     }
 

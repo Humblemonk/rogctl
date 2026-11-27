@@ -33,7 +33,7 @@ local function colorFor(s)
     return "error"
   elseif s.state ~= "connected" then
     -- Asleep: the level shown is the last one read.
-    return "outline"
+    return "outline_variant"
   end
   return "on_surface"
 end
@@ -92,7 +92,10 @@ local function renderDevices(devices)
       if text ~= "" then
         table.insert(children, ui.label({ text = text, color = color }))
       end
-      table.insert(pairs_, ui.row({ gap = 4, align = "center" }, children))
+      -- Asleep and low: still red, but dimmed like the other sleeping
+      -- devices' "outline_variant". Only a rendered tree can dim.
+      local opacity = (s.low and s.state == "asleep") and 0.6 or 1
+      table.insert(pairs_, ui.row({ gap = 4, align = "center", opacity = opacity }, children))
     end
     local container = barWidget.isVertical() and ui.column or ui.row
     barWidget.render(container({ gap = 8, align = "center" }, pairs_))
@@ -153,7 +156,7 @@ local function render()
       return
     end
     barWidget.setVisible(true)
-    renderSingle("mouse-off", "", "outline")
+    renderSingle("mouse-off", "", "outline_variant")
     barWidget.setTooltip({
       { noctalia.tr("tooltip.battery"), noctalia.tr("battery.unknown") },
       { noctalia.tr("tooltip.device"), noctalia.tr("tooltip.not_connected") },

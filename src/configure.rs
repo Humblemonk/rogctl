@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// What every widget is called in its desktop's widget picker.
 const WIDGET_NAME: &str = "ASUS Peripheral Battery";
 const NOCTALIA_ID: &str = "humblemonk/rog-mouse-battery";
+const DMS_ID: &str = "rogMouseBattery";
 const KDE_ID: &str = "com.github.humblemonk.rogmousebattery";
 const GNOME_UUID: &str = "rog-mouse-battery@humblemonk.github.io";
 
@@ -160,14 +161,6 @@ impl Desktop {
 
 type Result<T> = std::result::Result<T, String>;
 
-/// `println!`, minus the panic when stdout is closed, as in
-/// `rogctl configure waybar | head`.
-macro_rules! say {
-    ($($arg:tt)*) => {{
-        let _ = writeln!(io::stdout(), $($arg)*);
-    }};
-}
-
 /// `desktop`: `None` lists the choices. `force` overwrites or deletes files the
 /// user changed.
 pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
@@ -176,7 +169,8 @@ pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let Some(desktop) = Desktop::parse(name) else {
-        eprint!(
+        let _ = write!(
+            io::stderr(),
             "Unknown desktop {name:?}.\n\n{}",
             choices(color(&io::stderr()))
         );
@@ -190,7 +184,7 @@ pub fn run(desktop: Option<&str>, remove: bool, force: bool) -> ExitCode {
     match done {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("rogctl configure: {e}");
+            complain!("rogctl configure: {e}");
             ExitCode::FAILURE
         }
     }
@@ -440,16 +434,23 @@ fn noctalia() -> Result<Copied> {
 fn install_noctalia(force: bool) -> Result<()> {
     find_program("noctalia")?;
     let noctalia = noctalia()?;
-    let updating = exists(&noctalia.dir)?;
+    // By the record, not the directory: a first install whose enable failed
+    // isn't an update when run again.
+    let previous = noctalia.previous()?;
     noctalia.install(force)?;
     say!("Copied the plugin to {}", noctalia.dir.display());
     run_tool(Command::new("noctalia").args(["msg", "plugins", "enable", NOCTALIA_ID]))?;
-    if updating {
-        // Settings in plugin.toml only load with the config.
-        run_tool(Command::new("noctalia").args(["msg", "config-reload"]))?;
-        say!("Updated the {WIDGET_NAME} plugin.");
-    } else {
-        say!("Now add {WIDGET_NAME} from the bar's Add-widget picker.");
+    match previous {
+        Previous::Nothing => say!("Now add {WIDGET_NAME} from the bar's Add-widget picker."),
+        Previous::ThisVersion => say!(
+            "Reinstalled the {WIDGET_NAME} plugin. If it isn't in your bar, add it from the \
+             bar's Add-widget picker."
+        ),
+        Previous::Other => {
+            // Settings in plugin.toml only load with the config.
+            run_tool(Command::new("noctalia").args(["msg", "config-reload"]))?;
+            say!("Updated the {WIDGET_NAME} plugin.");
+        }
     }
     Ok(())
 }
@@ -465,7 +466,7 @@ fn remove_noctalia(force: bool) -> Result<()> {
     if let Err(e) =
         run_tool(Command::new("noctalia").args(["msg", "plugins", "disable", NOCTALIA_ID]))
     {
-        eprintln!("{e}; removing the plugin anyway");
+        complain!("{e}; removing the plugin anyway");
     }
     noctalia.remove(force)?;
     say!("Removed the plugin from {}", noctalia.dir.display());
@@ -557,20 +558,46 @@ fn remove_quickshell(force: bool) -> Result<()> {
 
 fn dms() -> Result<Copied> {
     Ok(Copied {
-        dir: config_home()?.join("DankMaterialShell/plugins/RogMouseBattery"),
+        dir: dms_plugins(&config_home()?).join("RogMouseBattery"),
         own_dir: true,
         bundle: &DMS,
         record: record_path(Desktop::Dms)?,
     })
 }
 
+/// The plugin directory DankMaterialShell reads. 2.0 moved its config from
+/// `DankMaterialShell` to `dms`, leaving a link at the old name; before 2.0
+/// only the old directory is there, perhaps itself a link (dotfiles), which
+/// 2.0 then moves only while there's no `dms`.
+fn dms_plugins(config: &Path) -> PathBuf {
+    let legacy = config.join("DankMaterialShell");
+    let current = config.join("dms");
+    let legacy_only =
+        fs::metadata(&legacy).is_ok_and(|m| m.is_dir()) && fs::symlink_metadata(&current).is_err();
+    if legacy_only { legacy } else { current }.join("plugins")
+}
+
 fn install_dms(force: bool) -> Result<()> {
     find_program("dms")?;
     let dms = dms()?;
+    let previous = dms.previous()?;
     dms.install(force)?;
     say!("Copied the plugin to {}", dms.dir.display());
     run_tool(Command::new("dms").args(["ipc", "plugin-scan", "scan"]))?;
-    say!("Now enable {WIDGET_NAME} in Settings → Plugins, then add it to the bar.");
+    match previous {
+        Previous::Nothing => {
+            say!("Now enable {WIDGET_NAME} in Settings → Plugins, then add it to the bar.")
+        }
+        Previous::ThisVersion => say!(
+            "Reinstalled the {WIDGET_NAME} plugin. If it isn't in your bar, enable it in \
+             Settings → Plugins, then add it to the bar."
+        ),
+        // Not reloaded here: reloading a disabled plugin would start it.
+        Previous::Other => say!(
+            "Updated the {WIDGET_NAME} plugin. If it's enabled, load the new version with \
+             `dms ipc plugin-scan reload {DMS_ID}`, or restart DankMaterialShell."
+        ),
+    }
     Ok(())
 }
 
@@ -582,7 +609,7 @@ fn remove_dms(force: bool) -> Result<()> {
     say!("Removed the plugin from {}", dms.dir.display());
     // DankMaterialShell may not be running; the files are gone either way.
     if let Err(e) = run_tool(Command::new("dms").args(["ipc", "plugin-scan", "scan"])) {
-        eprintln!("{e}");
+        complain!("{e}");
     }
     Ok(())
 }
@@ -663,7 +690,14 @@ fn remove_gnome() -> Result<()> {
     if !gnome_installed()? {
         return not_installed(Desktop::Gnome);
     }
-    run_tool(Command::new("gnome-extensions").args(["uninstall", GNOME_UUID]))
+    // gnome-extensions uninstall asks GNOME Shell to do it, over D-Bus.
+    run_tool(Command::new("gnome-extensions").args(["uninstall", GNOME_UUID])).map_err(|e| {
+        format!(
+            "{e}. It needs GNOME Shell running: run this again in your GNOME session, or \
+             delete {} yourself",
+            gnome_dir().map_or_else(|_| GNOME_UUID.to_owned(), |d| d.display().to_string())
+        )
+    })
 }
 
 fn not_installed(desktop: Desktop) -> Result<()> {
@@ -763,6 +797,17 @@ struct Copied {
 /// of what it wrote.
 type Entry = (String, u64);
 
+/// What a widget's directory held before an install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Previous {
+    /// None of the widget's files.
+    Nothing,
+    /// This version's files, as rogctl recorded writing them.
+    ThisVersion,
+    /// Another version's, or files rogctl has no record of.
+    Other,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Found {
     Missing,
@@ -777,8 +822,13 @@ impl Copied {
     /// one doesn't have. Returns the files written: all but the user's edited
     /// settings.
     fn install(&self, force: bool) -> Result<Vec<&'static str>> {
-        let record = self.read_record()?.unwrap_or_default();
+        let previous_record = self.read_record()?;
+        let record = previous_record.clone().unwrap_or_default();
         let recorded = |path: &str| record.iter().find(|(p, _)| p == path).map(|&(_, sum)| sum);
+        self.refuse_links(
+            (self.bundle.files.iter().map(|f| f.path))
+                .chain(record.iter().map(|(p, _)| p.as_str())),
+        )?;
 
         let mut edited = Vec::new();
         for file in self
@@ -792,28 +842,57 @@ impl Copied {
                 edited.push(file.path.to_owned());
             }
         }
-        if !force {
-            self.refuse(&edited, "overwrite")?;
-        }
-        // Files an earlier version wrote and this one dropped go, unless the
-        // user changed them.
+        // Files an earlier version wrote and this one dropped go, the ones the
+        // user changed only with --force.
         let mut obsolete = Vec::new();
+        let mut dropped = Vec::new();
         for (path, sum) in &record {
-            if self.bundle.files.iter().any(|f| f.path == path) {
+            if self.shipped(path).is_some() {
                 continue;
             }
             match self.find(path, &[Some(*sum)])? {
                 Found::Missing => {}
                 Found::Ours => obsolete.push(path.clone()),
-                Found::Edited => say!(
-                    "Left {}: you changed it, and this version doesn't use it.",
-                    self.dir.join(path).display()
-                ),
+                Found::Edited => dropped.push(path.clone()),
             }
         }
+        if !force {
+            self.refuse(&edited, &dropped)?;
+        }
+        obsolete.append(&mut dropped);
 
         let mut entries = Vec::new();
         let mut written = Vec::new();
+        let done = self
+            .write_bundle(&recorded, &mut entries, &mut written)
+            .and_then(|()| self.delete(&obsolete));
+        if let Err(e) = done {
+            // What's there now: the files written, and the rest as before,
+            // which with no record is what `removable()` and
+            // `is_installed()` go by without one: this version's files.
+            // Without a version the record reads as out of date, and a rerun
+            // or a removal still knows every file rogctl wrote.
+            let before = previous_record.unwrap_or_else(|| self.bundle_entries());
+            for entry in &before {
+                if !entries.iter().any(|(p, _)| *p == entry.0) {
+                    entries.push(entry.clone());
+                }
+            }
+            let _ = self.write_record(&entries, false);
+            return Err(e);
+        }
+        self.write_record(&entries, true)?;
+        Ok(written)
+    }
+
+    /// Writes the bundle's files, adding each to `entries` and, unless it's
+    /// the user's edited settings, kept, to `written`.
+    fn write_bundle(
+        &self,
+        recorded: &dyn Fn(&str) -> Option<u64>,
+        entries: &mut Vec<Entry>,
+        written: &mut Vec<&'static str>,
+    ) -> Result<()> {
         for file in self.bundle.files {
             let ours = [Some(checksum(file.contents)), recorded(file.path)];
             if self.bundle.is_users(file.path) && self.find(file.path, &ours)? == Found::Edited {
@@ -829,9 +908,68 @@ impl Copied {
             entries.push((file.path.to_owned(), checksum(file.contents)));
             written.push(file.path);
         }
-        self.delete(&obsolete)?;
-        self.write_record(&entries)?;
-        Ok(written)
+        Ok(())
+    }
+
+    /// The checksum of this version's file at `path`, if it ships one.
+    fn shipped(&self, path: &str) -> Option<u64> {
+        self.bundle
+            .files
+            .iter()
+            .find(|f| f.path == path)
+            .map(|f| checksum(f.contents))
+    }
+
+    /// What was installed before, for what to say after installing.
+    fn previous(&self) -> Result<Previous> {
+        if !self.is_installed()? {
+            return Ok(Previous::Nothing);
+        }
+        let Some(mut record) = self.read_record()? else {
+            return Ok(Previous::Other);
+        };
+        let mut current = self.bundle_entries();
+        record.sort();
+        current.sort();
+        Ok(if record == current {
+            Previous::ThisVersion
+        } else {
+            Previous::Other
+        })
+    }
+
+    /// Errs if a symbolic link is at one of `paths`, at a directory between
+    /// the widget's directory and it, or at the widget's directory when it's
+    /// the widget's alone. rogctl doesn't write or delete through a link, so
+    /// a widget that used to be linked to a checkout is left as it is.
+    fn refuse_links<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        let mut checked = Vec::new();
+        if self.own_dir {
+            checked.push(self.dir.clone());
+        }
+        for path in paths {
+            let mut full = self.dir.clone();
+            for component in Path::new(path).components() {
+                full.push(component);
+                checked.push(full.clone());
+            }
+        }
+        for full in checked {
+            match fs::symlink_metadata(&full) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!(
+                        "{} is a symbolic link, and rogctl doesn't write or delete through one, \
+                         so it changed nothing. Delete the link (not what it points to), then run \
+                         this again",
+                        full.display()
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", full.display())),
+            }
+        }
+        Ok(())
     }
 
     /// The files `remove` deletes: those rogctl wrote. Errs if the user changed
@@ -839,11 +977,13 @@ impl Copied {
     fn removable(&self, force: bool) -> Result<Vec<String>> {
         // With no record, the files this version ships are what rogctl wrote.
         let entries = self.read_record()?.unwrap_or_else(|| self.bundle_entries());
+        self.refuse_links(entries.iter().map(|(p, _)| p.as_str()))?;
         let mut ours = Vec::new();
         let mut edited = Vec::new();
         let mut settings = Vec::new();
         for (path, sum) in entries {
-            match self.find(&path, &[Some(sum)])? {
+            // As install counts them: what rogctl recorded, or this version's.
+            match self.find(&path, &[Some(sum), self.shipped(&path)])? {
                 Found::Missing => {}
                 Found::Ours => ours.push(path),
                 // The user's settings stay, even with --force.
@@ -852,7 +992,7 @@ impl Copied {
             }
         }
         if !force {
-            self.refuse(&edited, "remove")?;
+            self.refuse(&[], &edited)?;
         }
         for path in settings {
             say!(
@@ -934,7 +1074,12 @@ impl Copied {
         }
     }
 
-    fn refuse(&self, edited: &[String], verb: &str) -> Result<()> {
+    /// Errs if the user changed any of the files rogctl would `overwrite` or
+    /// `remove`.
+    fn refuse(&self, overwrite: &[String], remove: &[String]) -> Result<()> {
+        let names =
+            |paths: &[String]| and_list(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+        let edited = [overwrite, remove].concat();
         if edited.is_empty() {
             return Ok(());
         }
@@ -943,10 +1088,18 @@ impl Copied {
         } else {
             ("are", "them")
         };
+        let action = match (overwrite.is_empty(), remove.is_empty()) {
+            (false, false) => format!(
+                "overwrite {} and remove {}",
+                names(overwrite),
+                names(remove)
+            ),
+            (false, true) => format!("overwrite {them}"),
+            (true, _) => format!("remove {them}"),
+        };
         Err(format!(
-            "{} in {} {is} different from what rogctl wrote. Pass --force to {verb} {them} \
-             anyway",
-            and_list(&edited.iter().map(String::as_str).collect::<Vec<_>>()),
+            "{} in {} {is} different from what rogctl wrote. Pass --force to {action} anyway",
+            names(&edited),
             self.dir.display()
         ))
     }
@@ -982,7 +1135,9 @@ impl Copied {
         }
     }
 
-    fn write_record(&self, written: &[Entry]) -> Result<()> {
+    /// `versioned`: with this rogctl's version. A record without one counts
+    /// as an older version's.
+    fn write_record(&self, written: &[Entry], versioned: bool) -> Result<()> {
         let mut text = format!(
             "# Files `rogctl configure` wrote to {}, with their checksums.\n",
             self.dir.display()
@@ -990,7 +1145,9 @@ impl Copied {
         for (path, sum) in written {
             text += &format!("{sum:016x} {path}\n");
         }
-        text += &format!("version {}\n", env!("CARGO_PKG_VERSION"));
+        if versioned {
+            text += &format!("version {}\n", env!("CARGO_PKG_VERSION"));
+        }
         write_creating_dirs(&self.record, text)
             .map_err(|e| format!("{}: {e}", self.record.display()))
     }
@@ -1022,7 +1179,7 @@ fn parse_record(text: &str) -> Vec<Entry> {
 }
 
 /// `$XDG_STATE_HOME/rogctl`, or `~/.local/state/rogctl`.
-fn state_dir() -> Result<PathBuf> {
+pub fn state_dir() -> Result<PathBuf> {
     let state = xdg_dir(
         std::env::var_os("XDG_STATE_HOME"),
         std::env::var_os("HOME"),
@@ -1213,14 +1370,10 @@ mod tests {
         let widget = copied(&temp, true);
         write(widget.dir.join("plugin.toml"), "version 1");
         write(widget.dir.join("old/dropped.luau"), "version 1");
-        write(widget.dir.join("kept.luau"), "edited");
         let sum = checksum(b"version 1");
         write(
             widget.record.clone(),
-            &format!(
-                "# header\n{sum:016x} plugin.toml\n{sum:016x} old/dropped.luau\n\
-                 {sum:016x} kept.luau\n"
-            ),
+            &format!("# header\n{sum:016x} plugin.toml\n{sum:016x} old/dropped.luau\n"),
         );
 
         widget.install(false).unwrap();
@@ -1229,10 +1382,6 @@ mod tests {
             NOCTALIA.files[1].contents
         );
         assert!(!widget.dir.join("old").exists());
-        assert!(
-            widget.dir.join("kept.luau").is_file(),
-            "dropped, but edited"
-        );
         assert!(
             widget
                 .read_record()
@@ -1560,6 +1709,233 @@ mod tests {
         assert!(differs(&dir, &KDE));
         fs::remove_file(dir.join("contents/ui/main.qml")).unwrap();
         assert!(differs(&dir, &KDE), "a file added since");
+    }
+
+    /// A plugin directory still linked to a checkout: nothing in the checkout
+    /// is written or deleted, --force included.
+    #[test]
+    fn refuses_a_linked_widget_directory() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        let checkout = temp.0.join("checkout");
+        write_files(&checkout, &NOCTALIA).unwrap();
+        write(checkout.join("widget.luau"), "edited in the checkout");
+        std::os::unix::fs::symlink(&checkout, &widget.dir).unwrap();
+
+        for force in [false, true] {
+            let err = widget.remove(force).unwrap_err();
+            assert!(err.contains("symbolic link"), "{err}");
+            let err = widget.install(force).unwrap_err();
+            assert!(err.contains("symbolic link"), "{err}");
+        }
+        assert!(checkout.join("plugin.toml").is_file());
+        assert_eq!(
+            fs::read_to_string(checkout.join("widget.luau")).unwrap(),
+            "edited in the checkout"
+        );
+        assert!(!widget.record.exists());
+    }
+
+    /// A link at a file, or at a directory below the widget's, dangling or
+    /// not, is neither written through nor deleted.
+    #[test]
+    fn refuses_a_link_at_a_file() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, false);
+        let target = temp.0.join("elsewhere/target.luau");
+        fs::create_dir_all(&widget.dir).unwrap();
+        std::os::unix::fs::symlink(&target, widget.dir.join("widget.luau")).unwrap();
+        for force in [false, true] {
+            assert!(widget.install(force).unwrap_err().contains("symbolic link"));
+        }
+        assert!(!target.exists(), "not created through the link");
+        assert!(!widget.dir.join("plugin.toml").exists(), "nothing written");
+
+        fs::remove_file(widget.dir.join("widget.luau")).unwrap();
+        widget.install(false).unwrap();
+        fs::remove_file(widget.dir.join("widget.luau")).unwrap();
+        write(target.clone(), "elsewhere");
+        std::os::unix::fs::symlink(&target, widget.dir.join("widget.luau")).unwrap();
+        for force in [false, true] {
+            assert!(widget.remove(force).unwrap_err().contains("symbolic link"));
+        }
+        assert_eq!(fs::read_to_string(&target).unwrap(), "elsewhere");
+        assert!(widget.dir.join("plugin.toml").is_file(), "nothing deleted");
+
+        fs::remove_file(widget.dir.join("widget.luau")).unwrap();
+        let translations = widget.dir.join("translations");
+        fs::remove_dir_all(&translations).unwrap();
+        fs::create_dir_all(temp.0.join("elsewhere/translations")).unwrap();
+        std::os::unix::fs::symlink(temp.0.join("elsewhere/translations"), &translations).unwrap();
+        assert!(widget.install(true).unwrap_err().contains("symbolic link"));
+        assert!(!temp.0.join("elsewhere/translations/en.json").exists());
+    }
+
+    /// Removing counts a file as rogctl's by the same rule as installing:
+    /// this version's contents, or what the record says.
+    #[test]
+    fn removes_this_versions_files_whatever_the_record_says() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        widget.install(false).unwrap();
+        let old = checksum(b"older");
+        write(
+            widget.record.clone(),
+            &NOCTALIA
+                .files
+                .iter()
+                .map(|f| format!("{old:016x} {}\n", f.path))
+                .collect::<String>(),
+        );
+        assert_eq!(widget.remove(false), Ok(true));
+        assert!(!widget.dir.exists());
+    }
+
+    /// An install that fails partway records what it wrote, so removing it
+    /// afterwards deletes those files too.
+    #[test]
+    fn a_failed_install_records_what_it_wrote() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        let old = checksum(b"version 1");
+        write(widget.dir.join("battery.luau"), "version 1");
+        write(
+            widget.record.clone(),
+            &format!("{old:016x} battery.luau\nversion 2.0.0\n"),
+        );
+        // translations/en.json can't be written.
+        let translations = widget.dir.join("translations");
+        fs::create_dir_all(&translations).unwrap();
+        let mode = |m| {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&translations, fs::Permissions::from_mode(m)).unwrap();
+        };
+        mode(0o555);
+        if fs::write(translations.join("probe"), "").is_ok() {
+            // Running as root, which permissions don't stop.
+            mode(0o755);
+            return;
+        }
+
+        assert!(widget.install(false).is_err());
+        mode(0o755);
+        let record = widget.read_record().unwrap().unwrap();
+        for path in ["battery.luau", "plugin.toml", "service.luau"] {
+            assert!(
+                record.contains(&(path.to_owned(), widget.shipped(path).unwrap())),
+                "{path} is recorded"
+            );
+        }
+        assert_eq!(widget.is_outdated(), Ok(true), "half updated");
+        assert_eq!(widget.remove(false), Ok(true));
+        for path in ["battery.luau", "plugin.toml", "service.luau"] {
+            assert!(!widget.dir.join(path).exists(), "{path} is removed");
+        }
+    }
+
+    /// An install over files copied by hand (no record) that fails partway
+    /// leaves a record that still covers every file of the widget, so it
+    /// still reads as installed and removing it deletes them all.
+    #[test]
+    fn a_failed_install_without_a_record_keeps_every_file() {
+        use std::os::unix::fs::PermissionsExt;
+        for stuck in ["translations/en.json", "battery.luau"] {
+            let temp = TempDir::new().unwrap();
+            let widget = copied(&temp, true);
+            for file in NOCTALIA.files {
+                write_creating_dirs(&widget.dir.join(file.path), file.contents).unwrap();
+            }
+            let path = widget.dir.join(stuck);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+            if fs::OpenOptions::new().write(true).open(&path).is_ok() {
+                // Running as root, which permissions don't stop.
+                return;
+            }
+
+            assert!(widget.install(false).is_err(), "{stuck}");
+            assert_eq!(widget.is_installed(), Ok(true), "{stuck}");
+            assert_eq!(widget.remove(false), Ok(true), "{stuck}");
+            assert!(!widget.dir.exists(), "{stuck}: every file removed");
+        }
+    }
+
+    /// An edited file a new version no longer ships is left, and kept in the
+    /// record, unless --force removes it.
+    #[test]
+    fn removes_an_edited_dropped_file_only_with_force() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        write(widget.dir.join("kept.luau"), "edited");
+        write(
+            widget.record.clone(),
+            &format!("{:016x} kept.luau\n", checksum(b"version 1")),
+        );
+
+        let err = widget.install(false).unwrap_err();
+        assert!(err.starts_with("kept.luau in"), "{err}");
+        assert!(err.contains("--force to remove it"), "{err}");
+        assert!(widget.dir.join("kept.luau").is_file());
+        assert!(!widget.dir.join("plugin.toml").exists(), "nothing written");
+
+        widget.install(true).unwrap();
+        assert!(!widget.dir.join("kept.luau").exists());
+        assert!(widget.dir.join("plugin.toml").is_file());
+    }
+
+    #[test]
+    fn tells_a_fresh_install_from_an_update() {
+        let temp = TempDir::new().unwrap();
+        let widget = copied(&temp, true);
+        assert_eq!(widget.previous(), Ok(Previous::Nothing));
+        widget.install(false).unwrap();
+        assert_eq!(widget.previous(), Ok(Previous::ThisVersion));
+
+        let current = fs::read_to_string(&widget.record).unwrap();
+        write(
+            widget.record.clone(),
+            &current.replacen("widget.luau", "old.luau", 1),
+        );
+        assert_eq!(widget.previous(), Ok(Previous::Other));
+        fs::remove_file(&widget.record).unwrap();
+        assert_eq!(widget.previous(), Ok(Previous::Other), "no record");
+        fs::remove_dir_all(&widget.dir).unwrap();
+        assert_eq!(widget.previous(), Ok(Previous::Nothing));
+    }
+
+    /// DankMaterialShell 2.0 reads `dms`, and leaves a link at the old name.
+    #[test]
+    fn dms_plugins_goes_where_dms_reads() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.0.join("config");
+        assert_eq!(dms_plugins(&config), config.join("dms/plugins"));
+        fs::create_dir_all(config.join("DankMaterialShell/plugins")).unwrap();
+        assert_eq!(
+            dms_plugins(&config),
+            config.join("DankMaterialShell/plugins"),
+            "before 2.0"
+        );
+        fs::rename(config.join("DankMaterialShell"), config.join("dms")).unwrap();
+        std::os::unix::fs::symlink("dms", config.join("DankMaterialShell")).unwrap();
+        assert_eq!(dms_plugins(&config), config.join("dms/plugins"));
+    }
+
+    /// Before 2.0, a `DankMaterialShell` linked from dotfiles is still the
+    /// directory DMS reads; making a `dms` beside it would hide it from 2.0's
+    /// move as well.
+    #[test]
+    fn dms_plugins_follows_a_linked_legacy_dir() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.0.join("config");
+        fs::create_dir_all(temp.0.join("dotfiles/dank")).unwrap();
+        fs::create_dir_all(&config).unwrap();
+        std::os::unix::fs::symlink("../dotfiles/dank", config.join("DankMaterialShell")).unwrap();
+        assert_eq!(
+            dms_plugins(&config),
+            config.join("DankMaterialShell/plugins")
+        );
+        // A link to nothing isn't a directory DMS reads.
+        fs::remove_dir(temp.0.join("dotfiles/dank")).unwrap();
+        assert_eq!(dms_plugins(&config), config.join("dms/plugins"));
     }
 
     #[test]

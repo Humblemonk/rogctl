@@ -12,7 +12,8 @@ rogctl configure quickshell
 This copies `RogMouse.qml`, `RogMouseSettings.qml` and `RogMouseWidget.qml` next to
 `~/.config/quickshell/shell.qml`. It won't overwrite or remove copies you've changed unless you
 add `--force`; it can tell them from an older version's copies, which it updates. Once you've
-changed `RogMouseSettings.qml`, it never overwrites it, even with `--force`. If your config is
+changed `RogMouseSettings.qml`, it never overwrites it, even with `--force`. If one of the
+three is a symbolic link, it changes nothing: replace the link with a copy, or delete it. If your config is
 elsewhere, copy the three files next to its `shell.qml` yourself.
 
 Then put `RogMouseWidget {}` in your bar.

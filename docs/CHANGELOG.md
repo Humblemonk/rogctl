@@ -6,14 +6,126 @@ have, run `rogctl --version`, or look at the end of the footer in `rogctl settin
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## Unreleased
+## 2.9.0 — 2026-11-26
+
+A bug hunt across rogctl and its widgets: settings changes only ever send what you asked
+for, and the widgets keep up with devices coming, going and sleeping.
 
 ### Added
 
 - Prebuilt binaries for x86_64 and aarch64 Linux (glibc 2.35 or newer) on each
   [GitHub release](https://github.com/humblemonk/rogctl/releases), so you don't need a Rust
-  toolchain outside Arch. Each archive has the udev rule and a SHA-256 checksum; the readme
-  explains how to install it.
+  toolchain outside Arch. Each archive has the udev rule and comes with a SHA-256 checksum
+  file; the readme explains how to install it.
+
+### Changed
+
+- The Noctalia widget draws a sleeping device in Noctalia's `outline_variant` colour, which
+  replaced the deprecated `outline` that made Noctalia log a warning.
+- `rogctl settings set` and `import` take a value only as `get` shows it or `export` writes
+  it, in any case and with or without its unit. Before, they ignored spaces, `-` and `_`,
+  so `brightness=-50` set 50%, `power-off=1-0` set 10 minutes and `dpi-1=+800` set 800 DPI;
+  such values are now refused and nothing is sent.
+- When `import` skips a setting that can't be changed now (the power-saving rate while power
+  saving is off, the colour while the effect sets its own), it says the file's value wasn't
+  restored and names the value the mouse keeps.
+- `rogctl watch` notices a mouse or keyboard plugged in or unplugged within 10 seconds,
+  whatever `--interval` is, and reads it at once. An ROG Omni receiver that doesn't answer
+  just after it's plugged in, or that couldn't be asked what's paired with it, is asked again
+  every 10 seconds.
+- `rogctl configure gnome --remove` says it needs GNOME Shell running, and how to remove the
+  extension without it.
+- The Waybar readme explains that a failing `rogctl` hides the module, and how to see why.
+
+### Fixed
+
+- In `rogctl settings`, pasting text no longer acts as key presses. Before, a space or a
+  newline in the paste applied and saved a change. Terminals without bracketed paste still
+  send a paste as keys.
+- `rogctl configure` no longer writes or deletes through a symbolic link. Before,
+  `--remove` with the Noctalia plugin directory still a link to a checkout deleted the
+  checkout's files. Now a link at a widget's directory or files makes it change nothing and
+  exit with 1, `--force` included.
+- A battery or settings read no longer takes a stray rejection, drawn by another program's
+  save on the same receiver (`rogctl settings`, GearLink), as its answer. The mouse showed
+  as asleep for up to 10 seconds, `rogctl battery` exited with 3, and an `import` could stop
+  as if the mouse had gone to sleep.
+- When the mouse doesn't confirm a change but reads it back changed, `rogctl settings` and
+  `settings set`/`import` say it was made but not saved and may not last a power cycle,
+  instead of "No change made"; `set` and `import` exit with 0.
+- Changing auto power-off sends the low-battery warning back exactly as the mouse had it, and
+  the other way round. A warning set by other software outside rogctl's range was rewritten:
+  to 100% on the ROG Chakram, Pugio II, Keris Wireless family and Strix Impact II Wireless,
+  and to at most 100% on the others. Such a warning now shows as "Unknown (0x..)" rather than
+  as a level like 255%, and `get --json`, `export` and the status line leave it out.
+- ROG Harpe II Ace and Harpe II Extreme Edition 20: advanced power saving turns on and off
+  when the mouse holds a rate outside 125-2000 Hz, and sends that rate back as the mouse has
+  it. Before, it did nothing and said the mouse didn't have the setting. A rate rogctl can't
+  name shows as "Unknown (0x..)", and `get --json` and `export` leave it out.
+- The low-battery notification no longer repeats each time a widget restarts `rogctl watch`
+  (GNOME on every screen unlock, any widget after a settings change). rogctl remembers it in
+  `~/.local/state/rogctl/low-battery`.
+- `rogctl watch` exits as soon as the widget reading it goes away. Before, a restarted widget
+  could have an extra `watch` running beside it for up to an interval.
+- An ROG Omni receiver rogctl can't open shows its error for a keyboard too. Before,
+  `--device keyboard` said no keyboard was found, and the error showed only as a mouse.
+  `--device all` lists it once, with the mice; before, it came after the keyboards.
+- After a widget restarts `rogctl watch` (GNOME on every screen unlock, any widget after a
+  settings change), a sleeping mouse or keyboard shows its last level. Before, it showed none
+  until it woke. rogctl keeps it in `~/.local/state/rogctl/last-level`.
+- After the computer resumes from suspend, `rogctl watch` reads a device that was due within
+  10 seconds. Before, it waited out the rest of `--interval`, showing the level from before
+  the suspend.
+- rogctl no longer crashes on an argument that isn't valid UTF-8, and `settings export` and
+  `import` take any file name. It no longer crashes when its output goes to a program that
+  has exited (`rogctl --help | head -1`); `settings get` and `export` then exit with 1.
+- `rogctl settings` restores the terminal when it's closed or killed.
+- `rogctl settings` ignores keys pressed while it waits on the mouse (a change, Tab, reading
+  the mice again). Before, an Enter meant to apply a typed DPI could make that stage the
+  active one instead, and a second Space turned a switch back.
+- `rogctl settings` keeps auto power-off and the low-battery warning current while open, so
+  changing one no longer puts back the other as it was before other software changed it.
+- Changing the lighting colour or effect sends a brightness other software set above 100%
+  back as it was, instead of 100%. It shows as "Unknown (0x..)", and `export` leaves it out.
+- In `rogctl settings`, an ROG Omni receiver that couldn't be asked which mouse it holds
+  (just after it's plugged in) is asked again every 10 seconds, instead of showing as
+  "ROG Omni receiver" with no settings until `r`.
+- `rogctl settings` moves on from a mouse that stops answering but stays plugged in (a cable
+  left in when the mouse goes back to its receiver), instead of showing its last battery
+  level for good.
+- `rogctl configure`:
+  - `--remove` counts a file holding this version's contents as rogctl's, as installing
+    does, and an install that fails partway records what it wrote.
+  - A file you changed that a new version no longer ships stops the update with exit 1, as
+    documented; `--force` removes it.
+  - `configure dms` installs to `~/.config/dms/plugins`, where DankMaterialShell 2 reads
+    plugins (unless only the older `~/.config/DankMaterialShell` is there), and on an update
+    says how to load the new version if the plugin is enabled.
+  - Running it again with nothing changed says the widget was reinstalled. Before, Noctalia
+    said "Updated" and DMS asked you to enable the plugin again.
+- Widgets:
+  - Quickshell and DankMaterialShell show "rogctl not found on PATH" when rogctl can't be
+    started, instead of staying blank or "Waiting for rogctl…"; GNOME uses the same
+    wording.
+  - Noctalia, GNOME, Quickshell and DankMaterialShell name the `rogctl` that exited in their
+    error, not one just entered in their settings.
+  - Plasma reads at once when its refresh interval changes, and keeps checking a sleeping
+    device every 10 seconds; a sleeping device's red low warning follows a changed
+    threshold. A read started before a settings change no longer overwrites the one after it.
+  - DankMaterialShell and Noctalia dim a sleeping device that's low as well as showing it
+    red, as the others do. DankMaterialShell shows the mouse icon while waiting for rogctl,
+    and dragging its interval or threshold slider no longer restarts rogctl over and over.
+
+### Upgrading
+
+- The Noctalia widget needs Noctalia 5.4 or newer (plugin API 43), for the colour role that
+  replaced the one it used for sleeping devices. Upgrade Noctalia first if yours is older,
+  then run `rogctl configure noctalia` again.
+- If your Quickshell `RogMouse*.qml` files are symbolic links (from a dotfiles manager, say),
+  `rogctl configure quickshell` now refuses them. Replace them with copies, then run it
+  again.
+- Scripts that pass `settings set` a value spelled differently from `get` and `export`
+  (`colourcycle`, `1_000`) now get an error; use those spellings.
 
 ## 2.8.0 — 2026-11-02
 

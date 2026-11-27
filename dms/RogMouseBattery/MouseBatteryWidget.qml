@@ -27,8 +27,15 @@ PluginComponent {
     readonly property var devices: status?.devices ?? []
     readonly property bool showPercent: pluginData.showPercent ?? true
     readonly property bool hideWhenDisconnected: pluginData.hideWhenDisconnected ?? true
-    // An icon while waiting, on an error, or with nothing connected.
+    // An icon while waiting, on an error, or with nothing connected: the
+    // mouse while waiting, as the other widgets show it, else a warning.
     readonly property bool placeholder: !status || status.error !== undefined || devices.length === 0
+    readonly property string placeholderIcon: status ? "error" : "mouse"
+    readonly property color placeholderColor: {
+        if (!status)
+            return Theme.widgetIconColor;
+        return status.error !== undefined ? Theme.error : Theme.surfaceVariantText;
+    }
     readonly property bool shown: !(hideWhenDisconnected && status && status.error === undefined && devices.length === 0)
 
     onShownChanged: setVisibilityOverride(shown)
@@ -58,6 +65,11 @@ PluginComponent {
         if (s.state !== "connected")
             return Theme.surfaceVariantText;
         return Theme.widgetIconColor;
+    }
+
+    // Asleep and low: still red, but dimmed like the other sleeping devices.
+    function contentOpacity(s) {
+        return s.low && s.state === "asleep" ? 0.6 : 1;
     }
 
     // Status words as the kernel and desktops use them: discharging, charging,
@@ -95,9 +107,9 @@ PluginComponent {
 
             DankIcon {
                 visible: root.placeholder
-                name: "error"
+                name: root.placeholderIcon
                 size: root.iconSize
-                color: root.status?.error !== undefined ? Theme.error : Theme.surfaceVariantText
+                color: root.placeholderColor
                 anchors.verticalCenter: parent.verticalCenter
             }
 
@@ -107,6 +119,7 @@ PluginComponent {
                 Row {
                     required property var modelData
                     spacing: Theme.spacingXS
+                    opacity: root.contentOpacity(modelData)
                     anchors.verticalCenter: parent.verticalCenter
 
                     DankIcon {
@@ -134,9 +147,9 @@ PluginComponent {
 
             DankIcon {
                 visible: root.placeholder
-                name: "error"
+                name: root.placeholderIcon
                 size: root.iconSize
-                color: root.status?.error !== undefined ? Theme.error : Theme.surfaceVariantText
+                color: root.placeholderColor
                 anchors.horizontalCenter: parent.horizontalCenter
             }
 
@@ -146,6 +159,7 @@ PluginComponent {
                 Column {
                     required property var modelData
                     spacing: 1
+                    opacity: root.contentOpacity(modelData)
                     anchors.horizontalCenter: parent.horizontalCenter
 
                     DankIcon {

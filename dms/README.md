@@ -9,8 +9,10 @@ newer and [rogctl installed](../README.md#getting-started).
 rogctl configure dms
 ```
 
-This copies the plugin to `~/.config/DankMaterialShell/plugins/RogMouseBattery` and has
-DankMaterialShell rescan its plugins. Then enable **ASUS Peripheral Battery** in Settings → Plugins
+This copies the plugin to `~/.config/dms/plugins/RogMouseBattery`, or to
+`~/.config/DankMaterialShell/plugins/RogMouseBattery` when `~/.config/DankMaterialShell` is a
+directory (or a link to one) and there's no `~/.config/dms`, as before DankMaterialShell 2.0,
+and has DankMaterialShell rescan its plugins. Then enable **ASUS Peripheral Battery** in Settings → Plugins
 and add it to the bar.
 
 ## Use
@@ -22,7 +24,10 @@ settings. A device that isn't plugged in is left out. Low-battery notifications 
 
 ## Update or remove
 
-After updating rogctl, run `rogctl configure dms` again. To remove it, disable it in
+After updating rogctl, run `rogctl configure dms` again. If the plugin is enabled, load the
+new version with `dms ipc plugin-scan reload rogMouseBattery` (or restart DankMaterialShell);
+reloading a disabled plugin starts it. To remove it,
+disable it in
 Settings → Plugins, then:
 
 ```sh

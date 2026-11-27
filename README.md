@@ -87,10 +87,13 @@ rogctl settings
 ```
 
 This shows the mouse's settings and lets you change them: DPI stages, polling rate, button
-debounce, angle snapping, motion sync, lift-off distance, auto power-off, low-battery
-warning, on ROG Harpe II models advanced power saving, and lighting (effect, colour and
-brightness; all zones together on mice with several). It only shows the settings your mouse
-has.
+debounce, angle snapping, angle tuning (on Harpe, Keris II and Aimpoint mice, the Gladius III
+Eva 2, Chakram X, Gladius II Wireless and Strix Impact III Wireless), motion sync, lift-off
+distance, auto power-off, low-battery warning, on ROG Harpe II models advanced power saving,
+and lighting (effect, colour and brightness; all zones together on mice with several). It
+only shows the settings your mouse has. rogctl doesn't offer lighting on the Chakram,
+Pugio II, Keris Wireless, Keris EVA Edition, Strix Impact II Wireless and Gladius II
+Wireless yet.
 
 | Key | Does |
 | --- | --- |
@@ -167,9 +170,10 @@ Something else wrong, or a setting that reads or changes wrong?
 
 ## Supported mice
 
-Only the ROG Harpe II Ace (on the SpeedNova 8K receiver) has been tested so far. The others
-should work; please [report](CONTRIBUTING.md#reporting-a-problem) whether yours does. Mice not
-listed here aren't detected.
+Only the ROG Harpe II Ace (on the SpeedNova 8K receiver and on its cable in wired mode) has
+been tested so far. The others should work; please
+[report](CONTRIBUTING.md#reporting-a-problem) whether yours does. Mice not listed here aren't
+detected.
 
 <details>
 <summary>All 27 mice</summary>

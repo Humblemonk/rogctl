@@ -101,7 +101,7 @@ local function handleLine(line)
       return
     end
     exitedAt = os.time()
-    publishError(noctalia.tr("error.exited", { binary = binaryName(), code = line:sub(#EXIT_MARKER + 1) }))
+    publishError(noctalia.tr("error.exited", { binary = streamBinary, code = line:sub(#EXIT_MARKER + 1) }))
     return
   end
   local decoded, err = noctalia.json.decode(line)
