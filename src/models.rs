@@ -19,9 +19,16 @@ use crate::protocol::{
 pub const OMNI_PID: u16 = 0x1ace;
 
 /// An Omni receiver whose paired devices couldn't be asked for, usually for
-/// lack of permission. Every Omni entry shares these query parameters, so the
-/// battery read still works, or fails with the real reason. Not in `MODELS`.
+/// lack of permission. Every Omni mouse entry shares these query parameters,
+/// so the battery read still works, or fails with the real reason. Not in
+/// `MODELS`. It may hold a keyboard instead: see `OMNI_KEYBOARD_RECEIVER`.
 pub static OMNI_RECEIVER: Model = omni("ROG Omni receiver", &[], BATTERY_ONLY);
+
+/// The same receiver as the keyboard it may hold, so `--device keyboard`
+/// reports why it can't be read too. Every Omni keyboard entry shares its
+/// query parameters; byte 6 is G-Helper's default, and held the same level as
+/// byte 11 in the Falchion RX Low Profile's capture. Not in `KEYBOARDS`.
+pub static OMNI_KEYBOARD_RECEIVER: Model = omni_keyboard("ROG Omni receiver", &[], PERCENT);
 
 // G-Helper's `AsusMouse` defaults, which each class overrides.
 const DPI: Dpi = Dpi {

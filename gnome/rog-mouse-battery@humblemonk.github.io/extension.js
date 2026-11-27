@@ -152,7 +152,9 @@ const Indicator = GObject.registerClass(
         );
       } catch (e) {
         this._publishError(
-          _("Could not start %s: %s").format(this._binary, e.message),
+          e.matches(GLib.SpawnError, GLib.SpawnError.NOENT)
+            ? _("%s not found on PATH").format(this._binary)
+            : _("Could not start %s: %s").format(this._binary, e.message),
         );
         this._scheduleRestart();
         return;
@@ -179,11 +181,11 @@ const Indicator = GObject.registerClass(
         this._publishError(
           p.get_if_exited()
             ? _("%s exited with status %d").format(
-                this._binary,
+                this._watchBinary,
                 p.get_exit_status(),
               )
             : _("%s was killed by signal %d").format(
-                this._binary,
+                this._watchBinary,
                 p.get_term_sig(),
               ),
         );
@@ -199,7 +201,7 @@ const Indicator = GObject.registerClass(
         } catch {
           // Stopped or closed. Closing the pipe makes a rogctl that outlived
           // its stop (under a wrapper script SIGTERM only reaches the
-          // script) exit at its next line.
+          // script) exit: it notices the pipe close while waiting.
           s.close_async(GLib.PRIORITY_DEFAULT, null, null);
           return;
         }

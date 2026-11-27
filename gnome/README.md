@@ -27,8 +27,11 @@ Extensions app. A device that isn't plugged in is left out.
 ## Update or remove
 
 After updating rogctl, run `rogctl configure gnome` again, then log out and back in. To
-remove it:
+remove it, from your GNOME session:
 
 ```sh
 rogctl configure gnome --remove
 ```
+
+It uses `gnome-extensions uninstall`, which needs GNOME Shell running. Outside a GNOME session,
+delete `~/.local/share/gnome-shell/extensions/rog-mouse-battery@humblemonk.github.io` instead.

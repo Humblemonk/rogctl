@@ -79,6 +79,8 @@ Singleton {
     // The binary the running rogctl started with: refresh goes through the
     // same one, so a wrapper's pid means the same there.
     property string _watchBinary: ""
+    // Whether the last start succeeded: a failed one never emits `started`.
+    property bool _started: false
 
     // Read the devices now instead of waiting for the next interval. `rogctl
     // refresh` signals the pid only if it's a `rogctl watch`, unlike `kill`.
@@ -123,17 +125,28 @@ Singleton {
         stdout: SplitParser {
             onRead: line => root._publish(line)
         }
+        onStarted: {
+            root._watchBinary = command[0];
+            root._started = true;
+        }
         onExited: (code, exitStatus) => {
             root.report = {
                 devices: [],
-                error: `${root.binary} exited with status ${code}`
+                error: `${root._watchBinary} exited with status ${code}`
             };
         }
+        // Not running any more: exited (after onExited), or failed to start,
+        // which emits neither started nor exited.
         onRunningChanged: {
             if (running)
-                root._watchBinary = command[0];
-            else
-                restartTimer.start();
+                return;
+            if (!root._started)
+                root.report = {
+                    devices: [],
+                    error: `${command[0]} not found on PATH`
+                };
+            root._started = false;
+            restartTimer.start();
         }
     }
 

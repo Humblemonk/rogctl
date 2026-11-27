@@ -36,6 +36,8 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   (lighting: effect in byte 5, brightness in byte 6, colour in bytes 7-9). DPI is stored as
   `dpi / step - 1`, 16-bit little-endian. The polling rate is the low 3 bits of its byte;
   the Harpe II Ace sets the high bits too (`0x63` at 1000 Hz), and masking them is correct.
+  The power-saving rate (`12 15` byte 6) is kept whole, so toggling power saving sends it
+  back as read; a code above 8000 Hz shows as unknown.
 - Changes: `51 31 <field>`, `51 35` lift-off (also resets sensor calibration), `51 37`
   power-off and warning together, `51 43` advanced power saving,
   `51 28 <zone> 00 <effect> <brightness> R G B` lighting; each followed by `50 03`, which
@@ -62,6 +64,10 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
     (effect `02`, 50%, black); what that slot is isn't known. Zone `03` (all, as the other
     mice get) works on it too: sent unsaved on the SpeedNova, it was echoed, lit the wheel
     and read back from zone `00`.
+  - The Harpe II Extreme Edition 20 gets all three by assumption (same family, same
+    SpeedNova receiver); G-Helper gives it the Ace's plain formats (lift-off High `01`,
+    zone `03`, no `51 43`). Untested on an Extreme: capture GearLink's lift-off, power-saving
+    and lighting packets on one to confirm.
 - Lighting on other mice is G-Helper's and untested (`LightingZone::All`): every mouse whose
   class has `HasRGB()` and the default `12 03`/`51 28` packets gets the same five effects,
   set on zone `03` (all zones at once) and read from zone `00`, as G-Helper's settings
@@ -74,6 +80,15 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
 - Not implemented: lighting on the mice above with their own encodings, single lighting
   zones, Rainbow and Comet, button bindings, onboard profiles, DPI stage count, zone mode
   (`12 14`/`51 44`), acceleration/deceleration, the Omni "booster" polling-rate encoding.
+  Also the ProArt MD301 (`1cd3`/`1cd5`, `mi_03`, battery), added to G-Helper on 2026-11-05.
+- Open questions (need a capture; nobody here owns the mouse):
+  - Gladius II Wireless low-battery warning: sent as a raw percentage (`0x19` for 25%), as
+    G-Helper does, but every other 25%-step mouse stores quarters and this one reports its
+    battery in quarters; G-Helper may be wrong.
+  - Gladius II Wireless angle tuning (`Layout::Legacy`): field `0x0B` and reply bytes 19-20,
+    the standard layout's, as in G-Helper, though the legacy layout moves polling rate,
+    debounce and angle snapping 4 bytes earlier and renumbers their fields by -2. Low
+    confidence either way.
 
 ## Models
 
@@ -88,10 +103,17 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   the same with the keyboard on: it lists every device paired, not which is connected. So
   with two supported mice paired, rogctl takes the first in `MODELS` order (G-Helper the
   first slot) and can't tell which is on. A pairing query that times out, or gets `FF AA`
-  or an all-zero reply, leaves the receiver out, as one with nothing supported paired is; only one
-  that can't be opened is kept, as `OMNI_RECEIVER`. Keeping it on a miss was tried and
+  or an all-zero reply, leaves the receiver out, as one with nothing supported paired is
+  (`watch` asks again every 10 s for a minute after a node appears, in case it was booting); only one
+  that can't be opened is kept, as both `OMNI_RECEIVER` (a mouse) and
+  `OMNI_KEYBOARD_RECEIVER` (a keyboard), since either may be paired: `--device mouse` and
+  `--device keyboard` each report the error, and `--device all` lists it once, as the mouse.
+  Neither has settings, and `discover_mice()` drops the keyboard. `Model::is_stand_in()`
+  tells them (no paired IDs to match); each ranks after the other models of its kind, and
+  `watch` asks the receiver again every 10 s while one is found. Keeping it on a miss was tried and
   undone: a keyboard-only receiver then showed as a mouse, and an awake mouse as "ROG Omni
-  receiver" with no settings, which the TUI didn't retry.
+  receiver" with no settings, which the TUI didn't retry. It does now: a shown stand-in is
+  identified again every 10 s (`tui.md`).
 - `Features` constants are named after the G-Helper class they come from. Code asks the
   features; never match on a model's name.
 - `cargo test` checks that `udev/70-rogctl.rules` has exactly one line per entry's product ID
@@ -156,10 +178,14 @@ adding models or commands. `protocol.rs` has every byte; `device.rs` only moves 
   2026-11-02 just after power-on, for an active-stage change: the change's echo, `03 ff aa`
   7 ms later, no echo, then the second save's echo 154 ms later, and the stage read back
   changed (`apply_asks_once_more_after_a_rejection`). G-Helper logs such
-  errors and carries on. `Connection::write()` keeps waiting up to 150 ms for the echo of a
-  change or save after an `FF AA` (this mouse answers a read in about 5 ms, or 70 ms after
-  sitting unused); with none, `Connection::apply()` asks for the save once more, which the
-  mouse then echoes, and reports the save as unconfirmed only if that's rejected too. Its
+  errors and carries on. `Connection::exchange()` keeps waiting up to 150 ms for the reply to
+  a read, change or save after an `FF AA` or an all-zero reply (this mouse answers a read in
+  about 5 ms, or 70 ms after sitting unused), since one drawn by another process's save can
+  come first; with no
+  echo of a save, `Connection::apply()` asks for it once more, which the
+  mouse then echoes, and reports the save as unconfirmed only if that's rejected too. A
+  change with no echo isn't saved; if the read-back shows it all the same, it's reported as
+  made but unconfirmed and unsaved (`settings::read_back_holds()`), not as no change. Its
   DPI button changes the active stage without any input report on this node, so the TUI
   polls `12 00`.
 - Everything else is transcribed and untested; say so when a change depends on it. G-Helper

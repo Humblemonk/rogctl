@@ -6,7 +6,7 @@ the project does and how to install it, see [README.md](README.md).
 ## Setup
 
 You need a Rust toolchain, 1.88 or newer. For widget work you need the desktop the
-widget is for: Noctalia 5.1 or newer, Waybar, Quickshell, DankMaterialShell 1.5 or newer,
+widget is for: Noctalia 5.4 or newer, Waybar, Quickshell, DankMaterialShell 1.5 or newer,
 KDE Plasma 6, or GNOME 45 or newer.
 
 ```sh

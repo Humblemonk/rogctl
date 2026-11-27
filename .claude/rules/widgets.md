@@ -31,9 +31,12 @@ below).
   tooltip or menu line per device, a notification per `notify_low`. Its own errors (rogctl
   missing or exiting) are `{ devices: [], error }`.
 - Shared logic lives in `rogctl`, not the frontends. `watch` keeps each device's last level while
-  it sleeps, reads each device on its own schedule, sets `low` (and `notify_low` on the one
+  it sleeps (across restarts too, in rogctl's state directory), reads each
+  device on its own schedule, notices a device plugged in or out within 10 s, sets `low` (and `notify_low` on the one
   line a notification is due: once per drop, re-armed by charging or rising 5% above the
-  threshold), reports its `pid`, and re-reads every device on SIGUSR1.
+  threshold, and with `--json` remembered across restarts in rogctl's state directory),
+  reports its `pid`, re-reads every device on SIGUSR1, and exits once its stdout's reader
+  goes away.
 - Widgets pass `--device` and `--low-threshold`, restart `rogctl` when the binary, device,
   interval or threshold setting changes, and refresh with `rogctl refresh PID`, through the binary the watch
   started with. Never `kill` a `pid` from the status line: under a wrapper it can name
@@ -57,8 +60,11 @@ below).
   `low`, dimmed while asleep, and restarting `rogctl` 10 s after it exits.
 - Luau files start with `--!nonstrict`. User-visible strings go through `noctalia.tr()` with
   keys in `translations/en.json`; settings need `label_key` entries there too.
-- The plugin declares `plugin_api = 24` (for `runAsync` with an argv array). Don't raise it
-  without checking the user's installed Noctalia supports the new level.
+- The plugin declares `plugin_api = 43` (24 for `runAsync` with an argv array, 43 for the
+  `outline_variant` colour role, which replaced `outline`), so it needs Noctalia 5.4 or
+  newer (each release's highest level is `kCurrentPluginApiVersion` in its
+  `src/scripting/plugin_api.h`: 5.3.0 has 34, 5.4.0 has 43). Don't raise it without checking
+  the user's installed Noctalia supports the new level, and update the readme's minimum.
 
 ## Installing them
 
@@ -68,8 +74,10 @@ directory must change its bundle there too; `bundles_hold_every_widget_file()` c
 that readme's Install and Remove sections in step with `configure.rs`.
 
 Plugin directories are always rogctl's copies. They used to be symlinked to a checkout; no
-one does that any more, so rogctl deliberately doesn't handle a link there. Don't add it back
-or flag its absence in reviews.
+one does that any more, so rogctl deliberately doesn't support a link there. It only refuses
+one (`Copied::refuse_links()`): a link at the plugin directory or at a widget file makes it
+change nothing and exit with 1, `--force` included, so it never writes or deletes through a
+link. Don't add link support back or flag its absence in reviews.
 
 For the widgets it copies itself (Noctalia, DMS, Quickshell), rogctl deletes only files it
 recorded writing (`~/.local/state/rogctl/DESKTOP.files`) and still unchanged, and a directory

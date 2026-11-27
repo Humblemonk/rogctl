@@ -25,11 +25,18 @@ PluginComponent {
 
     property var lastStatus: null
     property bool restarting: false
+    // The binary the running rogctl started with: refresh goes through the
+    // same one, so a wrapper's pid means the same there.
+    property string watchBinary: ""
+    // Whether the last start succeeded: a failed one never emits `started`.
+    property bool watchStarted: false
 
-    onBinaryChanged: restart()
-    onDeviceChanged: restart()
-    onIntervalChanged: restart()
-    onLowThresholdChanged: restart()
+    // A slider saves every step of a drag, so restart rogctl only once the
+    // settings have settled.
+    onBinaryChanged: settleTimer.restart()
+    onDeviceChanged: settleTimer.restart()
+    onIntervalChanged: settleTimer.restart()
+    onLowThresholdChanged: settleTimer.restart()
 
     function tr(text) {
         return I18n.trFor("rogMouseBattery", text);
@@ -91,18 +98,37 @@ PluginComponent {
         stdout: SplitParser {
             onRead: line => root.handleLine(line)
         }
+        onStarted: {
+            root.watchBinary = command[0];
+            root.watchStarted = true;
+        }
         onExited: (exitCode, exitStatus) => {
             if (root.restarting)
                 return;
             root.publish({
                 devices: [],
-                error: root.tr("%1 exited with status %2").arg(root.binary).arg(exitCode)
+                error: root.tr("%1 exited with status %2").arg(root.watchBinary).arg(exitCode)
             });
         }
+        // Not running any more: exited (after onExited), or failed to start,
+        // which emits neither started nor exited.
         onRunningChanged: {
-            if (!running)
-                restartTimer.start();
+            if (running)
+                return;
+            if (!root.watchStarted)
+                root.publish({
+                    devices: [],
+                    error: root.tr("%1 not found on PATH").arg(command[0])
+                });
+            root.watchStarted = false;
+            restartTimer.start();
         }
+    }
+
+    Timer {
+        id: settleTimer
+        interval: 1000
+        onTriggered: root.restart()
     }
 
     // Start rogctl again after it exits or fails to start, e.g. if it wasn't
@@ -127,7 +153,7 @@ PluginComponent {
         target: PluginService
         function onGlobalVarChanged(changedId, varName) {
             if (changedId === root.pluginId && varName === "refresh" && watcher.running && !root.restarting && root.lastStatus?.pid)
-                Quickshell.execDetached([root.binary, "refresh", String(root.lastStatus.pid)]);
+                Quickshell.execDetached([root.watchBinary, "refresh", String(root.lastStatus.pid)]);
         }
     }
 }

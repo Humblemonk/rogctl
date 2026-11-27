@@ -24,6 +24,10 @@ Each module has one CSS class for its state, `connected`, `asleep`, `error` or `
 plus `charging` and `low`. `format-icons` is keyed by the state, or `charging` while the
 device charges. A module hides itself while its device isn't plugged in.
 
+Waybar also hides a module whenever rogctl exits with an error (it isn't found, say), so a
+failed rogctl looks like an unplugged device; Waybar tries again every 10 seconds. If a
+module never shows, run its `exec` line in a terminal to see the error.
+
 Waybar can't send notifications, so these modules only turn red when the battery is low.
 
 ## Remove

@@ -38,10 +38,16 @@ paths:
   (`device::candidate_nodes()`, no HID traffic) and reading the mice again only when that
   changes. It then shows what was just plugged in (the cable, so the header says wired) if
   it answers, else the mouse it was showing. It looks for a mouse every 2 s while none is
-  found, and retries a sleeping one, or one that failed, every 10 s. While connected it
-  reads the battery (`12 07`) for the header and the active DPI stage (`12 00`), which the
-  mouse's DPI button changes without telling rogctl, every 10 s, without dropping a pending
-  edit; a mouse that went to sleep shows as asleep.
+  found, and retries a sleeping one, or one that failed, every 10 s, and likewise the Omni
+  receiver's stand-in (`OMNI_RECEIVER`, kept when its pairing query couldn't be sent:
+  `Model::is_stand_in()`), so it's asked again which mouse
+  it holds. While connected it reads the battery (`12 07`) for the header, with power-off
+  and the warning, which another program can change and `51 37` sends back
+  (`App::polled()`), and the active DPI stage (`12 00`), which the mouse's DPI button
+  changes without telling rogctl, every 10 s, without dropping a pending edit; a mouse that
+  went to sleep shows as asleep, and one whose poll fails twice in a row as failed, so the
+  retry finds the node that answers now (a cable left plugged in when the mouse goes back
+  to its receiver).
 - Since `tick()` compares only paths, `Device::apply()` identifies the node again first
   (`Device::is_unchanged()`: sysfs, and `01 A0` on an Omni receiver). If it isn't the model
   shown (a receiver swapped for one with the same product ID, another mouse paired, the
@@ -50,11 +56,21 @@ paths:
   (`Connection::apply()`); rejected again, the message says the mouse didn't confirm saving
   it and that it may not last a power cycle, since the Harpe II Ace keeps such changes but
   other mice may not (`protocol.md`). If the read-back that follows finds the mouse asleep,
-  the message says it went to sleep or out of range before confirming the save instead.
+  the message says it went to sleep or out of range before confirming the save instead. A
+  change whose echo doesn't come (late, or `FF AA` or an empty reply alone) isn't saved, and
+  nothing more is sent; if the read-back shows the change anyway, the message says the mouse didn't confirm
+  it and it wasn't saved, not that no change was made.
 - `ratatui::try_init()` installs a panic hook that restores the terminal (release builds
-  abort on panic); always pair it with `ratatui::restore()`, after `release_mouse()` (the
-  TUI's own hook does that too). Once the terminal is up, nothing prints: messages go to the
-  status line through `App::ok()` and `App::error()`.
+  abort on panic); always pair it with `ratatui::restore()`, after `release_input()`, which
+  turns off mouse capture and bracketed paste (the TUI's own hook does that too). Once the
+  terminal is up, nothing prints: messages go to the status line through `App::ok()` and
+  `App::error()`.
+- Bracketed paste is on, so a paste arrives as one `Event::Paste`, which `action_for()`
+  drops: typed as keys, `hello world` would step a value with h and l and apply it with the
+  space, and a newline is Enter. A terminal without bracketed paste still sends it as keys.
+- SIGTERM, SIGHUP and SIGINT are blocked (`block_exit_signals()`) and checked after each
+  wait for input, before an event is acted on, so the loop ends, restores the terminal and
+  exits with 128 + the signal, sending nothing on the way out.
 
 ## Same UI for every mouse
 
@@ -81,11 +97,16 @@ several models looks and behaves the same on all of them.
   digits are typed. The ◀ sits in the label's last two columns and DPI values keep a slot
   for the ▶, so values and the stages' swatches stay in their columns.
 - **Unknown values show:** a code rogctl can't decode reads "Unknown (0x..)" (`PowerOff`,
-  `LiftOff::Unknown`, a `Debounce` outside 2-7), ←/→ still pick a valid value, and rogctl
+  `LiftOff::Unknown`, a `Debounce` outside 2-7, a `PollingRate` above 8000 Hz, a warning
+  byte past 100%: `Value::UnknownPercent`), ←/→ still pick a valid value, and rogctl
   never sends it as a choice. One packet (`51 37`) holds both power-off and the warning, so
-  changing one sends the other back as read, an unknown power-off code included: that
-  leaves it as the mouse had it, where refusing would lock the other setting and a valid
-  stand-in would change it unasked. Whether a row shows depends on the model, not the
+  changing one sends the other back as read, an unknown power-off code or a warning byte
+  past the model's range included (`protocol::Warning` keeps the byte as read); `51 43`
+  likewise sends the power-saving rate back as read with the switch, one outside
+  `power_saving_rates` included, and `51 28` the brightness with a colour or effect, one
+  past 100% (shown as `Value::UnknownPercent`) included. That leaves it as the mouse had it, where refusing would
+  lock the other setting and a valid stand-in would change it unasked. Whether a row shows
+  depends on the model, not the
   reply, with one exception:
   lighting, untested on most mice that have it, is left out if its read fails
   (`Connection::read_settings()`), so the other settings still show.
@@ -105,7 +126,13 @@ several models looks and behaves the same on all of them.
   small" notice with the size needed and returns `None`: keys only quit
   (`App::handle_key_too_small()`: q, Ctrl+C) and clicks are ignored, so nothing changes out
   of sight. Each event acts on the screen as last drawn, the one the user saw; a click that
-  comes with a resize is dropped. Only the footer may drop keys at 80 columns; a demo header
+  comes with a resize is dropped, and so is all input that came in while the loop waited
+  on the mouse and the screen was replaced (a change, `r`, Tab, a reload, the first read, a
+  poll that found the mouse asleep or failed): `discard_input()` before the next draw. A
+  reload drops a pending edit but keeps the focus, so a queued Enter would otherwise apply
+  something else (make a stage active rather than set its DPI). A poll that keeps the
+  screen keeps the keys typed during it, or a digit typed then would be lost from the DPI
+  being entered. Only the footer may drop keys at 80 columns; a demo header
   too long for 80 drops "Battery:". `every_screen_fits_the_min_size` checks every model,
   focus, edit, message and notice.
 - **Footer keys** are only the ones that do something on the screen shown: with no mouse

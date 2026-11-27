@@ -309,8 +309,27 @@ impl PollingRate {
     pub const HZ_4000: Self = Self(5);
     pub const HZ_8000: Self = Self(6);
 
+    /// The main page's rate is its byte's low 3 bits: the Harpe II Ace sets
+    /// the high bits too (`0x63` at 1000 Hz).
     fn from_byte(b: u8) -> Self {
         Self(b & 0x07)
+    }
+
+    /// The power-saving rate (`12 15` byte 6) as the mouse holds it, so
+    /// toggling power saving sends it back unchanged (`51 43`).
+    pub fn from_raw(b: u8) -> Self {
+        Self(b)
+    }
+
+    /// Whether this is a rate rogctl can name (125-8000 Hz). Others show as
+    /// unknown and are never sent as a choice.
+    pub fn is_known(self) -> bool {
+        self <= Self::HZ_8000
+    }
+
+    /// The code as the mouse holds it.
+    pub fn code(self) -> u8 {
+        self.0
     }
 
     pub fn hz(self) -> u32 {
@@ -493,6 +512,47 @@ impl std::fmt::Display for PowerOff {
     }
 }
 
+/// A low-battery warning as the mouse stores it: a percentage, or a 0-4
+/// level (1 = 25%) on mice whose [`WarningRange::quarters`] is set. Kept as
+/// read, so a power-off change sends it back unchanged (`51 37` holds both).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Warning {
+    code: u8,
+    quarters: bool,
+}
+
+impl Warning {
+    /// `percent` (at most 100) as `range`'s mouse stores it, rounded down to
+    /// its unit.
+    pub fn from_percent(range: WarningRange, percent: u8) -> Self {
+        let percent = percent.min(100);
+        Self {
+            code: if range.quarters {
+                percent / 25
+            } else {
+                percent
+            },
+            quarters: range.quarters,
+        }
+    }
+
+    /// Percent; None for a byte past 100% (a quarters code past 4), which
+    /// rogctl can't decode.
+    pub fn percent(self) -> Option<u8> {
+        let percent = if self.quarters {
+            self.code.saturating_mul(25)
+        } else {
+            self.code
+        };
+        (percent <= 100).then_some(percent)
+    }
+
+    /// The byte as the mouse stores it.
+    pub fn code(self) -> u8 {
+        self.code
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -503,8 +563,7 @@ pub struct Reading {
     pub battery: u8,
     pub charging: bool,
     pub power_off: Option<PowerOff>,
-    /// Percent.
-    pub low_battery_warning: Option<u8>,
+    pub low_battery_warning: Option<Warning>,
 }
 
 impl Reading {
@@ -529,7 +588,7 @@ pub struct MouseSettings {
     pub motion_sync: Option<bool>,
     pub lift_off: Option<LiftOff>,
     pub power_off: Option<PowerOff>,
-    pub low_battery_warning: Option<u8>,
+    pub low_battery_warning: Option<Warning>,
     pub power_saving: Option<PowerSaving>,
     pub lighting: Option<Lighting>,
 }
@@ -638,13 +697,9 @@ pub fn parse_battery(battery: Battery, f: &Features, reply: &[u8]) -> Result<Rea
         battery: level.min(100),
         charging,
         power_off: f.power_off.map(|at| PowerOff(byte(reply, at))),
-        low_battery_warning: f.low_battery_warning.map(|w| {
-            let raw = byte(reply, 7);
-            if w.quarters {
-                raw.saturating_mul(25)
-            } else {
-                raw
-            }
+        low_battery_warning: f.low_battery_warning.map(|w| Warning {
+            code: byte(reply, 7),
+            quarters: w.quarters,
         }),
     })
 }
@@ -710,7 +765,7 @@ pub fn parse_settings(query: Query, f: &Features, reply: &[u8], s: &mut MouseSet
             if !f.power_saving_rates.is_empty() {
                 s.power_saving = Some(PowerSaving {
                     on: byte(reply, 5) == 0x01,
-                    rate: PollingRate::from_byte(byte(reply, 6)),
+                    rate: PollingRate::from_raw(byte(reply, 6)),
                 });
             }
         }
@@ -782,21 +837,25 @@ pub enum Change {
     AngleTuning(i16),
     MotionSync(bool),
     LiftOff(LiftOff),
-    /// Power-off and warning are one command, so both are sent.
+    /// Power-off and warning are one command, so both are sent. The warning
+    /// is None only on a mouse without one.
     Energy {
         power_off: PowerOff,
-        low_battery_warning: u8,
+        low_battery_warning: Option<Warning>,
     },
-    /// The switch and its rate are one command, so both are sent.
+    /// The switch and its rate are one command, so both are sent; the one
+    /// not changed goes as read, a rate outside `power_saving_rates`
+    /// included.
     PowerSaving(PowerSaving),
-    /// The effect, brightness and colour are one command, so all are sent.
+    /// The effect, brightness and colour are one command, so all are sent;
+    /// the ones not changed go as read, a brightness past 100% included.
     Lighting(Lighting),
 }
 
 /// Rounds to the nearest multiple of `step` within the model's range.
 pub fn snap_dpi(dpi: &Dpi, value: u32) -> u32 {
     let step = dpi.step.max(1);
-    let rounded = (value + step / 2) / step * step;
+    let rounded = value.saturating_add(step / 2) / step * step;
     rounded.clamp(dpi.min, dpi.max)
 }
 
@@ -810,13 +869,13 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
     };
     match *change {
         Change::ActiveStage(stage) => {
-            let n = u8::try_from(stage + 1).ok()?;
+            let n = u8::try_from(stage.checked_add(1)?).ok()?;
             (f.dpi.switchable && n <= f.dpi.stages).then(|| config(CONFIG_ACTIVE_STAGE, &[n]))
         }
         Change::StageDpi { stage, dpi, color } => {
             let index = u8::try_from(stage).ok().filter(|&i| i < f.dpi.stages)?;
             let step = f.dpi.step.max(1);
-            let raw = u16::try_from(snap_dpi(&f.dpi, dpi) / step - 1).ok()?;
+            let raw = u16::try_from((snap_dpi(&f.dpi, dpi) / step).checked_sub(1)?).ok()?;
             let [lo, hi] = raw.to_le_bytes();
             match (f.dpi.colors, color) {
                 (true, Some([r, g, b])) => Some(config(index, &[lo, hi, r, g, b])),
@@ -861,16 +920,15 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
             if f.power_off.is_none() && f.low_battery_warning.is_none() {
                 return None;
             }
-            // Clamped to 100%, not to `w.max`: a power-off change resends the
-            // warning read back, which must go back unchanged even if the
-            // mouse holds more than `w.max`. `app::step()` keeps a warning the
-            // user picks within `w.max`.
-            let warning = match f.low_battery_warning {
-                Some(w) => {
-                    let pct = low_battery_warning.min(100);
-                    if w.quarters { pct / 25 } else { pct }
-                }
-                None => 0,
+            // The code as given, not clamped to `w.max`: a power-off change
+            // resends the warning read back, which must go back unchanged
+            // whatever the mouse holds (tui.md). `App::change()` keeps a
+            // warning the user picks within `w.max`.
+            let warning = match (f.low_battery_warning, low_battery_warning) {
+                (None, _) => 0,
+                (Some(w), Some(warning)) if warning.quarters == w.quarters => warning.code,
+                // Another unit, or none read: don't make one up.
+                (Some(_), _) => return None,
             };
             Some(Request::new(
                 &[
@@ -886,8 +944,10 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
                 3,
             ))
         }
+        // Any rate: one read back goes back as read (tui.md), and
+        // `App::change()` keeps one the user picks within `power_saving_rates`.
         Change::PowerSaving(PowerSaving { on, rate }) => {
-            f.power_saving_rates.contains(&rate).then(|| {
+            (!f.power_saving_rates.is_empty()).then(|| {
                 Request::new(
                     &[
                         report_id,
@@ -908,6 +968,10 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
             color: [r, g, b],
         }) => {
             let zone = f.lighting.filter(|_| Effect::OFFERED.contains(&effect))?;
+            // The brightness as given, not clamped to `BRIGHTNESS_MAX`: a
+            // colour or effect change resends the brightness read back, which
+            // must go back unchanged whatever the mouse holds (tui.md).
+            // `App::change()` keeps a brightness the user picks within it.
             Some(Request::new(
                 &[
                     report_id,
@@ -916,7 +980,7 @@ pub fn change_request(report_id: u8, f: &Features, change: &Change) -> Option<Re
                     zone.code(),
                     0x00,
                     effect.code(),
-                    brightness.min(BRIGHTNESS_MAX),
+                    brightness,
                     r,
                     g,
                     b,
@@ -936,6 +1000,19 @@ pub fn save_request(report_id: u8) -> Request {
 mod tests {
     use super::*;
     use crate::models::MODELS;
+
+    /// A percent warning range, as most mice have, and one in quarters, as
+    /// the Chakram's.
+    const WARNING_PERCENT: WarningRange = WarningRange {
+        step: 10,
+        max: 50,
+        quarters: false,
+    };
+    const WARNING_QUARTERS: WarningRange = WarningRange {
+        step: 25,
+        max: 100,
+        quarters: true,
+    };
 
     fn features(name: &str, wireless: bool) -> &'static Features {
         &MODELS
@@ -972,7 +1049,10 @@ mod tests {
         assert_eq!(reading.battery, 80);
         assert!(!reading.charging);
         assert_eq!(reading.power_off.and_then(PowerOff::minutes), Some(3));
-        assert_eq!(reading.low_battery_warning, Some(20));
+        assert_eq!(
+            reading.low_battery_warning.and_then(Warning::percent),
+            Some(20)
+        );
     }
 
     /// A keyboard's: no settings.
@@ -1056,7 +1136,10 @@ mod tests {
         .unwrap();
         assert_eq!(reading.battery, 75);
         assert!(reading.charging);
-        assert_eq!(reading.low_battery_warning, Some(25));
+        assert_eq!(
+            reading.low_battery_warning.and_then(Warning::percent),
+            Some(25)
+        );
     }
 
     /// The Strix Carry keeps its power-off code where others keep the level.
@@ -1221,7 +1304,10 @@ mod tests {
         assert_eq!(reading.battery, 47);
         assert!(reading.charging);
         assert_eq!(reading.power_off.and_then(PowerOff::minutes), Some(3));
-        assert_eq!(reading.low_battery_warning, Some(20));
+        assert_eq!(
+            reading.low_battery_warning.and_then(Warning::percent),
+            Some(20)
+        );
 
         let mut s = MouseSettings::default();
         for (query, hex) in [
@@ -1394,7 +1480,7 @@ mod tests {
         assert_eq!(
             bytes(Change::Energy {
                 power_off: PowerOff::NEVER,
-                low_battery_warning: 20
+                low_battery_warning: Some(Warning::from_percent(WARNING_PERCENT, 20))
             }),
             [0x03, 0x51, 0x37, 0x00, 0x00, 0xff, 0x00, 20]
         );
@@ -1475,11 +1561,31 @@ mod tests {
             })
         );
 
-        let too_fast = Change::PowerSaving(PowerSaving {
-            on: true,
-            rate: PollingRate::HZ_4000,
-        });
-        assert_eq!(change_request(0x03, f, &too_fast), None, "up to 2000 Hz");
+        // A rate outside the 125-2000 Hz offered, read back, goes back as
+        // read with the switch, high bits included; `App::change()` keeps a
+        // rate the user picks within the list.
+        let mut s = MouseSettings::default();
+        parse_settings(
+            Query::PowerSaving,
+            f,
+            &reply(&[0x03, 0x12, 0x15, 0, 0, 0x00, 0x0f]),
+            &mut s,
+        );
+        let unknown = s.power_saving.unwrap();
+        assert_eq!(
+            change_request(
+                0x03,
+                f,
+                &Change::PowerSaving(PowerSaving {
+                    on: true,
+                    ..unknown
+                })
+            )
+            .unwrap()
+            .bytes(),
+            [0x03, 0x51, 0x43, 0, 0, 0x01, 0x0f]
+        );
+        assert!(!unknown.rate.is_known());
         let f = features("ROG Chakram X", true);
         let change = Change::PowerSaving(PowerSaving {
             on: true,
@@ -1533,7 +1639,12 @@ mod tests {
         ] {
             assert_eq!(bytes(effect, brightness, color), [set, sent].concat());
         }
-        assert_eq!(bytes(Effect::Static, 150, red)[6], 100, "clamped");
+        // A brightness past 100% (another program's) goes back as read
+        // with a colour or effect change.
+        assert_eq!(
+            bytes(Effect::Breathing, 0xc8, red),
+            [set, [0x01, 0xc8, 0xff, 0x00, 0x00]].concat()
+        );
 
         let unknown = Change::Lighting(Lighting {
             effect: Effect::Unknown(0x07),
@@ -1629,7 +1740,7 @@ mod tests {
         assert_eq!(
             bytes(Change::Energy {
                 power_off: PowerOff::from_code(2),
-                low_battery_warning: 50
+                low_battery_warning: Some(Warning::from_percent(WARNING_QUARTERS, 50))
             }),
             [0, 0x51, 0x37, 0, 0, 2, 0, 2]
         );
@@ -1641,7 +1752,7 @@ mod tests {
             f,
             &Change::Energy {
                 power_off: PowerOff::from_code(1),
-                low_battery_warning: 20,
+                low_battery_warning: None,
             },
         );
         assert_eq!(r.unwrap().bytes(), [0, 0x51, 0x37, 0, 0, 1, 0, 0]);
@@ -1671,6 +1782,45 @@ mod tests {
         assert_eq!(bytes(dpi(Some([1, 2, 3]))), [0, 0x51, 0x31, 0x01, 0, 7, 0]);
     }
 
+    /// Values at the ends of their types neither panic nor wrap round to
+    /// another value.
+    #[test]
+    fn extreme_values_neither_overflow_nor_wrap() {
+        let f = features("ROG Harpe II Ace", true);
+        assert_eq!(snap_dpi(&f.dpi, u32::MAX), 42_000);
+        let r = change_request(
+            3,
+            f,
+            &Change::StageDpi {
+                stage: 0,
+                dpi: u32::MAX,
+                color: Some([0; 3]),
+            },
+        );
+        // 42000 DPI = (839 + 1) * 50.
+        assert_eq!(
+            r.unwrap().bytes(),
+            [3, 0x51, 0x31, 0x00, 0, 0x47, 0x03, 0, 0, 0]
+        );
+        assert_eq!(change_request(3, f, &Change::ActiveStage(usize::MAX)), None);
+        assert_eq!(change_request(3, f, &Change::ActiveStage(255)), None);
+        assert_eq!(
+            change_request(3, f, &Change::ActiveStage(3))
+                .unwrap()
+                .bytes(),
+            [3, 0x51, 0x31, 0x09, 0, 4]
+        );
+        // A range starting below its step would encode 0 DPI as -1.
+        let mut low = *f;
+        low.dpi.min = 0;
+        let zero = Change::StageDpi {
+            stage: 0,
+            dpi: 0,
+            color: Some([0; 3]),
+        };
+        assert_eq!(change_request(3, &low, &zero), None);
+    }
+
     #[test]
     fn clamps_values_and_refuses_unsupported_changes() {
         let f = features("ROG Harpe II Ace", true);
@@ -1698,10 +1848,10 @@ mod tests {
             [3, 0x51, 0x31, 0x0b, 0, 0xec, 0xff],
             "clamped to -20"
         );
-        let warning = |low_battery_warning| {
+        let warning = |percent| {
             bytes(Change::Energy {
                 power_off: PowerOff::NEVER,
-                low_battery_warning,
+                low_battery_warning: Some(Warning::from_percent(WARNING_PERCENT, percent)),
             })[7]
         };
         assert_eq!(warning(90), 90, "above the 50% max: resent as read");

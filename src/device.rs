@@ -9,7 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::models::{self, OMNI_PID, OMNI_RECEIVER};
+use crate::models::{self, OMNI_KEYBOARD_RECEIVER, OMNI_PID, OMNI_RECEIVER};
 use crate::protocol::{
     self, Battery, Change, Features, MouseSettings, OMNI_REPORT_ID, Query, Reading, Request,
 };
@@ -27,8 +27,9 @@ const HIDRAW_QUEUE: usize = 64;
 /// A reply, normalized so byte 0 is the report ID.
 type Reply = [u8; MAX_PACKET + 1];
 
-/// What a device is. Keyboards are only read: their battery level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+/// What a device is. Keyboards are only read: their battery level. Mice sort
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Mouse,
@@ -51,6 +52,15 @@ pub struct Model {
     pub battery: Battery,
     pub features: Features,
     pub matches: Match,
+}
+
+impl Model {
+    /// Whether this is `OMNI_RECEIVER` or `OMNI_KEYBOARD_RECEIVER`, an Omni
+    /// receiver kept although what's paired with it is unknown: the only
+    /// models that match no paired device.
+    pub fn is_stand_in(&self) -> bool {
+        matches!(self.matches, Match::OmniPaired(paired) if paired.is_empty())
+    }
 }
 
 /// How to tell apart models that share a product ID and interface.
@@ -148,23 +158,25 @@ fn key(m: &Model) -> (u16, u8, &'static str) {
     (m.pid, m.interface, m.name)
 }
 
-/// Where `model` is in `models::all()`. OMNI_RECEIVER isn't there; it goes
-/// last. Found by value (`key`): a `const` has no one address to compare.
-fn rank(model: &Model) -> usize {
-    models::all()
-        .position(|m| key(m) == key(model))
-        .unwrap_or(usize::MAX)
+/// Where `model` sorts: by kind, mice first, then where it is in
+/// `models::all()`. The stand-ins (`Model::is_stand_in`) aren't there, so each
+/// goes after the models of its kind. Found by value (`key`): a `const` has no
+/// one address to compare.
+fn rank(model: &Model) -> (Kind, usize) {
+    let position = models::all().position(|m| key(m) == key(model));
+    (model.kind, position.unwrap_or(usize::MAX))
 }
 
 /// Picks the models for an Omni receiver from its pairing reply. If the
-/// receiver couldn't be opened or written to, keep it so the battery read
-/// reports why (e.g. no udev rule) instead of it looking unplugged. One that
-/// didn't answer is left out, as one with nothing supported paired is: a
-/// receiver answers within milliseconds even then (protocol.md).
+/// receiver couldn't be opened or written to, keep it, as a mouse and as a
+/// keyboard since either may be paired, so the battery read reports why (e.g.
+/// no udev rule) instead of it looking unplugged. One that didn't answer is
+/// left out, as one with nothing supported paired is: a receiver answers
+/// within milliseconds even then (protocol.md).
 fn omni_models(paired: Result<Vec<u16>, QueryError>) -> Vec<&'static Model> {
     match paired {
         Ok(paired) => select_models(OMNI_PID, OMNI_RECEIVER.interface, "", &paired),
-        Err(QueryError::Io(_)) => vec![&OMNI_RECEIVER],
+        Err(QueryError::Io(_)) => vec![&OMNI_RECEIVER, &OMNI_KEYBOARD_RECEIVER],
         Err(
             QueryError::Timeout
             | QueryError::Rejected
@@ -302,13 +314,7 @@ impl Device {
 
     /// The battery and, unless the mouse is asleep, every setting.
     pub fn read(&self) -> Result<Outcome, QueryError> {
-        let mut conn = self.connect()?;
-        let reading = conn.read_battery()?;
-        if reading.is_asleep() {
-            return Ok(Outcome::Asleep);
-        }
-        let settings = conn.read_settings(&reading)?;
-        Ok(Outcome::Awake(reading, settings))
+        self.connect()?.read()
     }
 
     /// Changes one setting, saves it on the mouse, and reads everything
@@ -399,21 +405,15 @@ impl Connection {
         Ok(())
     }
 
+    /// Sends a request and waits for its reply. An `FF AA` doesn't end the
+    /// wait: the Harpe II Ace can send one just before a save's echo
+    /// (protocol.md), and another process's request on the node can draw one
+    /// (that Ace's first save after sitting unused) just before a read's
+    /// reply. Only if no answer comes within `ECHO_AFTER_REJECTION` does the
+    /// rejection count, so a sleeping mouse still reads as asleep, well
+    /// before `REPLY_TIMEOUT`. An empty reply is waited past the same way,
+    /// as a change's echo can follow one.
     fn exchange(&mut self, request: &Request) -> Result<Reply, QueryError> {
-        self.send(request)?;
-        let deadline = Instant::now() + REPLY_TIMEOUT;
-        let reply = read_packet(&mut self.file, self.model.report_id, deadline, |r| {
-            request.answered_by(r)
-        })?;
-        protocol::check_reply(&reply)?;
-        Ok(reply)
-    }
-
-    /// Sends a change or a save. An `FF AA` doesn't end the wait for its
-    /// echo: the Harpe II Ace can send one just before a save's (protocol.md),
-    /// and another process's request can draw one too. Only if no echo comes
-    /// within `ECHO_AFTER_REJECTION` does the rejection count.
-    fn write(&mut self, request: &Request) -> Result<(), QueryError> {
         self.send(request)?;
         let mut deadline = Instant::now() + REPLY_TIMEOUT;
         let mut refused = None;
@@ -422,9 +422,9 @@ impl Connection {
                 request.answered_by(r)
             }) {
                 Ok(reply) => match protocol::check_reply(&reply) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => return Ok(reply),
                     Err(e) => {
-                        refused = Some(e);
+                        refused.get_or_insert(e);
                         deadline = deadline.min(Instant::now() + ECHO_AFTER_REJECTION);
                     }
                 },
@@ -434,10 +434,25 @@ impl Connection {
         }
     }
 
+    /// Sends a change or a save and waits for its echo, as `exchange`.
+    fn write(&mut self, request: &Request) -> Result<(), QueryError> {
+        self.exchange(request).map(|_| ())
+    }
+
     pub fn read_battery(&mut self) -> Result<Reading, QueryError> {
         let model = self.model;
         let reply = self.exchange(&model.battery.request(model.report_id))?;
         protocol::parse_battery(model.battery, &model.features, &reply)
+    }
+
+    /// The battery and, unless the mouse is asleep, every setting.
+    fn read(&mut self) -> Result<Outcome, QueryError> {
+        let reading = self.read_battery()?;
+        if reading.is_asleep() {
+            return Ok(Outcome::Asleep);
+        }
+        let settings = self.read_settings(&reading)?;
+        Ok(Outcome::Awake(reading, settings))
     }
 
     /// Reads every setting the model has. `reading` supplies the ones that
@@ -636,6 +651,29 @@ mod tests {
         assert!(rank(cable) < rank(&OMNI_RECEIVER));
     }
 
+    /// An Omni receiver that couldn't be asked sorts as a mouse after the
+    /// mice and as a keyboard after the keyboards, so mice still come first.
+    #[test]
+    fn stand_ins_rank_after_their_kind() {
+        let last = |kind: Kind| {
+            models::all()
+                .filter(|m| m.kind == kind)
+                .map(rank)
+                .max()
+                .unwrap()
+        };
+        let first_keyboard = models::all()
+            .filter(|m| m.kind == Kind::Keyboard)
+            .map(rank)
+            .min()
+            .unwrap();
+        assert!(last(Kind::Mouse) < rank(&OMNI_RECEIVER));
+        assert!(rank(&OMNI_RECEIVER) < first_keyboard);
+        assert!(last(Kind::Keyboard) < rank(&OMNI_KEYBOARD_RECEIVER));
+        assert!(OMNI_RECEIVER.is_stand_in() && OMNI_KEYBOARD_RECEIVER.is_stand_in());
+        assert!(models::all().all(|m| !m.is_stand_in()));
+    }
+
     /// `Device::is_unchanged` tells apart the models that can take over a node
     /// without its path changing.
     #[test]
@@ -661,9 +699,21 @@ mod tests {
     fn keeps_omni_receiver_it_cannot_query() {
         let denied = io::Error::from(io::ErrorKind::PermissionDenied);
         let found = omni_models(Err(QueryError::Io(denied)));
-        assert_eq!(found.len(), 1);
-        let m = found[0];
+        // Either may be paired, so `--device mouse` and `--device keyboard`
+        // both report the error, each as its own kind.
+        assert_eq!(found.len(), 2);
+        let (m, k) = (found[0], found[1]);
         assert!(std::ptr::eq(m, &OMNI_RECEIVER));
+        assert!(std::ptr::eq(k, &OMNI_KEYBOARD_RECEIVER));
+        assert_eq!((m.kind, k.kind), (Kind::Mouse, Kind::Keyboard));
+        assert_eq!(m.name, k.name);
+        // Each reads its kind's report on the receiver's one node.
+        let keyboard = models::KEYBOARDS.iter().find(|m| m.pid == OMNI_PID);
+        let keyboard = keyboard.unwrap();
+        assert_eq!(
+            (k.interface, k.report_id, k.packet_size),
+            (keyboard.interface, keyboard.report_id, keyboard.packet_size)
+        );
         // Battery only: nothing to change on a mouse it couldn't identify.
         let f = m.features;
         assert_eq!(f.dpi.stages, 0);
@@ -867,6 +917,10 @@ mod tests {
     enum Answer {
         Echo,
         Rejected,
+        /// Waits this long before the next reply.
+        Pause(Duration),
+        /// These bytes, zero-padded to the packet's length.
+        Bytes(&'static [u8]),
     }
 
     /// Runs `act` against a fake SpeedNova mouse that answers the n-th packet
@@ -902,6 +956,15 @@ mod tests {
                         Answer::Rejected => {
                             let mut r = vec![0u8; n];
                             r[..3].copy_from_slice(&[0x03, 0xff, 0xaa]);
+                            r
+                        }
+                        Answer::Pause(d) => {
+                            std::thread::sleep(d);
+                            continue;
+                        }
+                        Answer::Bytes(bytes) => {
+                            let mut r = vec![0u8; n];
+                            r[..bytes.len()].copy_from_slice(bytes);
                             r
                         }
                     };
@@ -1024,6 +1087,175 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(got.len(), 3, "asked once more, not again");
+    }
+
+    /// A change whose echo comes after a stray `FF AA`, later than
+    /// ECHO_AFTER_REJECTION: not confirmed, so no save is sent.
+    #[test]
+    fn a_late_echo_after_a_rejection_sends_no_save() {
+        let (result, got) = apply_to_fake(vec![vec![
+            Answer::Rejected,
+            Answer::Pause(Duration::from_millis(200)),
+            Answer::Echo,
+        ]]);
+        assert!(
+            matches!(result, Err(ApplyError::NotChanged(QueryError::Rejected))),
+            "{result:?}"
+        );
+        assert_eq!(got.len(), 1, "no save sent");
+    }
+
+    /// A change echoed after REPLY_TIMEOUT: not confirmed, so no save is
+    /// sent.
+    #[test]
+    fn an_echo_after_the_timeout_sends_no_save() {
+        let (result, got) = apply_to_fake(vec![vec![
+            Answer::Pause(Duration::from_millis(600)),
+            Answer::Echo,
+        ]]);
+        assert!(
+            matches!(result, Err(ApplyError::NotChanged(QueryError::Timeout))),
+            "{result:?}"
+        );
+        assert_eq!(got.len(), 1, "no save sent");
+    }
+
+    /// The captured SpeedNova battery reply: 80%, not charging.
+    const BATTERY: &[u8] = &[
+        0x03, 0x12, 0x07, 0, 0, 0x50, 0x02, 0x14, 0xd8, 0x0f, 0, 0, 0x01,
+    ];
+
+    /// A stray `FF AA` just before the battery reply, as another process's
+    /// save can draw on a Harpe II Ace, isn't the answer: the mouse is awake.
+    #[test]
+    fn a_stray_rejection_before_a_battery_reply_is_not_asleep() {
+        let (result, _) = on_fake(
+            vec![vec![Answer::Rejected, Answer::Bytes(BATTERY)]],
+            |conn| conn.read_battery(),
+        );
+        assert_eq!(result.unwrap().battery, 80);
+    }
+
+    /// An all-zero reply on the mouse's report ID.
+    const EMPTY: &[u8] = &[0x03];
+
+    /// An empty reply just before the change's echo isn't the answer: the
+    /// change was made, so it's saved.
+    #[test]
+    fn an_empty_reply_before_the_change_echo_is_no_failure() {
+        let (result, got) = apply_to_fake(vec![
+            vec![Answer::Bytes(EMPTY), Answer::Echo],
+            vec![Answer::Echo],
+        ]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(got.len(), 2, "the change, then one save");
+        assert!(got[1].starts_with(SAVE));
+    }
+
+    /// A battery read answered only with an empty reply is empty (asleep),
+    /// well before the full reply timeout.
+    #[test]
+    fn a_battery_read_answered_only_empty_is_empty() {
+        let start = Instant::now();
+        let (result, _) = on_fake(vec![vec![Answer::Bytes(EMPTY)]], |conn| conn.read_battery());
+        assert!(matches!(result, Err(QueryError::Empty)), "{result:?}");
+        assert!(start.elapsed() < REPLY_TIMEOUT, "{:?}", start.elapsed());
+    }
+
+    /// A battery read answered only `FF AA` is still a rejection (asleep, on
+    /// a receiver), well before the full reply timeout.
+    #[test]
+    fn a_battery_read_answered_only_with_a_rejection_is_rejected() {
+        let start = Instant::now();
+        let (result, _) = on_fake(vec![vec![Answer::Rejected]], |conn| conn.read_battery());
+        assert!(matches!(result, Err(QueryError::Rejected)), "{result:?}");
+        assert!(start.elapsed() < REPLY_TIMEOUT, "{:?}", start.elapsed());
+    }
+
+    /// The first save rejected with no echo, the second drawing the first's
+    /// late echo and then its own `FF AA` 20 ms later, which lands on the
+    /// read that follows: the change was saved, and the read still answers.
+    #[test]
+    fn a_late_save_rejection_does_not_fail_the_read_after_it() {
+        let ((result, read), _) = on_fake(
+            vec![
+                vec![Answer::Echo],
+                vec![Answer::Rejected],
+                vec![
+                    Answer::Echo,
+                    Answer::Pause(Duration::from_millis(20)),
+                    Answer::Rejected,
+                ],
+                vec![Answer::Bytes(BATTERY)],
+            ],
+            |conn| {
+                let result = conn.apply(&Change::MotionSync(true));
+                (result, conn.read_battery())
+            },
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(read.unwrap().battery, 80);
+    }
+
+    /// The change goes unanswered, so no save is sent, but the read-back
+    /// shows the mouse took it: reported as made and unsaved, not as no
+    /// change made.
+    #[test]
+    fn an_unconfirmed_change_the_mouse_reads_back_is_reported_unsaved() {
+        use crate::app::{App, Link};
+        use crate::settings::{self, Report};
+
+        let model = one(0x1ad0, 2, "ROG SPEEDNOVA 8K RECEIVER", &[]).unwrap();
+        let queries = protocol::settings_queries(&model.features).len();
+        // The battery, then every settings query echoed: motion sync reads off.
+        let read = || {
+            let mut answers = vec![vec![Answer::Bytes(BATTERY)]];
+            answers.extend((0..queries).map(|_| vec![Answer::Echo]));
+            answers
+        };
+        let change = Change::MotionSync(false);
+        let mut answers = read();
+        answers.push(vec![]); // the change: no echo
+        answers.extend(read());
+        let ((before, result, after), got) = on_fake(answers, |conn| {
+            let before = conn.read();
+            let result = conn.apply(&change);
+            (before, result, conn.read())
+        });
+        assert_eq!(got.len(), 2 * (1 + queries) + 1, "no save sent");
+        assert!(
+            matches!(result, Err(ApplyError::NotChanged(QueryError::Timeout))),
+            "{result:?}"
+        );
+        let shown = |outcome: Result<Outcome, QueryError>| {
+            let Ok(Outcome::Awake(reading, settings)) = outcome else {
+                panic!("{outcome:?}");
+            };
+            let mut app = App::new(false);
+            app.show(Some(model), Link::Connected, Some(reading), settings);
+            app
+        };
+        // Shown with motion sync on before the change.
+        let mut before = shown(before);
+        before.settings.motion_sync = Some(true);
+        let after = shown(after);
+        assert_eq!(after.settings.motion_sync, Some(false));
+        let held = settings::read_back_holds(&before, &change, &after);
+        assert!(held);
+        let path = Path::new("/dev/hidraw0");
+        let done = "Motion sync off";
+        let report = settings::describe(&result, done, true, path, false, held);
+        assert!(
+            matches!(&report, Report::Unsaved(t) if t.starts_with("Motion sync off, but the mouse didn't confirm it")),
+            "not reported unsaved"
+        );
+        // Read back as it was, it's no change made.
+        let mut unchanged = after.clone();
+        unchanged.settings.motion_sync = Some(true);
+        assert!(!settings::read_back_holds(&before, &change, &unchanged));
+        let mut asleep = after.clone();
+        asleep.link = Link::Asleep;
+        assert!(!settings::read_back_holds(&before, &change, &asleep));
     }
 
     #[test]

@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Widget, Wrap};
 
 use crate::app::{App, Control, Edit, Link, Panel, Row, Target, Value};
+use crate::protocol::Warning;
 
 /// Settings stay readable on a wide terminal; a full polling-rate scale and
 /// its hint fit an 80-column one.
@@ -334,6 +335,7 @@ fn header_spans(app: &App, battery_label: &str) -> Line<'static> {
             && app
                 .settings
                 .low_battery_warning
+                .and_then(Warning::percent)
                 .is_some_and(|warn| warn > 0 && r.battery <= warn);
         spans.push(Span::styled(
             format!("  {battery_label}{}%", r.battery),
@@ -628,6 +630,7 @@ fn value_spans(
         | Value::LiftOff(_)
         | Value::PowerOff(_)
         | Value::Percent(_)
+        | Value::UnknownPercent(_)
         | Value::Effect(_)
         | Value::Color(_)
         | Value::Brightness(_) => 0,
@@ -684,6 +687,7 @@ fn tick(value: Value) -> String {
         | Value::Switch(_)
         | Value::Degrees(_)
         | Value::LiftOff(_)
+        | Value::UnknownPercent(_)
         | Value::Effect(_)
         | Value::Color(_) => value.to_string(),
     }
@@ -699,6 +703,7 @@ fn unit(value: Value) -> Option<&'static str> {
         | Value::Degrees(_)
         | Value::LiftOff(_)
         | Value::PowerOff(_)
+        | Value::UnknownPercent(_)
         | Value::Effect(_)
         | Value::Color(_) => None,
     }
@@ -1115,6 +1120,19 @@ mod tests {
         app.settings.power_off = Some(crate::protocol::PowerOff::from_code(9));
         let screen = render(&app, 80, 24);
         assert!(screen.contains("Unknown (0x09)"), "{screen}");
+
+        // A warning byte past 100%, as `12 07` reads it.
+        let mut reply = [0u8; 16];
+        reply[..3].copy_from_slice(&[model.report_id, 0x12, 0x07]);
+        reply[7] = 0xff;
+        let r = crate::protocol::parse_battery(model.battery, &model.features, &reply).unwrap();
+        app.settings.low_battery_warning = r.low_battery_warning;
+        let screen = render(&app, 80, 24);
+        let row = screen.lines().find(|l| l.contains("Low-battery")).unwrap();
+        assert!(
+            row.contains("Unknown (0xff)") && !row.contains('●'),
+            "{row}"
+        );
     }
 
     /// The header's battery is white, in the widgets' words; the word in
@@ -1189,7 +1207,8 @@ mod tests {
         assert_eq!(color(&app, 21, false), TEXT);
         assert_eq!(color(&app, 20, false), RED);
         assert_eq!(color(&app, 20, true), TEXT, "charging");
-        app.settings.low_battery_warning = Some(0);
+        let w = app.model.unwrap().features.low_battery_warning.unwrap();
+        app.settings.low_battery_warning = Some(Warning::from_percent(w, 0));
         assert_eq!(color(&app, 5, false), TEXT, "warning off");
     }
 

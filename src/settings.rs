@@ -4,8 +4,8 @@
 //! only read.
 
 use std::fs;
-use std::io::{self, Read};
-use std::path::Path;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -13,7 +13,7 @@ use serde_json::Value as Json;
 
 use crate::app::{self, App, Control, Link, Planned, Refusal, Value};
 use crate::device::{self, ApplyError, Device, Outcome, QueryError};
-use crate::protocol::{Effect, LiftOff, MouseSettings, PowerOff};
+use crate::protocol::{Change, Effect, LiftOff, MouseSettings, PowerOff};
 
 /// The `version` of the format `get --json` and `export` write and `import`
 /// reads. Raise it only for a change older versions would misread.
@@ -33,10 +33,10 @@ pub enum Command {
         json: bool,
     },
     Set(Vec<String>),
-    /// To the file, or stdout for None or `-`.
-    Export(Option<String>),
+    /// To the file, or stdout for None or `-`. A path need not be UTF-8.
+    Export(Option<PathBuf>),
     /// From the file, or stdin for `-`.
-    Import(String),
+    Import(PathBuf),
 }
 
 /// `demo`: `Some` runs without a mouse, as the named model or the default.
@@ -45,33 +45,29 @@ pub fn run(command: Command, demo: Option<Option<&str>>, dry_run: bool) -> u8 {
     let (mut app, device) = match load(demo) {
         Ok(loaded) => loaded,
         Err((code, text)) => {
-            eprint!("{text}");
+            let _ = io::stderr().write_all(text.as_bytes());
             return code;
         }
     };
     let result = match command {
-        Command::Get { json: false } => {
-            print!("{}", get_text(&app));
-            Ok(0)
-        }
-        Command::Get { json: true } => to_json(&app, Form::Line).map(|text| {
-            println!("{text}");
-            0
-        }),
+        Command::Get { json: false } => write_out(io::stdout(), &get_text(&app)).map(|()| 0),
+        Command::Get { json: true } => to_json(&app, Form::Line)
+            .and_then(|text| write_out(io::stdout(), &format!("{text}\n")))
+            .map(|()| 0),
         Command::Export(file) => {
             to_json(&app, Form::File).and_then(|text| export(&app, file, &text).map(|()| 0))
         }
         Command::Set(args) => parse_args(&app, &args)
             .map(|wanted| apply_all(&mut app, send(device.as_ref()), wanted, dry_run, Kind::Set)),
         Command::Import(file) => read_file(&file)
-            .and_then(|text| parse_file(&app, &file, &text))
+            .and_then(|text| parse_file(&app, &file.display().to_string(), &text))
             .map(|(wanted, skipped)| {
                 let kind = Kind::Import { skipped };
                 apply_all(&mut app, send(device.as_ref()), wanted, dry_run, kind)
             }),
     };
     result.unwrap_or_else(|text| {
-        eprintln!("{text}");
+        complain!("{text}");
         EXIT_ERROR
     })
 }
@@ -249,7 +245,7 @@ fn json_value(value: Value) -> Option<Json> {
     };
     match value {
         Value::Dpi(dpi) => Some(dpi.into()),
-        Value::PollingRate(rate) => Some(rate.hz().into()),
+        Value::PollingRate(rate) => rate.is_known().then(|| rate.hz().into()),
         Value::Debounce(d) => d.is_known().then(|| d.ms().into()),
         Value::Switch(on) => Some(on.into()),
         Value::Degrees(d) => Some(d.into()),
@@ -258,7 +254,7 @@ fn json_value(value: Value) -> Option<Json> {
         Value::PowerOff(p) if p == PowerOff::NEVER => Some("never".into()),
         Value::PowerOff(p) => p.minutes().map(Json::from),
         Value::Percent(pct) | Value::Brightness(pct) => Some(pct.into()),
-        Value::Effect(Effect::Unknown(_)) => None,
+        Value::Effect(Effect::Unknown(_)) | Value::UnknownPercent(_) => None,
         Value::Effect(_) | Value::Color(_) => name(value),
     }
 }
@@ -271,13 +267,26 @@ fn json_text(json: &Json) -> String {
     }
 }
 
-/// Lowercase without spaces, hyphens or underscores, to match names loosely:
-/// `1000`, `1000hz` and `1000 Hz` alike.
-fn loose(text: &str) -> String {
-    text.chars()
-        .filter(|c| !matches!(c, ' ' | '-' | '_'))
-        .flat_map(char::to_lowercase)
-        .collect()
+/// How `value` may be written: as `get` and the settings screen show it
+/// (`1000 Hz`, `Colour cycle`), without the space before a unit (`1000hz`),
+/// and as `export` writes it (`1000`, `colour-cycle`). Matched ignoring case,
+/// nothing else: a sign or separator could make another valid value.
+fn spellings(value: Value) -> Vec<String> {
+    let shown = value.to_string();
+    let mut list = vec![shown.clone()];
+    if let Some((number, unit)) = shown.split_once(' ')
+        && is_digits(number)
+    {
+        list.push(format!("{number}{unit}"));
+    }
+    list.extend(json_value(value).map(|j| json_text(&j)));
+    list
+}
+
+/// One or more ASCII digits and nothing else: no sign, space or separator,
+/// which `str::parse` would take (`+800`) or which could hide a typo.
+fn is_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// `text` as a value for `setting`. Only its form is checked here; whether
@@ -287,45 +296,56 @@ fn parse_value(app: &App, setting: Setting, text: &str) -> Result<Wanted, String
     let text = text.trim();
     let control = match setting {
         Setting::ActiveStage => {
-            return match text.parse::<usize>() {
-                Ok(n) if n >= 1 => Ok(Wanted::Activate(n - 1)),
-                _ => Err(format!("{key} takes a stage number, such as 2")),
+            return match is_digits(text).then(|| text.parse::<usize>()) {
+                Some(Ok(n)) if n >= 1 => Ok(Wanted::Activate(n - 1)),
+                Some(_) | None => Err(format!("{key} takes a stage number, such as 2")),
             };
         }
         Setting::Control(control) => control,
     };
     let value = match control {
-        Control::Stage(_) => text
-            .parse()
+        Control::Stage(_) => is_digits(text)
+            .then(|| text.parse().ok())
+            .flatten()
             .map(Value::Dpi)
-            .map_err(|_| format!("{key} takes a DPI, such as 800"))?,
+            .ok_or_else(|| format!("{key} takes a DPI, such as 800"))?,
+        // As the settings screen shows it (`+5°`, `-5°`) or exported (`-5`):
+        // i16's own parse takes only an optional sign and digits.
         Control::AngleTuning => text
-            .trim_end_matches('°')
+            .strip_suffix('°')
+            .unwrap_or(text)
             .parse()
             .map(Value::Degrees)
             .map_err(|_| format!("{key} takes a number of degrees, such as -5"))?,
         Control::LightingColor if text.starts_with('#') => {
             parse_hex(text).ok_or_else(|| format!("{key} takes a colour name or #rrggbb"))?
         }
-        _ => {
+        Control::PollingRate
+        | Control::Debounce
+        | Control::AngleSnapping
+        | Control::MotionSync
+        | Control::LiftOff
+        | Control::PowerOff
+        | Control::LowBatteryWarning
+        | Control::PowerSaving
+        | Control::PowerSavingRate
+        | Control::LightingEffect
+        | Control::LightingColor
+        | Control::Brightness => {
             // The mouse's own value too, should another program have set one
             // outside the list: `App::change()` finds it unchanged.
             let mut named = app.named_values(control);
             named.extend(app.value(control).filter(|v| !named.contains(v)));
-            let wanted = loose(text);
             named
                 .iter()
                 .copied()
-                .find(|&v| {
-                    loose(&v.to_string()) == wanted
-                        || json_value(v).is_some_and(|j| loose(&json_text(&j)) == wanted)
-                })
+                .find(|&v| spellings(v).iter().any(|s| s.eq_ignore_ascii_case(text)))
                 .ok_or_else(|| {
                     // Only rogctl's choices: the mouse's own is no offer.
                     let names: Vec<String> = app
                         .named_values(control)
                         .iter()
-                        .filter_map(|&v| json_value(v).map(|j| json_text(&j)))
+                        .filter_map(|&v| choice_name(v))
                         .collect();
                     let or_hex = if control == Control::LightingColor {
                         ", or #rrggbb"
@@ -339,8 +359,25 @@ fn parse_value(app: &App, setting: Setting, text: &str) -> Result<Wanted, String
     Ok(Wanted::Set(control, value))
 }
 
+/// How a refused value's message lists `value`: as `export` writes it, but
+/// a number or switch that `get` shows as a word (`Off`, `On`) as that word,
+/// which is taken too.
+fn choice_name(value: Value) -> Option<String> {
+    let json = json_value(value)?;
+    let shown = value.to_string();
+    let word = !json.is_string() && !shown.starts_with(|c: char| c.is_ascii_digit());
+    Some(if word {
+        shown.to_lowercase()
+    } else {
+        json_text(&json)
+    })
+}
+
 fn parse_hex(text: &str) -> Option<Value> {
-    let hex = text.strip_prefix('#').filter(|h| h.len() == 6)?;
+    // Hex digits only: `from_str_radix` would take a sign (`#+f+f+f`).
+    let hex = text
+        .strip_prefix('#')
+        .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
     let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
     Some(Value::Color([byte(0)?, byte(2)?, byte(4)?]))
 }
@@ -457,17 +494,23 @@ fn to_json(app: &App, form: Form) -> Result<String, String> {
     text.map_err(|e| e.to_string())
 }
 
-fn export(app: &App, file: Option<String>, text: &str) -> Result<(), String> {
-    match file.as_deref() {
-        None | Some("-") => {
-            println!("{text}");
-            Ok(())
-        }
+/// Writes what `get` or `export` prints to `out`. An error if it didn't all
+/// get out, as when stdout is a closed pipe: the settings weren't printed.
+fn write_out(mut out: impl Write, text: &str) -> Result<(), String> {
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("Couldn't print the settings: {e}"))
+}
+
+fn export(app: &App, file: Option<PathBuf>, text: &str) -> Result<(), String> {
+    match file.filter(|path| path.as_os_str() != "-") {
+        None => write_out(io::stdout(), &format!("{text}\n")),
         Some(path) => {
-            fs::write(path, format!("{text}\n"))
-                .map_err(|e| format!("Couldn't write {path}: {e}"))?;
+            let path_text = path.display();
+            fs::write(&path, format!("{text}\n"))
+                .map_err(|e| format!("Couldn't write {path_text}: {e}"))?;
             let name = app.model.map_or("mouse", |m| m.name);
-            println!("Saved the {name}'s settings to {path}");
+            say!("Saved the {name}'s settings to {path_text}");
             Ok(())
         }
     }
@@ -477,15 +520,15 @@ fn export(app: &App, file: Option<String>, text: &str) -> Result<(), String> {
 // import
 // ---------------------------------------------------------------------------
 
-fn read_file(path: &str) -> Result<String, String> {
-    if path == "-" {
+fn read_file(path: &Path) -> Result<String, String> {
+    if path.as_os_str() == "-" {
         let mut text = String::new();
         io::stdin()
             .read_to_string(&mut text)
             .map_err(|e| format!("Couldn't read stdin: {e}"))?;
         return Ok(text);
     }
-    fs::read_to_string(path).map_err(|e| format!("Couldn't read {path}: {e}"))
+    fs::read_to_string(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))
 }
 
 /// A file's `settings` in the order written, with any key given twice, which
@@ -557,7 +600,7 @@ fn parse_file(app: &App, path: &str, text: &str) -> Result<(Vec<(Setting, Wanted
                     return Err(format!("{path}: {key} is given twice"));
                 }
                 Some(why) => {
-                    eprintln!("Skipped: {key}: {why}");
+                    complain!("Skipped: {key}: {why}");
                     skipped.push(key);
                     continue;
                 }
@@ -624,34 +667,34 @@ fn apply_all(
                 trial.simulate(&planned.change);
                 if dry_run {
                     let after = shown(&trial, setting).unwrap_or_default();
-                    println!("Would change {}: {before} → {after}", setting.key());
+                    say!("Would change {}: {before} → {after}", setting.key());
                 }
                 Check::Due
             }
             Err(Refusal::Unchanged(text)) => {
                 if !import {
-                    println!("{text}");
+                    say!("{text}");
                 }
                 Check::AlreadySet
             }
             Err(Refusal::NotNow(text)) if import => {
-                eprintln!("Skipped: {text}");
+                complain!("{}", skipped_note(&trial, setting, w, &text));
                 Check::Skipped
             }
             Err(Refusal::NotNow(text) | Refusal::Invalid(text)) => {
-                eprintln!("{text}\nNothing was changed.");
+                complain!("{text}\nNothing was changed.");
                 return EXIT_ERROR;
             }
         });
     }
     if !checks.contains(&Check::Due) {
         if import && !skipped_before && !checks.contains(&Check::Skipped) {
-            println!("Nothing to change: the mouse already has these settings");
+            say!("Nothing to change: the mouse already has these settings");
         }
         return 0;
     }
     if dry_run {
-        println!("Dry run: nothing was sent to the mouse.");
+        say!("Dry run: nothing was sent to the mouse.");
         return 0;
     }
     let mut made = 0;
@@ -666,22 +709,22 @@ fn apply_all(
         if app.link != Link::Connected {
             let (why, code) = lost(&app.link);
             if checks[i..].contains(&Check::Due) {
-                eprintln!("Stopped: {why}");
+                complain!("Stopped: {why}");
                 return stopped(made, code);
             }
-            eprintln!("Couldn't check the rest again after the last change: {why}");
+            complain!("Couldn't check the rest again after the last change: {why}");
             return 0;
         }
         let key = setting.key();
         // The read-back may leave a setting out (lighting that didn't read).
         if !settings_of(app).iter().any(|&(s, _)| s == setting) {
             if check == Check::Due {
-                eprintln!(
+                complain!(
                     "Couldn't change {key}: the mouse didn't report it after the last change"
                 );
                 return stopped(made, EXIT_ERROR);
             }
-            eprintln!(
+            complain!(
                 "Couldn't check {key} again: the mouse didn't report it after the last change"
             );
             continue;
@@ -689,7 +732,7 @@ fn apply_all(
         let planned = match (plan(app, w), check) {
             (Ok(planned), _) => planned,
             (Err(Refusal::Unchanged(text)), Check::Due) if !import => {
-                println!("{text}");
+                say!("{text}");
                 continue;
             }
             (Err(Refusal::Unchanged(_)), _) => continue,
@@ -697,13 +740,13 @@ fn apply_all(
             | (Err(Refusal::NotNow(text) | Refusal::Invalid(text)), Check::AlreadySet)
                 if import =>
             {
-                eprintln!("Skipped: {text}");
+                complain!("{}", skipped_note(app, setting, w, &text));
                 continue;
             }
             // Refused only now: the mouse read back differs from what was
             // checked, or an earlier change altered a setting that was right.
             (Err(Refusal::NotNow(text) | Refusal::Invalid(text)), _) => {
-                eprintln!("{text}");
+                complain!("{text}");
                 return stopped(made, EXIT_ERROR);
             }
         };
@@ -727,20 +770,20 @@ fn apply_all(
             } else {
                 ""
             };
-            eprintln!("The mouse took the change{unconfirmed}, but {key} reads back {now}");
+            complain!("The mouse took the change{unconfirmed}, but {key} reads back {now}");
             return stopped(made, EXIT_ERROR);
         }
         let demo = if app.demo { "Demo: " } else { "" };
         match &unsaved {
-            Some(warning) => eprintln!("{demo}{warning}"),
-            None => println!("{demo}{}", planned.done),
+            Some(warning) => complain!("{demo}{warning}"),
+            None => say!("{demo}{}", planned.done),
         }
         // An unsaved warning already says the mouse went to sleep.
         if app.link != Link::Connected && !(unsaved.is_some() && app.link == Link::Asleep) {
             let (why, _) = lost(&app.link);
-            eprintln!("Couldn't check {key} after the change: {why}");
+            complain!("Couldn't check {key} after the change: {why}");
         } else if app.link == Link::Connected && !reported {
-            eprintln!("Couldn't check {key}: the mouse didn't report it after the change");
+            complain!("Couldn't check {key}: the mouse didn't report it after the change");
         }
     }
     0
@@ -765,6 +808,18 @@ enum Check {
     Skipped,
 }
 
+/// `import`'s note for a setting it skipped because `why`: the mouse keeps
+/// its value, not the file's, so it won't match the file there.
+fn skipped_note(app: &App, setting: Setting, wanted: Wanted, why: &str) -> String {
+    let key = setting.key();
+    let file = match wanted {
+        Wanted::Set(_, value) => value.to_string(),
+        Wanted::Activate(stage) => (stage + 1).to_string(),
+    };
+    let keeps = shown(app, setting).unwrap_or_else(|| "its value".to_owned());
+    format!("Skipped: {key} keeps {keeps}, not the file's {file}, which wasn't restored: {why}")
+}
+
 /// Why the mouse can't be read, and the exit code for it.
 fn lost(link: &Link) -> (String, u8) {
     match link {
@@ -779,8 +834,8 @@ fn lost(link: &Link) -> (String, u8) {
 fn stopped(made: usize, code: u8) -> u8 {
     match made {
         0 => {}
-        1 => eprintln!("Made 1 change before stopping."),
-        n => eprintln!("Made {n} changes before stopping."),
+        1 => complain!("Made 1 change before stopping."),
+        n => complain!("Made {n} changes before stopping."),
     }
     code
 }
@@ -804,6 +859,7 @@ fn send(
 /// [`send`] returns.
 fn apply_one(app: &mut App, device: &Device, planned: &Planned) -> Result<Option<String>, u8> {
     let wireless = device.model.wireless;
+    let before = app.clone();
     let applied = device.apply(&planned.change);
     let model = Some(device.model);
     match applied.read_back {
@@ -821,17 +877,19 @@ fn apply_one(app: &mut App, device: &Device, planned: &Planned) -> Result<Option
         None => {}
     }
     let asleep = app.link == Link::Asleep;
+    let held = read_back_holds(&before, &planned.change, app);
     match describe(
         &applied.result,
         &planned.done,
         wireless,
         &device.hidraw,
         asleep,
+        held,
     ) {
         Report::Done(_) => Ok(None),
         Report::Unsaved(text) => Ok(Some(text)),
         Report::Failed { text, asleep } => {
-            eprintln!("{text}");
+            complain!("{text}");
             Err(if asleep { EXIT_ASLEEP } else { EXIT_ERROR })
         }
     }
@@ -840,7 +898,8 @@ fn apply_one(app: &mut App, device: &Device, planned: &Planned) -> Result<Option
 /// How a change went, in words, for the settings screen and the CLI alike.
 pub enum Report {
     Done(String),
-    /// Made, but the mouse didn't confirm saving it.
+    /// Made, but the mouse didn't confirm saving it, or didn't confirm the
+    /// change itself, which it reads back.
     Unsaved(String),
     /// Not made; `asleep` when the mouse didn't answer.
     Failed {
@@ -849,14 +908,38 @@ pub enum Report {
     },
 }
 
+/// Whether `after`, the mouse read back after `change`, has the change
+/// made: every setting the change sets, those `before` (the screen the
+/// change was made from) shows differently with it ([`App::simulate`]),
+/// reads back as it would then. Others are left out, since they can have
+/// changed since `before` was read (the DPI button, another program). Sends
+/// nothing; tells [`describe`] that a change the mouse didn't confirm was
+/// made all the same.
+pub fn read_back_holds(before: &App, change: &Change, after: &App) -> bool {
+    let mut expected = before.clone();
+    expected.simulate(change);
+    let changed: Vec<Setting> = settings_of(&expected)
+        .into_iter()
+        .map(|(setting, _)| setting)
+        .filter(|&setting| shown(&expected, setting) != shown(before, setting))
+        .collect();
+    after.link == Link::Connected
+        && !changed.is_empty()
+        && changed
+            .iter()
+            .all(|&setting| shown(after, setting) == shown(&expected, setting))
+}
+
 /// `done` says what was changed; `asleep_after`, that the read-back after
-/// it found the mouse asleep.
+/// it found the mouse asleep; `held`, that it found the change made
+/// ([`read_back_holds`]).
 pub fn describe(
     result: &Result<(), ApplyError>,
     done: &str,
     wireless: bool,
     hidraw: &Path,
     asleep_after: bool,
+    held: bool,
 ) -> Report {
     let failed = |text: String, asleep: bool| Report::Failed { text, asleep };
     match result {
@@ -868,6 +951,13 @@ pub fn describe(
         Err(ApplyError::Open(e)) => {
             failed(format!("Couldn't open {}: {e}", hidraw.display()), false)
         }
+        // The change's echo came late or not at all, so it wasn't saved,
+        // but the mouse reads back that it took it.
+        Err(ApplyError::NotChanged(
+            QueryError::Timeout | QueryError::Rejected | QueryError::Empty,
+        )) if held => Report::Unsaved(format!(
+            "{done}, but the mouse didn't confirm it and it wasn't saved: it may not last a power cycle"
+        )),
         Err(ApplyError::NotChanged(e)) if e.means_asleep(wireless) => failed(
             format!("No change made: the mouse didn't answer ({e})"),
             true,
@@ -906,6 +996,17 @@ mod tests {
 
     fn value(app: &App, key: &str, text: &str) -> Result<Wanted, String> {
         parse_value(app, find(app, key)?, text)
+    }
+
+    /// A polling rate rogctl can't name is left out of an export, as other
+    /// unknown codes are.
+    #[test]
+    fn an_unknown_rate_is_not_exported() {
+        assert_eq!(
+            json_value(Value::PollingRate(PollingRate::from_raw(0x0f))),
+            None
+        );
+        assert!(json_value(Value::PollingRate(PollingRate::HZ_1000)).is_some());
     }
 
     #[test]
@@ -964,6 +1065,156 @@ mod tests {
         assert!(value(&app, "colour", "#12345").is_err());
         assert!(value(&app, "active-stage", "0").is_err());
         assert!(value(&app, "dpi-1", "lots").is_err());
+    }
+
+    /// A refusal lists a value `get` shows as a word by that word, which is
+    /// taken: brightness 0 is "Off", a switch "On" or "Off".
+    #[test]
+    fn a_refusal_lists_values_as_get_shows_them() {
+        let app = demo("ROG Harpe II Ace");
+        let err = |key, text| value(&app, key, text).unwrap_err();
+        assert_eq!(
+            err("brightness", "-50"),
+            "brightness takes one of: off, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100"
+        );
+        assert_eq!(
+            err("motion-sync", "maybe"),
+            "motion-sync takes one of: off, on"
+        );
+        assert!(err("power-off", "soon").ends_with(", never"));
+        assert!(
+            err("low-battery-warning", "-1").starts_with("low-battery-warning takes one of: off, ")
+        );
+        for (key, text) in [("brightness", "off"), ("motion-sync", "on")] {
+            assert!(value(&app, key, text).is_ok(), "{key}={text}");
+        }
+    }
+
+    /// A sign, separator or typo is refused, not read as another value
+    /// (`brightness=-50` was 50%, `power-off=1-0` 10 min).
+    #[test]
+    fn values_rogctl_doesnt_write_are_refused() {
+        let app = demo(app::DEMO_MODEL);
+        for (key, text) in [
+            ("brightness", "-50"),
+            ("brightness", "1 0 0"),
+            ("brightness", "50 %"),
+            ("low-battery-warning", "-30"),
+            ("low-battery-warning", "o-f-f"),
+            ("power-off", "-5"),
+            ("power-off", "1-0"),
+            ("power-off", "1_0"),
+            ("power-off", "ne ver"),
+            ("polling-rate", "-1000"),
+            ("polling-rate", "1_000"),
+            ("polling-rate", "1000 h z"),
+            ("power-saving-rate", "+250"),
+            ("effect", "-static"),
+            ("effect", "colourcycle"),
+            ("effect", "colour_cycle"),
+            ("motion-sync", "o-n"),
+            ("motion-sync", "+on"),
+            ("lift-off", "lo w"),
+            ("colour", "re-d"),
+            ("colour", "#+f+f+f"),
+            ("colour", "#-1-1-1"),
+            ("colour", "# ff ff"),
+            ("dpi-1", "+800"),
+            ("dpi-1", "-800"),
+            ("dpi-1", "8 00"),
+            ("dpi-1", "8_00"),
+            ("angle-tuning", "+5°°"),
+            ("angle-tuning", "- 5"),
+            ("angle-tuning", "--5"),
+            ("angle-tuning", "5-"),
+            ("active-stage", "+2"),
+            ("active-stage", "-2"),
+        ] {
+            assert!(value(&app, key, text).is_err(), "{key}={text}");
+        }
+        let file = r#"{"version":1,"model":"ROG Harpe II Ace","settings":{"brightness":-50}}"#;
+        assert!(parse_file(&app, "f", file).is_err());
+        assert_eq!(
+            value(&app, "angle-tuning", "+5°"),
+            Ok(Wanted::Set(Control::AngleTuning, Value::Degrees(5)))
+        );
+    }
+
+    /// Every spelling rogctl itself writes, on every model, reads back as
+    /// the value it was written for: `get`'s and the settings screen's
+    /// (`Display`, with or without the space before a unit), and
+    /// `export`'s, for each value the mouse has and each named choice.
+    #[test]
+    fn every_value_rogctl_writes_reads_back() {
+        for model in MODELS {
+            let app = demo(model.name);
+            for (setting, _) in settings_of(&app) {
+                let key = setting.key();
+                let Some(shown) = shown(&app, setting) else {
+                    continue;
+                };
+                let w = parse_value(&app, setting, &shown)
+                    .unwrap_or_else(|e| panic!("{} {key}={shown}: {e}", model.name));
+                assert!(
+                    matches!(plan(&app, w), Err(Refusal::Unchanged(_))),
+                    "{} {key}={shown}",
+                    model.name
+                );
+                let Setting::Control(control) = setting else {
+                    continue;
+                };
+                let mut values = app.named_values(control);
+                values.extend(app.value(control));
+                for v in values {
+                    let display = v.to_string();
+                    let mut texts = vec![display.clone(), display.to_uppercase()];
+                    if let Some((n, unit)) = display.split_once(' ')
+                        && n.parse::<u32>().is_ok()
+                    {
+                        texts.push(format!("{n}{unit}"));
+                        texts.push(n.to_owned());
+                    }
+                    texts.extend(json_value(v).map(|j| json_text(&j)));
+                    for text in texts {
+                        assert_eq!(
+                            parse_value(&app, setting, &text),
+                            Ok(Wanted::Set(control, v)),
+                            "{} {key}={text}",
+                            model.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// What docs/cli.md shows `set` taking.
+    #[test]
+    fn the_documented_values_parse() {
+        let app = demo(app::DEMO_MODEL);
+        let args = [
+            "polling-rate=1000",
+            "polling-rate=1000hz",
+            "dpi-2=1600",
+            "motion-sync=off",
+            "angle-snapping=on",
+            "power-saving=off",
+            "angle-tuning=-5",
+            "lift-off=high",
+            "power-off=10",
+            "power-off=never",
+            "low-battery-warning=0",
+            "low-battery-warning=off",
+            "effect=battery-level",
+            "effect=colour-cycle",
+            "colour=magenta",
+            "colour=#00ff80",
+            "brightness=0",
+            "active-stage=1",
+        ];
+        for arg in args {
+            assert!(wanted(&app, &[arg]).is_ok(), "{arg}");
+        }
     }
 
     #[test]
@@ -1146,7 +1397,8 @@ mod tests {
         if let Some(lighting) = app.settings.lighting.as_mut() {
             lighting.brightness = 35;
         }
-        app.settings.low_battery_warning = Some(90);
+        let w = app.model.unwrap().features.low_battery_warning.unwrap();
+        app.settings.low_battery_warning = Some(crate::protocol::Warning::from_percent(w, 90));
         let text = to_json(&app, Form::File).unwrap();
         let (list, _) = parse_file(&app, "f", &text).unwrap();
         for (setting, w) in list {
@@ -1369,6 +1621,27 @@ mod tests {
         assert_eq!(app.settings.lighting, None);
     }
 
+    /// A file exported with power saving off still has its rate, which is
+    /// locked then: the note says the file's value wasn't restored.
+    #[test]
+    fn a_skipped_setting_says_the_files_value_wasnt_restored() {
+        let app = demo(app::DEMO_MODEL);
+        let text = file_with(&app, &[("power-saving-rate", "250")]);
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
+        let (setting, w) = list
+            .into_iter()
+            .find(|&(s, _)| s == Setting::Control(Control::PowerSavingRate))
+            .unwrap();
+        let Err(Refusal::NotNow(why)) = plan(&app, w) else {
+            panic!("the rate should be locked");
+        };
+        assert_eq!(
+            skipped_note(&app, setting, w, &why),
+            "Skipped: power-saving-rate keeps 1000 Hz, not the file's 250 Hz, which wasn't \
+             restored: Power-saving rate can't be changed now: only while power saving is on"
+        );
+    }
+
     /// An item `import` skipped stays skipped, even once it unlocks.
     #[test]
     fn an_item_import_skipped_stays_skipped() {
@@ -1408,6 +1681,62 @@ mod tests {
         json.to_string()
     }
 
+    /// A warning byte past 100% shows as unknown and is left out of an
+    /// export, as an unknown power-off code is, so importing it sends nothing.
+    #[test]
+    fn an_unknown_warning_is_shown_but_not_exported() {
+        let mut app = demo(app::DEMO_MODEL);
+        let model = app.model.unwrap();
+        let mut reply = [0u8; 16];
+        reply[..3].copy_from_slice(&[model.report_id, 0x12, 0x07]);
+        reply[7] = 0xff;
+        let r = crate::protocol::parse_battery(model.battery, &model.features, &reply).unwrap();
+        app.settings.low_battery_warning = r.low_battery_warning;
+        assert!(get_text(&app).contains("low-battery-warning  Unknown (0xff)\n"));
+        let text = to_json(&app, Form::File).unwrap();
+        assert!(!text.contains("low-battery-warning"), "{text}");
+        let (list, _) = parse_file(&app, "f", &text).unwrap();
+        for (setting, w) in list {
+            assert!(
+                matches!(plan(&app, w), Err(Refusal::Unchanged(_))),
+                "{}",
+                setting.key()
+            );
+        }
+    }
+
+    /// A brightness past 100% shows as unknown and is left out of an export,
+    /// as an unknown warning is.
+    #[test]
+    fn an_unknown_brightness_is_shown_but_not_exported() {
+        let mut app = demo(app::DEMO_MODEL);
+        if let Some(l) = app.settings.lighting.as_mut() {
+            l.brightness = 0xc8;
+        }
+        assert!(get_text(&app).contains("brightness           Unknown (0xc8)\n"));
+        let text = to_json(&app, Form::File).unwrap();
+        assert!(!text.contains("\"brightness\""), "{text}");
+    }
+
+    /// Settings that didn't get out (stdout a closed pipe) are an error, so
+    /// `get` and `export` exit 1 rather than 0.
+    #[test]
+    fn settings_that_dont_get_out_are_an_error() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(write_out(Closed, "{}\n").is_err());
+        let mut out = Vec::new();
+        assert_eq!(write_out(&mut out, "{}\n"), Ok(()));
+        assert_eq!(out, b"{}\n");
+    }
+
     #[test]
     fn get_lists_keys_values_and_locks() {
         let text = get_text(&demo(app::DEMO_MODEL));
@@ -1421,7 +1750,7 @@ mod tests {
     fn describe_says_what_happened() {
         let path = Path::new("/dev/hidraw3");
         let done = "Polling rate set to 1000 Hz";
-        let describe = |result, asleep| describe(&result, done, true, path, asleep);
+        let describe = |result, asleep| describe(&result, done, true, path, asleep, false);
         assert!(matches!(describe(Ok(()), false), Report::Done(t) if t == done));
         assert!(matches!(
             describe(Err(ApplyError::NotSaved(QueryError::Rejected)), false),
@@ -1439,5 +1768,70 @@ mod tests {
             describe(Err(ApplyError::Replaced), false),
             Report::Failed { asleep: false, .. }
         ));
+    }
+
+    /// A change the mouse didn't confirm, but reads back: made, unsaved.
+    #[test]
+    fn describe_says_an_unconfirmed_change_read_back_was_made() {
+        let path = Path::new("/dev/hidraw3");
+        let done = "Polling rate set to 1000 Hz";
+        let describe = |e, held| {
+            describe(
+                &Err(ApplyError::NotChanged(e)),
+                done,
+                true,
+                path,
+                false,
+                held,
+            )
+        };
+        for e in [QueryError::Timeout, QueryError::Rejected, QueryError::Empty] {
+            assert!(matches!(
+                describe(e, true),
+                Report::Unsaved(t) if t == "Polling rate set to 1000 Hz, but the mouse didn't confirm it and it wasn't saved: it may not last a power cycle"
+            ));
+        }
+        assert!(matches!(
+            describe(QueryError::Timeout, false),
+            Report::Failed { text, asleep: true } if text.starts_with("No change made")
+        ));
+        // Not read back: an empty reply means it's asleep.
+        assert!(matches!(
+            describe(QueryError::Empty, false),
+            Report::Failed { asleep: true, .. }
+        ));
+    }
+
+    /// The read-back has a change when it shows what the screen it was made
+    /// from would with it, and that's a change.
+    #[test]
+    fn read_back_holds_only_the_change_asked() {
+        let before = demo("ROG Harpe II Ace");
+        let change = Change::MotionSync(before.settings.motion_sync != Some(true));
+        let mut after = before.clone();
+        assert!(!read_back_holds(&before, &change, &after));
+        after.simulate(&change);
+        assert!(read_back_holds(&before, &change, &after));
+        let unchanged = Change::MotionSync(before.settings.motion_sync == Some(true));
+        assert!(!read_back_holds(&before, &unchanged, &before));
+        after.link = Link::Asleep;
+        assert!(!read_back_holds(&before, &change, &after));
+    }
+
+    /// Another setting read back differently (the DPI button pressed since
+    /// the screen was read) doesn't hide the change; the change's own value
+    /// read back as it was does.
+    #[test]
+    fn read_back_holds_past_another_setting_gone_stale() {
+        let before = demo("ROG Harpe II Ace");
+        let change = Change::MotionSync(before.settings.motion_sync != Some(true));
+        let mut after = before.clone();
+        after.simulate(&change);
+        let stage = before.settings.active_stage.unwrap_or(0);
+        after.settings.active_stage = Some((stage + 1) % before.settings.stages.len());
+        assert_ne!(after.settings.active_stage, before.settings.active_stage);
+        assert!(read_back_holds(&before, &change, &after));
+        after.settings.motion_sync = before.settings.motion_sync;
+        assert!(!read_back_holds(&before, &change, &after));
     }
 }
