@@ -77,7 +77,7 @@ for, and the widgets keep up with devices coming, going and sleeping.
   10 seconds. Before, it waited out the rest of `--interval`, showing the level from before
   the suspend.
 - rogctl no longer crashes on an argument that isn't valid UTF-8, and `settings export` and
-  `import` take any file name. It no longer crashes when its output goes to a program that
+  `import` take any filename. It no longer crashes when its output goes to a program that
   has exited (`rogctl --help | head -1`); `settings get` and `export` then exit with 1.
 - `rogctl settings` restores the terminal when it's closed or killed.
 - `rogctl settings` ignores keys pressed while it waits on the mouse (a change, Tab, reading
